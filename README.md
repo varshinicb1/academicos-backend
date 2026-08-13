@@ -1,1 +1,0 @@
-AcademicOS backend (CI mirror)

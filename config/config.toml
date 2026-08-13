@@ -1,0 +1,35 @@
+# AcademicOS runtime configuration
+# All values can be overridden via env vars: ACOS_DATA_ROOT, ACOS_CORPUS_ROOT,
+# ACOS_GCS_BUCKET, ACOS_GCS_PREFIX, ACOS_SYNC_ENABLED, ACOS_VLM_DEVICE
+
+# corpus_root: where the raw downloaded CBSE files live
+corpus_root = "C:/Users/varsh/OneDrive/Documents/Sarvam/cbse-dataset"
+
+# Cloud mirror (empty = disabled)
+gcs_bucket = "varsh-dev-storage"
+gcs_prefix = "academicos"
+sync_enabled = false
+
+# Parsing strategy
+# unlimited_ocr targets a local VLM service (127.0.0.1:8910). When that service
+# is not running every document still pays its connection timeout, which made a
+# 218-paper batch take hours. Re-add it when the OCR service is up; scanned
+# papers are handled by assessment/vision.py (Sarvam) in the meantime.
+parse_priority = ["pdf_native"]
+vlm_device = "cuda"
+min_confidence = 0.6
+max_pages_per_doc = 500
+
+# LLM provider (OpenIE extraction + Self-RAG-style critic)
+# Groq (free tier, fast) for batch extraction; Sarvam/LLM_KEY for light calls
+# Key lives in config/secrets.env (gitignored) as ACOS_LLM_API_KEY, or as a real
+# env var in deployment — never here. This file is committed; a previous
+# version had the key in plaintext, now rotated after being caught in git history.
+llm_base_url = "https://api.groq.com/openai"
+llm_model = "llama-3.3-70b-versatile"
+llm_timeout = 120
+openie_max_chunk_chars = 1800
+critic_retrieve_threshold = 0.5
+critic_w_rel = 1.0
+critic_w_sup = 1.0
+critic_w_use = 0.5

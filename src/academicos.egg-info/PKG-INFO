@@ -1,0 +1,30 @@
+Metadata-Version: 2.4
+Name: academicos
+Version: 0.1.0
+Summary: AcademicOS - CBSE/NCERT Academic Brain: evidence-grounded knowledge graph, retrieval and reasoning substrate
+Requires-Python: >=3.12
+Requires-Dist: pydantic>=2.7
+Requires-Dist: pymupdf>=1.24
+Requires-Dist: requests>=2.31
+Provides-Extra: parse-vlm
+Requires-Dist: torch>=2.5; extra == "parse-vlm"
+Requires-Dist: transformers>=4.44; extra == "parse-vlm"
+Requires-Dist: Pillow; extra == "parse-vlm"
+Requires-Dist: einops; extra == "parse-vlm"
+Requires-Dist: easydict; extra == "parse-vlm"
+Requires-Dist: addict; extra == "parse-vlm"
+Requires-Dist: matplotlib; extra == "parse-vlm"
+Provides-Extra: ocr
+Requires-Dist: pytesseract; extra == "ocr"
+Requires-Dist: Pillow; extra == "ocr"
+Provides-Extra: retrieval
+Requires-Dist: numpy>=1.26; extra == "retrieval"
+Requires-Dist: sentence-transformers>=3.0; extra == "retrieval"
+Provides-Extra: api
+Requires-Dist: fastapi>=0.111; extra == "api"
+Requires-Dist: uvicorn>=0.30; extra == "api"
+Requires-Dist: reportlab>=4.0; extra == "api"
+Provides-Extra: gcs
+Requires-Dist: google-cloud-storage>=2.16; extra == "gcs"
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
