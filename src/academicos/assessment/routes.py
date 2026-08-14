@@ -148,7 +148,14 @@ def _int_grade_to_roman(grade: int) -> str:
 
 @router.post("/questions/optimize", response_model=QuestionOptimizationResult)
 def optimize_questions(request: QuestionOptimizationRequest) -> QuestionOptimizationResult:
-    return selection.optimize(request.candidates, request.blueprint)
+    cfg, _ = _require()
+    fallback: list[QuestionSchema] = []
+    if request.candidates:
+        subject = request.candidates[0].subject
+        grade_roman = _int_grade_to_roman(request.candidates[0].grade)
+        pool = get_pool(cfg, subject=subject, grade=grade_roman)
+        fallback = [to_question_schema(c) for c in pool.filter(subject=subject, grade=grade_roman)]
+    return selection.optimize(request.candidates, request.blueprint, fallback_candidates=fallback)
 
 
 # ---- Papers ----
