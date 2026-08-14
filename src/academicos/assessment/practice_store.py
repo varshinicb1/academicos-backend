@@ -1,11 +1,16 @@
-"""PracticeStore: SQLite-backed persistence for generated practice sets.
+"""PracticeStore: persistence for generated practice sets.
 
 Same class of bug as PaperStore/GradedStore: `/practice/generate` used to
 stash the PracticeSet only in the process-memory `_practice` dict, keyed by
 its id. A student can easily spend more than Render's ~15-minute idle window
 working through a practice set before calling `/practice/submit` with that
-id -- on a restart in between, the id vanishes and the student's completed
-work 404s ("practice set not found") instead of updating their mastery.
+id -- on a restart in between (which wipes local disk too, not just memory),
+the id vanishes and the student's completed work 404s ("practice set not
+found") instead of updating their mastery.
+
+Postgres-backed (via Supabase) when SUPABASE_KNOWLEDGE_URL/
+SUPABASE_KNOWLEDGE_ANON_KEY are set, local SQLite otherwise -- see
+knowledge.py's module docstring and supabase_kv.py.
 
 PracticeSet/PracticeItem are plain dataclasses (remediation.py); QuestionSchema
 nested inside PracticeItem is Pydantic.
@@ -19,6 +24,7 @@ from typing import Optional
 
 from .remediation import PracticeItem, PracticeSet
 from .schemas import QuestionSchema
+from .supabase_kv import SupabaseTable
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS practice_sets (
@@ -30,14 +36,15 @@ CREATE TABLE IF NOT EXISTS practice_sets (
 
 class PracticeStore:
     def __init__(self, db_path: Path):
+        self._remote = SupabaseTable("practice_sets")
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         self.conn.commit()
 
-    def save(self, pset: PracticeSet) -> None:
-        d = {
+    def _encode(self, pset: PracticeSet) -> dict:
+        return {
             "id": pset.id,
             "student_id": pset.student_id,
             "concept_ids": pset.concept_ids,
@@ -47,21 +54,20 @@ class PracticeStore:
             "warnings": pset.warnings,
             "created_at": pset.created_at,
         }
-        blob = json.dumps(d)
+
+    def save(self, pset: PracticeSet) -> None:
+        d = self._encode(pset)
+        if self._remote.enabled:
+            self._remote.upsert({"id": pset.id, "payload": d}, on_conflict="id")
+            return
         self.conn.execute(
             """INSERT INTO practice_sets (id, practice_json) VALUES (?, ?)
                ON CONFLICT(id) DO UPDATE SET practice_json=excluded.practice_json""",
-            (pset.id, blob),
+            (pset.id, json.dumps(d)),
         )
         self.conn.commit()
 
-    def get(self, set_id: str) -> Optional[PracticeSet]:
-        row = self.conn.execute(
-            "SELECT practice_json FROM practice_sets WHERE id=?", (set_id,)
-        ).fetchone()
-        if row is None:
-            return None
-        d = json.loads(row["practice_json"])
+    def _decode(self, d: dict) -> PracticeSet:
         items = [PracticeItem(question=QuestionSchema.model_validate(i["question"]),
                               concept_id=i["concept_id"])
                 for i in d["items"]]
@@ -70,3 +76,14 @@ class PracticeStore:
             items=items, answer_key=d["answer_key"], warnings=d["warnings"],
             created_at=d["created_at"],
         )
+
+    def get(self, set_id: str) -> Optional[PracticeSet]:
+        if self._remote.enabled:
+            rows = self._remote.select(id=set_id)
+            return self._decode(rows[0]["payload"]) if rows else None
+        row = self.conn.execute(
+            "SELECT practice_json FROM practice_sets WHERE id=?", (set_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return self._decode(json.loads(row["practice_json"]))
