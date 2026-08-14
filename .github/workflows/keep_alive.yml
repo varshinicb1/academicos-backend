@@ -1,0 +1,14 @@
+name: Keep backend warm
+on:
+  schedule:
+    # Render's free tier spins the container down after ~15 min idle; cold
+    # boot (pulling the image, loading opencv/pymupdf) takes 30-60s. Pinging
+    # every 10 min keeps it warm so real users never eat that cold start.
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend
+        run: curl -sS -o /dev/null -w "status=%{http_code} time=%{time_total}s\n" --max-time 90 https://academicos-backend.onrender.com/docs
