@@ -1,5 +1,4 @@
-"""ScanSessionStore: SQLite-backed persistence for in-progress mobile scan
-sessions.
+"""ScanSessionStore: persistence for in-progress mobile scan sessions.
 
 Same class of bug as PaperStore/GradedStore/PracticeStore: a scan session
 (booklet photos captured -> OCR'd -> AI-scored -> teacher swipe-reviews each
@@ -7,6 +6,18 @@ answer -> finalize) is a multi-step, multi-minute flow that easily outlasts
 Render's ~15-minute idle window between steps. Losing `_sessions` mid-review
 means a teacher who has already approved half a booklet's answers loses all
 of it and has to re-scan from page one.
+
+Postgres-backed (via Supabase) when SUPABASE_KNOWLEDGE_URL/
+SUPABASE_KNOWLEDGE_ANON_KEY are set, local SQLite otherwise -- see
+knowledge.py's module docstring and supabase_kv.py. This closes the session
+*state* half of the durability gap; the *photos themselves* are a separate
+problem solved in mobile_scan.py via SupabaseStorage -- CapturedPage's
+raw_path/processed_path stay local (mobile_scan.py still needs real files on
+disk for the crop/OCR pipeline within one request), but each page also
+carries a raw_storage_key/processed_storage_key pointing at the durable copy
+in Supabase Storage, uploaded right after processing. Same idea for the
+raw/corrected PDFs. A restart loses the local files; the storage keys are
+what mobile_routes.py's serving endpoints fall back to.
 
 ScanSession/CapturedPage/ReviewItem are plain dataclasses (mobile_scan.py).
 Path and datetime fields aren't JSON-native, so they're converted explicitly
@@ -21,6 +32,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from .supabase_kv import SupabaseTable
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS scan_sessions (
   id           TEXT PRIMARY KEY,
@@ -34,6 +47,7 @@ def _page_to_dict(p) -> dict:
         "page_no": p.page_no, "raw_path": str(p.raw_path),
         "processed_path": str(p.processed_path), "cropped": p.cropped,
         "ocr_text": p.ocr_text, "warnings": p.warnings,
+        "raw_storage_key": p.raw_storage_key, "processed_storage_key": p.processed_storage_key,
     }
 
 
@@ -51,14 +65,15 @@ def _item_to_dict(i) -> dict:
 
 class ScanSessionStore:
     def __init__(self, db_path: Path):
+        self._remote = SupabaseTable("scan_sessions")
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         self.conn.commit()
 
-    def save(self, session) -> None:
-        d = {
+    def _encode(self, session) -> dict:
+        return {
             "id": session.id, "assessment_id": session.assessment_id,
             "student_id": session.student_id, "student_name": session.student_name,
             "subject": session.subject, "grade": session.grade,
@@ -67,7 +82,16 @@ class ScanSessionStore:
             "status": session.status, "created_at": session.created_at.isoformat(),
             "raw_pdf_path": str(session.raw_pdf_path) if session.raw_pdf_path else None,
             "corrected_pdf_path": str(session.corrected_pdf_path) if session.corrected_pdf_path else None,
+            "raw_pdf_storage_key": session.raw_pdf_storage_key,
+            "corrected_pdf_storage_key": session.corrected_pdf_storage_key,
         }
+
+    def save(self, session) -> None:
+        d = self._encode(session)
+        if self._remote.enabled:
+            self._remote.upsert({"id": session.id, "assessment_id": session.assessment_id,
+                                 "payload": d}, on_conflict="id")
+            return
         self.conn.execute(
             """INSERT INTO scan_sessions (id, session_json) VALUES (?, ?)
                ON CONFLICT(id) DO UPDATE SET session_json=excluded.session_json""",
@@ -75,22 +99,19 @@ class ScanSessionStore:
         )
         self.conn.commit()
 
-    def get(self, session_id: str):
+    def _decode(self, d: dict):
         from .mobile_scan import CapturedPage, ReviewItem, ScanSession  # avoid import cycle
 
-        row = self.conn.execute(
-            "SELECT session_json FROM scan_sessions WHERE id=?", (session_id,)
-        ).fetchone()
-        if row is None:
-            return None
-        d = json.loads(row["session_json"])
         return ScanSession(
             id=d["id"], assessment_id=d["assessment_id"], student_id=d["student_id"],
             student_name=d["student_name"], subject=d["subject"], grade=d["grade"],
-            pages=[CapturedPage(page_no=p["page_no"], raw_path=Path(p["raw_path"]),
-                                processed_path=Path(p["processed_path"]), cropped=p["cropped"],
-                                ocr_text=p["ocr_text"], warnings=p["warnings"])
-                  for p in d["pages"]],
+            pages=[CapturedPage(
+                page_no=p["page_no"], raw_path=Path(p["raw_path"]),
+                processed_path=Path(p["processed_path"]), cropped=p["cropped"],
+                ocr_text=p["ocr_text"], warnings=p["warnings"],
+                raw_storage_key=p.get("raw_storage_key", ""),
+                processed_storage_key=p.get("processed_storage_key", ""),
+            ) for p in d["pages"]],
             review=[ReviewItem(
                 question_id=i["question_id"], display_number=i["display_number"], stem=i["stem"],
                 max_marks=i["max_marks"], student_answer=i["student_answer"],
@@ -103,4 +124,15 @@ class ScanSessionStore:
             status=d["status"], created_at=datetime.fromisoformat(d["created_at"]),
             raw_pdf_path=Path(d["raw_pdf_path"]) if d["raw_pdf_path"] else None,
             corrected_pdf_path=Path(d["corrected_pdf_path"]) if d["corrected_pdf_path"] else None,
+            raw_pdf_storage_key=d.get("raw_pdf_storage_key", ""),
+            corrected_pdf_storage_key=d.get("corrected_pdf_storage_key", ""),
         )
+
+    def get(self, session_id: str):
+        if self._remote.enabled:
+            rows = self._remote.select(id=session_id)
+            return self._decode(rows[0]["payload"]) if rows else None
+        row = self.conn.execute(
+            "SELECT session_json FROM scan_sessions WHERE id=?", (session_id,)
+        ).fetchone()
+        return self._decode(json.loads(row["session_json"])) if row else None

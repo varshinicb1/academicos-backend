@@ -65,3 +65,40 @@ class SupabaseTable:
         r = requests.delete(f"{self._url}/rest/v1/{self.table}", params=params,
                             headers=self._headers(), timeout=10)
         r.raise_for_status()
+
+
+class SupabaseStorage:
+    """Thin wrapper over Supabase Storage's REST API for one bucket -- used
+    for scan-session photos/PDFs, which are too large/binary for a JSONB
+    column. Same enable/disable gating and env vars as SupabaseTable (one
+    Supabase project, Postgres for structured data, Storage for blobs).
+    Private bucket: the anon key is a server-side-only credential here (see
+    knowledge.py's module docstring), never shipped to the Flutter client --
+    objects are always proxied through our own FastAPI endpoints."""
+
+    def __init__(self, bucket: str):
+        self.bucket = bucket
+        self._url = os.environ.get("SUPABASE_KNOWLEDGE_URL", "").strip().rstrip("/") or None
+        self._key = os.environ.get("SUPABASE_KNOWLEDGE_ANON_KEY", "").strip() or None
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self._url and self._key)
+
+    def _headers(self) -> dict[str, str]:
+        return {"apikey": self._key, "Authorization": f"Bearer {self._key}"}
+
+    def upload(self, key: str, data: bytes, content_type: str) -> None:
+        r = requests.post(
+            f"{self._url}/storage/v1/object/{self.bucket}/{key}",
+            data=data, headers={**self._headers(), "Content-Type": content_type,
+                                "x-upsert": "true"},
+            timeout=30,
+        )
+        r.raise_for_status()
+
+    def download(self, key: str) -> bytes:
+        r = requests.get(f"{self._url}/storage/v1/object/{self.bucket}/{key}",
+                         headers=self._headers(), timeout=30)
+        r.raise_for_status()
+        return r.content

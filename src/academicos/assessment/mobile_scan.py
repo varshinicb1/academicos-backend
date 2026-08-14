@@ -9,11 +9,18 @@ verified independently:
                           question-number markers a student writes by hand
   * `llm_evaluate.py`   — Sarvam 105b scores one answer at a time
 
-Sessions are in-memory (`_sessions`), matching the existing `_papers`/
-`_graded` pattern elsewhere in this package: fine for a single-machine pilot,
-not yet durable across a backend restart — a captured-but-not-finalized
-session is lost if the server restarts, same known limitation as everything
-else keyed this way right now.
+Sessions are in-memory (`_sessions`) backed by `ScanSessionStore` (Postgres
+via Supabase when configured, local SQLite otherwise -- see that module's
+docstring), same durability story as the other stores.
+
+The captured photos and exported PDFs are a separate durability problem:
+`crop_to_document`/`ocr_page` need real files on local disk to do their
+work, so raw/processed images are still written to local scratch space
+during a request. What survives a restart is the *upload* to Supabase
+Storage right after processing (`_upload_page`/`_upload_pdf` below) -- each
+CapturedPage/ScanSession carries a storage key alongside its local Path, and
+mobile_routes.py's serving endpoints fall back to fetching from Storage
+when the local file is gone.
 """
 from __future__ import annotations
 
@@ -27,8 +34,10 @@ from typing import Any, Optional
 from . import imaging, llm_evaluate, scan, vision
 from .scan_session_store import ScanSessionStore
 from .schemas import GeneratedQuestionSchema, QuestionSchema
+from .supabase_kv import SupabaseStorage
 
 log = logging.getLogger(__name__)
+_storage = SupabaseStorage("scan-media")
 
 
 @dataclass
@@ -39,6 +48,8 @@ class CapturedPage:
     cropped: bool
     ocr_text: str
     warnings: list[str] = field(default_factory=list)
+    raw_storage_key: str = ""
+    processed_storage_key: str = ""
 
 
 @dataclass
@@ -82,6 +93,8 @@ class ScanSession:
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     raw_pdf_path: Optional[Path] = None
     corrected_pdf_path: Optional[Path] = None
+    raw_pdf_storage_key: str = ""
+    corrected_pdf_storage_key: str = ""
 
     @property
     def workdir(self) -> Path:
@@ -102,6 +115,35 @@ _store: Optional[ScanSessionStore] = None
 
 class ScanError(RuntimeError):
     pass
+
+
+def _upload(session_id: str, key: str, path: Path, content_type: str) -> str:
+    """Best-effort upload to Supabase Storage; returns the storage key on
+    success, "" on failure or when Storage isn't configured. Never raises --
+    a failed durability upload shouldn't sink a scan a teacher is mid-way
+    through, it just means that one artifact stays local-only."""
+    if not _storage.enabled:
+        return ""
+    full_key = f"{session_id}/{key}"
+    try:
+        _storage.upload(full_key, path.read_bytes(), content_type)
+        return full_key
+    except Exception as exc:
+        log.warning("Supabase Storage upload failed for %s: %s", full_key, exc)
+        return ""
+
+
+def fetch_storage_bytes(key: str) -> Optional[bytes]:
+    """Fetches an artifact from Supabase Storage by key; None if unavailable
+    (Storage not configured, or the object doesn't exist there either --
+    e.g. it was captured before this durability fix shipped)."""
+    if not key or not _storage.enabled:
+        return None
+    try:
+        return _storage.download(key)
+    except Exception as exc:
+        log.warning("Supabase Storage download failed for %s: %s", key, exc)
+        return None
 
 
 def configure_workdir(root: Path) -> None:
@@ -173,6 +215,11 @@ def add_page(session: ScanSession, image_bytes: bytes, *, language: str = "en-IN
 
     page = CapturedPage(page_no=page_no, raw_path=raw_path, processed_path=processed_path,
                         cropped=cropped, ocr_text=ocr_text, warnings=warnings)
+    page.raw_storage_key = _upload(session.id, f"raw/page_{page_no:03d}.jpg", raw_path, "image/jpeg")
+    page.processed_storage_key = (
+        _upload(session.id, f"processed/page_{page_no:03d}.jpg", processed_path, "image/jpeg")
+        if processed_path != raw_path else page.raw_storage_key
+    )
     session.pages.append(page)
     save_session(session)
     return page
@@ -269,6 +316,7 @@ def export_raw_booklet_pdf(session: ScanSession, output_dir: Path) -> Path:
     doc.save(str(out_path))
     doc.close()
     session.raw_pdf_path = out_path
+    session.raw_pdf_storage_key = _upload(session.id, "raw.pdf", out_path, "application/pdf")
     save_session(session)
     return out_path
 
@@ -363,5 +411,6 @@ def export_corrected_pdf(session: ScanSession, output_dir: Path, *,
 
     doc.build(story)
     session.corrected_pdf_path = out_path
+    session.corrected_pdf_storage_key = _upload(session.id, "corrected.pdf", out_path, "application/pdf")
     save_session(session)
     return out_path

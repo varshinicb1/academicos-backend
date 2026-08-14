@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import Field
 
 from . import mobile_scan
@@ -260,7 +260,10 @@ def finalize_scan_session(session_id: str) -> FinalizeResponse:
 def get_page_image(session_id: str, page_no: int):
     """Serves the processed (cropped/lit) photo of one captured page — lets the
     review UI show a teacher the actual handwriting an answer was read from,
-    instead of asking them to trust the transcription blind."""
+    instead of asking them to trust the transcription blind.
+
+    Local disk first (fast path, same-instance), Supabase Storage second
+    (survives a Render restart between capture and review)."""
     try:
         session = mobile_scan.get_session(session_id)
     except mobile_scan.ScanError as e:
@@ -269,9 +272,13 @@ def get_page_image(session_id: str, page_no: int):
     if page is None:
         raise HTTPException(404, f"no page {page_no} in this session")
     path = page.processed_path if page.processed_path.exists() else page.raw_path
-    if not path.exists():
-        raise HTTPException(404, "page image file not found on disk")
-    return FileResponse(str(path), media_type="image/jpeg")
+    if path.exists():
+        return FileResponse(str(path), media_type="image/jpeg")
+    data = mobile_scan.fetch_storage_bytes(page.processed_storage_key) \
+        or mobile_scan.fetch_storage_bytes(page.raw_storage_key)
+    if data is None:
+        raise HTTPException(404, "page image not found on disk or in storage")
+    return Response(content=data, media_type="image/jpeg")
 
 
 @router.get("/scan/sessions/{session_id}/raw-pdf")
@@ -280,10 +287,14 @@ def get_raw_pdf(session_id: str):
         session = mobile_scan.get_session(session_id)
     except mobile_scan.ScanError as e:
         raise HTTPException(404, str(e))
-    if session.raw_pdf_path is None or not session.raw_pdf_path.exists():
+    if session.raw_pdf_path is not None and session.raw_pdf_path.exists():
+        return FileResponse(str(session.raw_pdf_path), media_type="application/pdf",
+                            filename=session.raw_pdf_path.name)
+    data = mobile_scan.fetch_storage_bytes(session.raw_pdf_storage_key)
+    if data is None:
         raise HTTPException(404, "raw booklet PDF not generated yet — finalize the session first")
-    return FileResponse(str(session.raw_pdf_path), media_type="application/pdf",
-                        filename=session.raw_pdf_path.name)
+    return Response(content=data, media_type="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="{session_id}_raw.pdf"'})
 
 
 @router.get("/scan/sessions/{session_id}/corrected-pdf")
@@ -292,7 +303,11 @@ def get_corrected_pdf(session_id: str):
         session = mobile_scan.get_session(session_id)
     except mobile_scan.ScanError as e:
         raise HTTPException(404, str(e))
-    if session.corrected_pdf_path is None or not session.corrected_pdf_path.exists():
+    if session.corrected_pdf_path is not None and session.corrected_pdf_path.exists():
+        return FileResponse(str(session.corrected_pdf_path), media_type="application/pdf",
+                            filename=session.corrected_pdf_path.name)
+    data = mobile_scan.fetch_storage_bytes(session.corrected_pdf_storage_key)
+    if data is None:
         raise HTTPException(404, "corrected PDF not generated yet — finalize the session first")
-    return FileResponse(str(session.corrected_pdf_path), media_type="application/pdf",
-                        filename=session.corrected_pdf_path.name)
+    return Response(content=data, media_type="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="{session_id}_corrected.pdf"'})
