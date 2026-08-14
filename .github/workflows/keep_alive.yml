@@ -4,7 +4,7 @@ on:
     # Render's free tier spins the container down after ~15 min idle; cold
     # boot (pulling the image, loading opencv/pymupdf) takes 30-60s. Pinging
     # every 10 min keeps it warm so real users never eat that cold start.
-    - cron: "*/10 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch: {}
 jobs:
   ping:
