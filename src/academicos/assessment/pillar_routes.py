@@ -455,7 +455,7 @@ class EvaluateSheetResponse(Camel):
 
 @router.post("/evaluations/sheet", response_model=EvaluateSheetResponse)
 def evaluate_sheet(req: EvaluateSheetRequest) -> EvaluateSheetResponse:
-    _, knowledge, _ = _require()
+    cfg, knowledge, _ = _require()
     schemes = build_answer_key(req.questions, req.correct_options)
     graded: list[tuple[QuestionSchema, Evaluation]] = []
     for q in req.questions:
@@ -468,6 +468,11 @@ def evaluate_sheet(req: EvaluateSheetRequest) -> EvaluateSheetResponse:
 
     awarded = sum(e.awarded_marks for _, e in graded)
     maximum = sum(e.max_marks for _, e in graded)
+    from .audit_log import get_audit_log
+    get_audit_log(cfg.data_root).append(
+        "sheet_evaluated", assessment_id=req.assessment_id, student_id=req.student_id,
+        details={"totalAwarded": awarded, "totalMax": maximum, "questionCount": len(graded)},
+    )
     return EvaluateSheetResponse(
         assessment_id=req.assessment_id, student_id=req.student_id,
         total_awarded=awarded, total_max=maximum,
