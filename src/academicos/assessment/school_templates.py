@@ -87,6 +87,28 @@ class TemplateStore:
         return _row(row) if row else None
 
     def list_for_school(self, school_id: str) -> list[SchoolTemplate]:
+        """Empty here means "school has never saved a template" -- and this
+        is the list the AI Assessment Designer checks before it will
+        generate a paper at all (CreateAssessmentUseCase on the Flutter
+        side). A brand-new school got a hard failure on the very first
+        thing a teacher tries to do, with no path forward except finding
+        the Template Maker screen first. Auto-seeding + persisting a
+        default here means "day one, generate your first paper" just
+        works, on every platform that hits this store (Render web, the
+        desktop app's embedded backend, and any future client) -- the
+        Flutter offline build already got the equivalent fix locally;
+        this is the same fix at the one place all networked clients share.
+        """
+        existing = self._list_raw(school_id)
+        if existing:
+            return existing
+        default_template = SchoolTemplate(
+            id="new", school_id=school_id, name="Default CBSE Template", is_default=True,
+        )
+        self.save(default_template, default_sections(100))
+        return self._list_raw(school_id)
+
+    def _list_raw(self, school_id: str) -> list[SchoolTemplate]:
         if self._remote.enabled:
             rows = self._remote.select(school_id=school_id, order="is_default.desc")
             return [_remote_row(r)[0] for r in rows]
