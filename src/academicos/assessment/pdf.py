@@ -309,8 +309,18 @@ def _section_block(section: GeneratedSectionSchema, styles: _Styles,
     return story
 
 
-def _page_furniture(paper: GeneratedPaper, template: Optional[SchoolTemplate]):
-    """Footer drawn on every page: paper code left, page number centred."""
+def _page_furniture(paper: GeneratedPaper, template: Optional[SchoolTemplate],
+                    watermark_id: Optional[str] = None):
+    """Footer drawn on every page: paper code left, page number centred.
+
+    watermark_id (when provided) is a per-export identifier stamped in the
+    margin -- small and legible-but-unobtrusive, not a bold diagonal stamp
+    that would make a real exam paper harder to read. The point isn't to
+    deface the paper; it's that if a copy leaks, the specific export that
+    produced it is traceable via the audit log (see audit_log.py and the
+    /papers/{id}/export/{fmt} route), the same way a real print run is
+    traceable to a specific press job.
+    """
     code = paper.id.replace("paper_", "").upper()[:10]
     school = template.name if template and template.name else "AcademicOS"
 
@@ -321,13 +331,19 @@ def _page_furniture(paper: GeneratedPaper, template: Optional[SchoolTemplate]):
         canvas.drawString(doc.leftMargin, 12 * mm, f"{school}  ·  Q.P. Code {code}")
         canvas.drawCentredString(A4[0] / 2.0, 12 * mm, f"Page {doc.page}")
         canvas.drawRightString(A4[0] - doc.rightMargin, 12 * mm, "P.T.O.")
+        if watermark_id:
+            canvas.setFont(_BODY_FONT, 6)
+            canvas.setFillColor(colors.HexColor("#AAAAAA"))
+            canvas.drawCentredString(A4[0] / 2.0, 7 * mm,
+                                     f"Confidential — traceable copy {watermark_id}")
         canvas.restoreState()
 
     return draw
 
 
 def export_pdf(paper: GeneratedPaper, output_dir: Path,
-               template: Optional[SchoolTemplate] = None) -> Path:
+               template: Optional[SchoolTemplate] = None,
+               watermark_id: Optional[str] = None) -> Path:
     _register_unicode_font()
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / f"{paper.id}.pdf"
@@ -352,7 +368,7 @@ def export_pdf(paper: GeneratedPaper, output_dir: Path,
     for section in paper.sections:
         story.extend(_section_block(section, styles, content_width, gutter, marks_col))
 
-    footer = _page_furniture(paper, template)
+    footer = _page_furniture(paper, template, watermark_id=watermark_id)
     doc.build(story, onFirstPage=footer, onLaterPages=footer)
     return out_path
 
