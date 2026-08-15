@@ -16,6 +16,7 @@ from ..config import Config
 from ..integrations.composio_calendar import sync_to_google_calendar
 from . import pdf as pdf_export
 from . import selection
+from .audit_log import get_audit_log
 from .mapping import grade_to_int, to_question_schema
 from .paper import generate_paper as build_generated_paper
 from .pool import get_pool
@@ -210,8 +211,19 @@ def export_paper(paper_id: str, fmt: str) -> dict:
         from .school_templates import TemplateStore
         store = TemplateStore(cfg.data_root / "templates" / "templates.sqlite")
         template = store.default_for("school_1")
-    path = pdf_export.export_pdf(paper, out_dir, template=template)
-    return {"url": f"/api/v1/papers/{paper_id}/file"}
+    # Every export gets a unique, audit-logged watermark ID stamped into the
+    # footer -- if a printed/exported copy of an unreleased paper leaks, it's
+    # traceable to exactly which export request produced it, not just "the
+    # paper leaked" with no way to narrow down how. See pdf.py's
+    # _page_furniture docstring and docs/compliance.md's paper-release-
+    # locking checklist item.
+    watermark_id = f"exp_{uuid.uuid4().hex[:10]}"
+    path = pdf_export.export_pdf(paper, out_dir, template=template, watermark_id=watermark_id)
+    get_audit_log(cfg.data_root).append(
+        "paper_exported", assessment_id=paper.assessment_id,
+        details={"paperId": paper_id, "format": fmt, "watermarkId": watermark_id},
+    )
+    return {"url": f"/api/v1/papers/{paper_id}/file", "watermarkId": watermark_id}
 
 
 @router.get("/papers/{paper_id}/file")
