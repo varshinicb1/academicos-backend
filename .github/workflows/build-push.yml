@@ -1,6 +1,14 @@
 name: Build and push backend image
+
+# Auto-triggers on every push to main (AcademicOS's deploy-backend.yml
+# syncs and pushes here), not just manual workflow_dispatch -- the manual-
+# only trigger was the reason 5 days of real backend fixes never reached
+# production even though they were committed and pushed to AcademicOS.
 on:
+  push:
+    branches: [main]
   workflow_dispatch: {}
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,3 +24,18 @@ jobs:
           context: .
           push: true
           tags: varshinicb99/academicos-backend:v1
+
+      # academicos-backend is an image-backed Render service, not git-
+      # connected -- a new Docker Hub image alone doesn't redeploy it.
+      # No-ops (doesn't fail the build) until RENDER_API_KEY is set as a
+      # repo secret; RENDER_SERVICE_ID is already set.
+      - name: Trigger Render deploy
+        if: ${{ secrets.RENDER_API_KEY != '' }}
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+        run: |
+          curl -sf -X POST \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            -H "Content-Type: application/json" \
+            "https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys"
