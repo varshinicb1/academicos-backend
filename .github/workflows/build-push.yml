@@ -30,11 +30,14 @@ jobs:
       # No-ops (doesn't fail the build) until RENDER_API_KEY is set as a
       # repo secret; RENDER_SERVICE_ID is already set.
       - name: Trigger Render deploy
-        if: ${{ secrets.RENDER_API_KEY != '' }}
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
         run: |
+          if [ -z "$RENDER_API_KEY" ]; then
+            echo "RENDER_API_KEY not set -- skipping auto-redeploy. Run 'render deploys create $RENDER_SERVICE_ID --confirm' manually."
+            exit 0
+          fi
           curl -sf -X POST \
             -H "Authorization: Bearer $RENDER_API_KEY" \
             -H "Content-Type: application/json" \
