@@ -100,7 +100,14 @@ class KnowledgeStore:
         }
 
     def _path(self, student_id: str) -> Path:
-        safe = "".join(c for c in student_id if c.isalnum() or c in "-_")
+        # Injective sanitization: disallowed chars are percent-encoded rather
+        # than dropped, so distinct student ids ("stu.dent" vs "student" vs
+        # "stu%2Edent") never collide on the same file. Literal '%' is itself
+        # encoded ('%25'), keeping the mapping one-to-one. Clean alnum/-/_ ids
+        # are unchanged, so existing files for those students keep working.
+        safe = "".join(
+            c if (c.isalnum() or c in "-_") else f"%{ord(c):02x}"
+            for c in student_id)
         return self.root / f"{safe}.json"
 
     def _read_raw(self, student_id: str) -> Optional[dict[str, Any]]:
@@ -129,6 +136,7 @@ class KnowledgeStore:
             state.history = [Interaction(**i) for i in cs.get("history", [])]
             model.concepts[cid] = state
         model.created_at = raw.get("created_at", model.created_at)
+        model.updated_at = raw.get("updated_at", model.updated_at)
         return model
 
     def save(self, model: LearnerModel) -> None:
@@ -161,10 +169,11 @@ class KnowledgeStore:
         model = self.load(student_id)
         now = datetime.now(timezone.utc).isoformat()
         for question, ev in results:
-            if ev.verdict == "blank":
-                outcome = 0.0
-            else:
-                outcome = (ev.awarded_marks / ev.max_marks) if ev.max_marks else 0.0
+            # The teacher's award is the ground truth, whatever the scanner
+            # classified the verdict as: a teacher correcting a "blank" to
+            # full marks must not have that correction dropped to 0.0. A
+            # genuinely blank (awarded 0) still lands at 0.0.
+            outcome = (ev.awarded_marks / ev.max_marks) if ev.max_marks else 0.0
             concepts = question.chapter_ids or ["unmapped"]
             for cid in concepts:
                 model.observe(Interaction(

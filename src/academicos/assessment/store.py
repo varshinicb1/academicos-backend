@@ -73,6 +73,8 @@ class AssessmentStore:
                  title=excluded.title, subject=excluded.subject, grade=excluded.grade,
                  chapter_ids=excluded.chapter_ids, blueprint=excluded.blueprint,
                  status=excluded.status, updated_at=excluded.updated_at,
+                 school_id=excluded.school_id, teacher_id=excluded.teacher_id,
+                 created_at=excluded.created_at,
                  scheduled_at=excluded.scheduled_at, completed_at=excluded.completed_at,
                  template_id=excluded.template_id, metadata=excluded.metadata,
                  selected_question_ids=excluded.selected_question_ids,

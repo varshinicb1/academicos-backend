@@ -40,7 +40,7 @@ CREATE INDEX IF NOT EXISTS idx_sources_type ON sources(doc_type);
 class SourceRegistry:
     def __init__(self, db_path: Path):
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(db_path))
+        self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         self.conn.commit()
@@ -57,8 +57,6 @@ class SourceRegistry:
             "meta": json.dumps(meta) if meta else None,
         }
         for k, v in vals.items():
-            if k in (c.split()[0] for c in SCHEMA.splitlines() if c.strip().upper().startswith(("SOURCE_ID", "FILE_KEY"))):
-                continue
             if isinstance(v, dict):
                 v = json.dumps(v)
             values[k] = v

@@ -34,6 +34,7 @@ from .confidence_model import ConfidenceModel, ConfidenceParams
 from .forgetting import ForgettingModel, ForgettingParams
 from .habit_model import HabitModel
 from .learner_model import Interaction, LearnerModel
+from .mastery import KnowledgeMastery
 from .motivation_model import MotivationModel
 from .study_planner import StudyPlanner
 
@@ -298,14 +299,30 @@ class DailyLoop:
         candidates = self._apply_study_order(candidates, now_iso)
 
         # --- 4) capacity trimming -----------------------------------------
-        blocks = self._trim(candidates)
+        blocks, trimmed = self._trim(candidates)
+        if trimmed:
+            scheduled_total = sum(1 for b in candidates if b.suggested_minutes > 0)
+            blocked.append(p.cap_reason.format(
+                kept=len(blocks), total=scheduled_total,
+                capacity=max(0, self.capacity_minutes)))
 
         # --- 5) calibration advice ------------------------------------------
+        # Mastery is *computed* here, not read off ``ConceptState.mastery``.
+        # That field is a cache that only ``forgetting.demo()`` ever fills in:
+        # the real ingestion path (``LearnerModel.observe`` -> ``record``)
+        # updates attempts/correct/last_seen and leaves ``mastery`` at its 0.0
+        # default forever. Gating on the raw field made this advice
+        # unreachable for every real learner (a 10/10-correct concept scores
+        # a real 0.66 mastery but carries a stored 0.0). Retention and
+        # confidence on either side of this loop are already computed fresh
+        # per concept; mastery now matches them.
+        km = KnowledgeMastery()
         for cid in sorted(learner.concepts):
             st = learner.concepts[cid]
             cr = confidence.estimate(learner, cid, now=now_iso)
+            mastery_now = km.score(learner, cid, now=now_iso).mastery
             if (cr.category == "underconfident" and st.attempts > 0
-                    and st.mastery >= p.confidence_gate):
+                    and mastery_now >= p.confidence_gate):
                 advice.append(
                     f"{cid}: you know this — do one quick win then move on.")
             if (cr.category == "overconfident" and cr.confident
@@ -468,7 +485,13 @@ class DailyLoop:
             best = learn_ids[0]
         return best
 
-    def _trim(self, candidates: list[SessionBlock]) -> list[SessionBlock]:
+    def _trim(self, candidates: list[SessionBlock]) -> tuple[list[SessionBlock], int]:
+        """Fit blocks to the capacity budget; return (kept, dropped).
+
+        ``dropped > 0`` means the day was trimmed, which the caller surfaces
+        as a "Session-capacity enforced" blocked reason (the reason template
+        in ``params.cap_reason``).
+        """
         p = self.params
         cap = max(0, self.capacity_minutes)
         scored = sorted(
@@ -487,7 +510,7 @@ class DailyLoop:
             else:
                 dropped += 1
         kept.sort(key=lambda b: b.priority, reverse=True)
-        return kept
+        return kept, dropped
 
     # ------------------------------------------------------------------ #
     # signals

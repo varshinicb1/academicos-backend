@@ -172,9 +172,11 @@ def get_scan_review(session_id: str) -> ProcessSessionResponse:
 
 
 class ReviewDecisionRequest(Camel):
-    action: str          # "approve" | "edit"
+    action: str          # "approve" | "edit" | "regrade"
     marks: int | None = None
     comment: str = ""
+    reason: str = ""     # required for regrades / edits that change an existing grade
+    reviewer_id: str = ""  # required for regrades / edits that change an existing grade
 
 
 @router.post("/scan/sessions/{session_id}/review/{question_id}", response_model=ReviewItemResponse)
@@ -182,10 +184,18 @@ def submit_review_decision(session_id: str, question_id: str,
                            req: ReviewDecisionRequest) -> ReviewItemResponse:
     try:
         session = mobile_scan.get_session(session_id)
-        item = mobile_scan.review_decision(session, question_id, req.action,
-                                           marks=req.marks, comment=req.comment)
     except mobile_scan.ScanError as e:
         raise HTTPException(404, str(e))
+    cfg, _ = assessment_routes._require()
+    try:
+        item = mobile_scan.review_decision(
+            session, question_id, req.action,
+            marks=req.marks, comment=req.comment,
+            reason=req.reason, reviewer_id=req.reviewer_id,
+            data_root=cfg.data_root,
+        )
+    except mobile_scan.ScanError as e:
+        raise HTTPException(400, str(e))
     return _item_response(session_id, item)
 
 

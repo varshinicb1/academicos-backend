@@ -11,6 +11,8 @@ dependencies = [
     "pydantic>=2.7",
     "pymupdf>=1.24",
     "requests>=2.31",
+    "numpy>=1.26",  # package-level import in assessment/imaging.py (loaded by the API app)
+    "spacy>=3.7",   # package-level import in extract/local_ie.py (openie/concept-profile)
 ]
 
 [project.optional-dependencies]
@@ -20,7 +22,7 @@ retrieval = ["numpy>=1.26", "sentence-transformers>=3.0"]
 api = ["fastapi>=0.111", "uvicorn>=0.30", "reportlab>=4.0", "python-multipart>=0.0.9"]
 mobile-scan = ["opencv-python-headless>=4.9", "numpy>=1.26", "Pillow"]
 gcs = ["google-cloud-storage>=2.16"]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "httpx2>=2.0"]  # httpx2 required by starlette.testclient
 
 [tool.setuptools.packages.find]
 where = ["src"]

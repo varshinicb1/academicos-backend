@@ -32,6 +32,9 @@ import math
 from dataclasses import dataclass, field
 
 from .learner_model import ConceptState, LearnerModel
+from .mastery import KnowledgeMastery
+
+_KM = KnowledgeMastery()
 
 _NEUTRAL_MOMENTUM = 0.5
 
@@ -149,7 +152,11 @@ class CuriosityEngine:
 
             state = model.concepts.get(cid)
             novel = state is None
-            if state is not None and state.mastery >= self.p.mastery_threshold:
+            # Mastery is computed at use, not read off ``state.mastery``: that
+            # cache is never populated on real learners (see learner_model.py's
+            # docstring on the record() path), so gating on it never skipped a
+            # mastered concept.
+            if state is not None and _KM.score(model, cid, now=now).mastery >= self.p.mastery_threshold:
                 continue  # already mastered -> do not re-suggest
 
             n_term = self.p.w_novelty * (1.0 if novel else 0.0)

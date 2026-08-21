@@ -55,6 +55,8 @@ class HybridRetriever:
             chunk_by_id.setdefault(c.id, c)
 
         boosted = boost_keywords or _auto_keywords(query)
+        bm25_set = set(bm25_ids)
+        dense_set = set(dense_ids)
         results: list[RetrievalHit] = []
         for cid, score in sorted(fused.items(), key=lambda x: x[1], reverse=True):
             chunk = chunk_by_id.get(cid)
@@ -65,7 +67,12 @@ class HybridRetriever:
             for kw in boosted:
                 if kw in low_text:
                     s += 0.15
-            results.append(RetrievalHit(chunk=chunk, score=s, sources=["bm25", "dense"]))
+            sources = []
+            if cid in bm25_set:
+                sources.append("bm25")
+            if cid in dense_set:
+                sources.append("dense")
+            results.append(RetrievalHit(chunk=chunk, score=s, sources=sources))
 
         if self.graph and results:
             self._graph_boost(results)

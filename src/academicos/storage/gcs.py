@@ -43,9 +43,9 @@ class GcsStore(ObjectStore):
     def keys(self, prefix: str = "") -> list[str]:
         out = []
         full = f"{self.prefix}/{prefix}" if prefix else self.prefix
+        strip = len(self.prefix) + 1 if self.prefix else 0
         for blob in self.client.list_blobs(self.bucket, prefix=full):
-            name = blob.name[len(self.prefix) + 1:]
-            out.append(name)
+            out.append(blob.name[strip:])
         return out
 
     def delete(self, key: str) -> None:

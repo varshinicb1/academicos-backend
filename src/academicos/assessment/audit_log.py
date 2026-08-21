@@ -79,6 +79,14 @@ class AuditLog:
             (assessment_id,)).fetchall()
         return [_row_to_dict(r) for r in rows]
 
+    def for_action(self, action: str) -> list[dict[str, Any]]:
+        if self._remote.enabled:
+            return self._remote.select(action=action, order="timestamp.desc")
+        rows = self.conn.execute(
+            "SELECT * FROM audit_log WHERE action=? ORDER BY timestamp DESC",
+            (action,)).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)

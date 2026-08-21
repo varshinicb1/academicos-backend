@@ -68,7 +68,7 @@ class GraphBuilder:
         return pid
 
     def build_triples(self, document_id: str, triples: list[tuple[str, str, str]],
-                      page: int = 0) -> tuple[int, int]:
+                      page: int = 1) -> tuple[int, int]:
         """OpenIE triples -> Concept nodes + RELATED_TO edges (HippoRAG-style)."""
         from ..models.common import Confidence, Provenance, SourceSpan
         from ..models.enums import ExtractionMethod
@@ -91,9 +91,10 @@ class GraphBuilder:
                         attributes={"aliases": [ent]} if not existing else None,
                         provenance=prov,
                     ))
-                    entity_ids[ent] = eid
+                    entity_ids[eid] = eid
                     node_count += 1
-            s, t = entity_ids[subj], entity_ids[obj]
+            s = entity_ids[node_id(NodeType.CONCEPT, _entity_part(subj))]
+            t = entity_ids[node_id(NodeType.CONCEPT, _entity_part(obj))]
             if s == t:
                 continue
             old = self.store.get_edge(edge_id(EdgeType.RELATED_TO, s, t))

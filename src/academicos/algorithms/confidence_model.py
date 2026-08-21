@@ -126,10 +126,11 @@ class ConfidenceModel:
         half = self.p.recency_half_life_days * 86400.0
         w_sum = c_sum = 0.0
         for i in answers:
-            w = math.exp(-(t_now - _ts(i.ts)) / half)
+            age = max(0.0, t_now - _ts(i.ts))
+            w = math.exp(-age / half)
             w_sum += w
             c_sum += w * i.outcome
-        accuracy = (c_sum / w_sum) if w_sum > 0 else 0.0
+        accuracy = max(0.0, min(1.0, (c_sum / w_sum) if w_sum > 0 else 0.0))
 
         # affect: mean valence over all tagged history
         vals = [_valence(i.affect) for i in state.history]

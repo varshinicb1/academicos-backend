@@ -11,6 +11,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
+from typing import get_args
 
 from ..config import Config
 from ..integrations.composio_calendar import sync_to_google_calendar
@@ -22,6 +23,7 @@ from .paper import generate_paper as build_generated_paper
 from .pool import get_pool
 from .schemas import (
     Assessment,
+    AssessmentStatus,
     Blueprint,
     BlueprintRequest,
     CreateAssessmentRequest,
@@ -48,6 +50,32 @@ _store: Optional[AssessmentStore] = None
 # confirmed live as the "reopening a previously generated paper isn't wired
 # up" bug a teacher hit, which was actually about persistence, not routing.
 _papers: Optional[PaperStore] = None
+
+# The assessment lifecycle statuses in which the paper is still being authored
+# and question selection may be re-run. Once an assessment passes principal
+# approval (schema's `principalApproved`, set via PATCH /status) it is locked:
+# regenerating the paper or PUTting a changed assessment (a question swap)
+# would quietly alter a finalized paper, which is exactly the hard edit-lock
+# docs/compliance.md calls for. Statuses after approval (printed, conducted,
+# scanning, ... archived) are at least as locked.
+_EDITABLE_STATUSES = frozenset({
+    "draft", "blueprintReady", "questionsSelected", "questionOptimized",
+    "paperGenerated", "underReview",
+})
+# Every status the schema's AssessmentStatus Literal allows. PATCH /status must
+# be validated against this set: accepting arbitrary strings corrupts the
+# lifecycle and bricks the assessment (editable checks, evaluation, reports all
+# branch on these exact values).
+_KNOWN_STATUSES = frozenset(get_args(AssessmentStatus))
+
+
+def _require_editable(assessment: Assessment) -> None:
+    if assessment.status not in _EDITABLE_STATUSES:
+        raise HTTPException(
+            409,
+            f"assessment {assessment.id} is {assessment.status} — the paper is locked; "
+            "question selection and paper content cannot be changed after principal approval",
+        )
 
 
 def init(config: Config) -> None:
@@ -164,7 +192,24 @@ def optimize_questions(request: QuestionOptimizationRequest) -> QuestionOptimiza
 @router.post("/papers/generate", response_model=GeneratedPaper)
 def generate_paper_endpoint(request: PaperGenerationRequest) -> GeneratedPaper:
     cfg, store = _require()
+    # Found live in production data (2026-08-19): a real assessment whose
+    # target chapters didn't match anything in the corpus (search/optimize
+    # legitimately returned zero candidates) still ended up with
+    # status="paperGenerated", a real paper id, and every section showing
+    # 0 questions / 0 marks -- a signed-off blank exam paper with no error
+    # anywhere in the chain. Refuse outright rather than silently
+    # "succeeding" with nothing to hand a student: an empty paper is not a
+    # valid generated paper, it's the search step failing quietly.
+    if not request.selected_questions:
+        raise HTTPException(
+            400,
+            "cannot generate a paper with zero selected questions — the "
+            "chapters/filters matched no real questions in the corpus; "
+            "widen the chapter selection or check the subject/grade",
+        )
     assessment = store.get(request.assessment_id)
+    if assessment is not None:
+        _require_editable(assessment)
     title = assessment.title if assessment else "Assessment"
     subject = assessment.subject if assessment else (request.selected_questions[0].subject if request.selected_questions else "Science")
     grade = assessment.grade if assessment else (request.selected_questions[0].grade if request.selected_questions else 10)
@@ -292,6 +337,9 @@ def list_assessments(teacher_id: Optional[str] = None, school_id: Optional[str] 
 @router.put("/assessments/{assessment_id}", response_model=Assessment)
 def update_assessment(assessment_id: str, assessment: Assessment) -> Assessment:
     _, store = _require()
+    existing = store.get(assessment_id)
+    if existing is not None:
+        _require_editable(existing)
     assessment.id = assessment_id
     assessment.updated_at = _now()
     sync_to_google_calendar(assessment)  # best-effort; never blocks the save below
@@ -302,6 +350,8 @@ def update_assessment(assessment_id: str, assessment: Assessment) -> Assessment:
 @router.delete("/assessments/{assessment_id}")
 def delete_assessment(assessment_id: str) -> dict:
     _, store = _require()
+    if store.get(assessment_id) is None:
+        raise HTTPException(404, "assessment not found")
     store.delete(assessment_id)
     return {"ok": True}
 
@@ -312,7 +362,19 @@ def update_status(assessment_id: str, body: dict) -> Assessment:
     a = store.get(assessment_id)
     if a is None:
         raise HTTPException(404, "assessment not found")
-    a.status = body.get("status", a.status)
+    new_status = body.get("status", a.status)
+    if new_status not in _KNOWN_STATUSES:
+        raise HTTPException(
+            422,
+            f"unknown status {new_status!r}; expected one of {sorted(_KNOWN_STATUSES)}",
+        )
+    if a.status not in _EDITABLE_STATUSES and new_status in _EDITABLE_STATUSES:
+        raise HTTPException(
+            409,
+            f"assessment {assessment_id} is {a.status} — its status cannot move back to "
+            "an editable state after principal approval",
+        )
+    a.status = new_status
     a.updated_at = _now()
     store.save(a)
     return a

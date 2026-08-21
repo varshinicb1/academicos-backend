@@ -25,15 +25,12 @@ import os
 from datetime import timedelta
 from typing import Any
 
-import requests
-
 from ..assessment.schemas import Assessment
+from .composio_provider import ComposioProvider
 
 log = logging.getLogger(__name__)
 
-_API_BASE = "https://backend.composio.dev/api/v3"
 _CREATE_EVENT_TOOL = "GOOGLECALENDAR_CREATE_EVENT"
-_TIMEOUT_SEC = 15
 
 
 def _api_key() -> str | None:
@@ -91,23 +88,19 @@ def sync_to_google_calendar(assessment: Assessment) -> None:
     # together avoid the field entirely and were confirmed working directly
     # against the live API.
 
-    try:
-        r = requests.post(
-            f"{_API_BASE}/tools/execute/{_CREATE_EVENT_TOOL}",
-            headers={"x-api-key": key, "Content-Type": "application/json"},
-            json={"connected_account_id": account_id, "user_id": user_id, "arguments": arguments},
-            timeout=_TIMEOUT_SEC,
-        )
-        r.raise_for_status()
-        data = r.json()
-        # Confirmed live shape: {"data": {"response_data": {"id": "...", "htmlLink": "...", ...}}, "successful": true}
-        event_id = data.get("data", {}).get("response_data", {}).get("id")
-        if event_id:
-            assessment.metadata["googleCalendarEventId"] = event_id
-            log.info("synced assessment %s to Google Calendar as event %s",
-                     assessment.id, event_id)
-        else:
-            log.warning("Composio Calendar sync for %s returned no event id: %s",
-                       assessment.id, data)
-    except requests.RequestException as exc:
-        log.warning("Composio Calendar sync failed for %s: %s", assessment.id, exc)
+    result = ComposioProvider(api_key=key).execute(
+        _CREATE_EVENT_TOOL, arguments, user_id=user_id, connected_account_id=account_id,
+    )
+    # response_data shape confirmed live: {"id": "...", "htmlLink": "...", ...}.
+    # A non-dict response_data or a missing "id" is treated as "no event id",
+    # same as any other transport failure -- logged, never raised.
+    event_id = result.payload.get("id") if result.ok and isinstance(result.payload, dict) else None
+    if event_id:
+        assessment.metadata["googleCalendarEventId"] = event_id
+        log.info("synced assessment %s to Google Calendar as event %s",
+                 assessment.id, event_id)
+    elif result.ok:
+        log.warning("Composio Calendar sync for %s returned no event id: %s",
+                   assessment.id, result.payload)
+    else:
+        log.warning("Composio Calendar sync failed for %s: %s", assessment.id, result.error)

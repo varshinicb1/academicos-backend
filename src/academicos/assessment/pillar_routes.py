@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import FileResponse
 from pydantic import Field
 
@@ -174,7 +174,7 @@ _CATALOG_SCOPE: list[tuple[str, int]] = [
 
 
 @router.get("/catalog", response_model=CatalogResponse)
-def catalog() -> CatalogResponse:
+def catalog(response: Response) -> CatalogResponse:
     """Subjects/grades that actually have questions, with counts.
 
     Drives the question-bank and syllabus screens so they show what exists
@@ -196,11 +196,12 @@ def catalog() -> CatalogResponse:
         ))
         total += len(schemas)
     entries.sort(key=lambda e: (e.grade, -e.question_count))
+    response.headers["Cache-Control"] = "public, max-age=300"
     return CatalogResponse(entries=entries, total_questions=total)
 
 
 @router.get("/catalog/{subject}/{grade}/chapters", response_model=list[ChapterEntry])
-def catalog_chapters(subject: str, grade: int) -> list[ChapterEntry]:
+def catalog_chapters(subject: str, grade: int, response: Response) -> list[ChapterEntry]:
     """Chapter breakdown for one subject — the real syllabus view."""
     cfg, _, _ = _require()
     pool = get_pool(cfg, subject=subject, grade=_GRADE_ROMAN.get(grade, "X"))
@@ -241,6 +242,7 @@ def catalog_chapters(subject: str, grade: int) -> list[ChapterEntry]:
             chapter_id="unmapped", chapter_name="Unmapped",
             question_count=len(qs), marks_available=sorted({q.marks for q in qs}),
         ))
+    response.headers["Cache-Control"] = "public, max-age=300"
     return out
 
 
@@ -262,10 +264,11 @@ class SyllabusResponse(Camel):
 
 
 @router.get("/syllabus/{subject}/{grade}", response_model=SyllabusResponse)
-def get_syllabus(subject: str, grade: int) -> SyllabusResponse:
+def get_syllabus(subject: str, grade: int, response: Response) -> SyllabusResponse:
     doc = load_syllabus(subject, grade)
     if doc is None:
         raise HTTPException(404, f"no CBSE syllabus data for {subject} grade {grade} yet")
+    response.headers["Cache-Control"] = "public, max-age=300"
     return SyllabusResponse(
         subject=doc.subject, grade=doc.grade, total_marks=doc.total_marks, source=doc.source,
         units=[
@@ -300,13 +303,14 @@ class TimetableResponse(Camel):
 
 
 @router.get("/syllabus/{subject}/{grade}/timetable", response_model=TimetableResponse)
-def get_timetable(subject: str, grade: int, periods_per_week: int = 6, weeks: int = 20) -> TimetableResponse:
+def get_timetable(subject: str, grade: int, response: Response, periods_per_week: int = 6, weeks: int = 20) -> TimetableResponse:
     """AI-suggested pacing: the school's weekly periods allocated proportionally
     to each unit's official CBSE marks-weightage (see timetable.py's docstring
     for why marks-weightage, not hours, is the source signal)."""
     tt = generate_timetable(subject, grade, periods_per_week=periods_per_week, weeks=weeks)
     if tt is None:
         raise HTTPException(404, f"no CBSE syllabus data for {subject} grade {grade} yet")
+    response.headers["Cache-Control"] = "public, max-age=300"
     return TimetableResponse(
         subject=tt.subject, grade=tt.grade, periods_per_week=tt.periods_per_week, weeks=tt.weeks,
         allocations=[UnitAllocationResponse(unit_name=a.unit_name, marks=a.marks, suggested_periods=a.suggested_periods) for a in tt.allocations],

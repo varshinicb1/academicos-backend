@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
+from ..algorithms.mastery import KnowledgeMastery
 from ..models.enums import EdgeType, NodeType
 from .store import GraphStore
 
@@ -153,11 +154,21 @@ def prereq_plan(store: GraphStore, concept_label: str,
 def _mastery(learner, store: GraphStore, nid: str, label: str,
              ntype: NodeType) -> float | None:
     """Learner mastery for a graph node: exact node id, then label, then
-    (for LO nodes) the MAPS_TO concept's mastery."""
+    (for LO nodes) the MAPS_TO concept's mastery.
+
+    Mastery is *computed* here via ``KnowledgeMastery`` rather than read off
+    ``ConceptState.mastery``: that attribute is a cache only ``demo()`` ever
+    fills in, so on any real learner (``EventStore.replay`` -> ``observe`` ->
+    ``record``) it stays 0.0 forever. Reading it made every prereq look
+    unmastered (or, for hand-seeded states, silently trusted a stale value).
+    Same defect class as the daily_loop calibration-advice gate and the
+    RevisionScheduler importance weight; see docs/compliance.md.
+    """
+    _km = KnowledgeMastery()
     for key in (nid, label):
         cs = learner.concepts.get(key)
         if cs is not None:
-            return cs.mastery
+            return _km.score(learner, key).mastery
     if ntype == NodeType.LEARNING_OUTCOME:
         rows = store.conn.execute(
             """SELECT source FROM edges WHERE type=? AND target=?""",
@@ -168,7 +179,7 @@ def _mastery(learner, store: GraphStore, nid: str, label: str,
                     continue
                 cs = learner.concepts.get(key)
                 if cs is not None:
-                    return cs.mastery
+                    return _km.score(learner, key).mastery
     return None
 
 

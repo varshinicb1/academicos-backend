@@ -186,14 +186,15 @@ class MotivationModel:
             return self.p.prior, self.p.prior, self.p.prior, self.p.prior, self.p.prior
 
         half = self.p.recency_half_life_days * 86400.0
-        weights = [math.exp(-(t_now - _ts(e.ts)) / half) for e in evs]
+        weights = [math.exp(-max(0.0, t_now - _ts(e.ts)) / half) for e in evs]
         total_w = sum(weights)
 
         # -- competence: recency-weighted outcome accuracy, shrunk to prior -- #
         answers = [e for e in evs if e.kind == "answer" and e.outcome is not None]
         if answers:
-            aw = [math.exp(-(t_now - _ts(e.ts)) / half) for e in answers]
-            acc = sum(wx * e.outcome for wx, e in zip(aw, answers)) / sum(aw)
+            aw = [math.exp(-max(0.0, t_now - _ts(e.ts)) / half) for e in answers]
+            acc = max(0.0, min(1.0, sum(wx * e.outcome for wx, e in zip(aw, answers))
+                                 / sum(aw)))
             trust = min(1.0, len(answers) / max(1, self.p.min_recent))
             competence = trust * acc + (1.0 - trust) * self.p.prior
         else:
@@ -228,7 +229,10 @@ class MotivationModel:
                  + self.p.w_engagement * engagement
                  + self.p.w_persistence * persistence)
         score = max(0.0, min(1.0, score))
-        return competence, engagement, persistence, score, valence_mean
+        return (max(0.0, min(1.0, competence)),
+                max(0.0, min(1.0, engagement)),
+                persistence,
+                score, valence_mean)
 
     def _trend(self, events: list[Interaction], t_now: float) -> float:
         """Recent (last trend_window) score vs the preceding window's score."""

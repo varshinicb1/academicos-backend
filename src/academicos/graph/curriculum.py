@@ -410,10 +410,10 @@ class CurriculumEstimator:
                     total[key] = total.get(key, 0) + 1
 
         prereqs: dict[str, list[tuple[str, float, int]]] = {}
-        for (later, earlier), t in total.items():
+        for (earlier, later), t in total.items():
             if t < min_support:
                 continue
-            share = ahead.get((later, earlier), 0) / t
+            share = ahead.get((earlier, later), 0) / t
             if share >= min_share:
                 prereqs.setdefault(later, []).append((earlier, share, t))
         for lb in prereqs:

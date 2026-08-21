@@ -140,6 +140,27 @@ def evaluate_answer(question: QuestionSchema, scheme: AnswerSchemeSchema,
             ocr_warnings=ocr_flags, needs_review=True,
         )
 
+    if not scheme.marking_points:
+        # C4: a question whose answer_scheme has zero marking points has no key
+        # at all. The descriptive scorer used to fall through anyway and compute
+        # a confident-sounding verdict ("none of the expected marking points were
+        # found", ~0.9 confidence, needs_review=False) on the strength of an
+        # empty rubric -- an authoritative-looking score with nothing to score
+        # against. Not reachable through the shipped client today (it always
+        # sends full bank questions with answerScheme attached, and
+        # build_answer_key synthesizes a key otherwise), but a hand-imported
+        # keyless question must fail safe: low confidence, forced review, and a
+        # reason that names the missing scheme -- distinct from a genuine
+        # zero-credit answer, which a real key still scores confidently.
+        return Evaluation(
+            question_id=question.id, awarded_marks=0, max_marks=max_marks,
+            verdict="partialCredit", confidence=0.0,
+            reasoning=("This question has no marking scheme (no marking points) to "
+                       "score against — it cannot be graded automatically; a teacher "
+                       "must mark it manually."),
+            ocr_warnings=ocr_flags, needs_review=True,
+        )
+
     return _evaluate_descriptive(question, scheme, answer, max_marks, ocr_flags, concept_label)
 
 
@@ -147,9 +168,30 @@ def _evaluate_objective(question: QuestionSchema, scheme: AnswerSchemeSchema, an
                         max_marks: int, ocr_flags: list[str]) -> Evaluation:
     key = str(scheme.metadata.get("correctOption") or "").upper()
     chosen = ""
-    m = _OPTION_ANSWER.search(answer.upper())
-    if m:
-        chosen = m.group(1)
+    ambiguous = False
+    letters = [g.upper() for g in _OPTION_ANSWER.findall(answer.upper())]
+    distinct = list(dict.fromkeys(letters))  # first-seen order, de-duplicated
+    if distinct:
+        # Keep the first-mentioned letter: verified against real CBSE scan
+        # data (today's harness run), the genuine selection consistently
+        # comes first and contamination is trailing -- boilerplate assertion/
+        # reason phrasing ("...Reason(R)...Assertion(A)..."), stray OCR noise
+        # from a neighboring question's segment, or a garbled marker like
+        # "CD)". A "prefer the last letter" heuristic was tried and measured
+        # WORSE against that same real data (5/18 previously-correct real
+        # answers flipped to wrong), so first-match stays the pick.
+        #
+        # What was genuinely missing: when MULTIPLE DISTINCT letters appear,
+        # the pick is inherently uncertain, and the old code trusted it with
+        # full confidence regardless -- a student whose own reasoning named
+        # an earlier option before their real answer ("I first considered
+        # (A) but eliminated it, then chose (D)") got marked wrong at 93%
+        # confidence with no review flag. That is fixed below: ambiguous
+        # cases still use the same first-match best guess, but confidence is
+        # capped low enough to force review instead of a silent, confident
+        # wrong mark.
+        chosen = distinct[0]
+        ambiguous = len(distinct) > 1
 
     if not key:
         return Evaluation(
@@ -168,6 +210,11 @@ def _evaluate_objective(question: QuestionSchema, scheme: AnswerSchemeSchema, an
 
     correct = chosen == key
     confidence = 0.93 if not ocr_flags else 0.6
+    if ambiguous:
+        # Below REVIEW_THRESHOLD (0.75) so needs_review below picks it up
+        # through the same mechanism as every other uncertain read, rather
+        # than a second ad-hoc flag.
+        confidence = min(confidence, 0.5)
     point = scheme.marking_points[0] if scheme.marking_points else None
     outcomes = []
     if point:
@@ -176,12 +223,17 @@ def _evaluate_objective(question: QuestionSchema, scheme: AnswerSchemeSchema, an
             marks=max_marks if correct else 0,
             reason=f"student selected {chosen}; key is {key}", similarity=1.0 if correct else 0.0,
         ))
+    reasoning = (f"Selected option {chosen}, which matches the key."
+                 if correct else
+                 f"Selected option {chosen}; the correct option is {key}.")
+    if ambiguous:
+        reasoning += (f" Multiple option letters appeared in the transcribed answer "
+                      f"({', '.join(distinct)}) — {chosen} was taken as the final "
+                      f"selection, but this is uncertain and needs a human check.")
     return Evaluation(
         question_id=question.id, awarded_marks=max_marks if correct else 0, max_marks=max_marks,
         verdict="fullCredit" if correct else "noCredit", confidence=confidence,
-        reasoning=(f"Selected option {chosen}, which matches the key."
-                   if correct else
-                   f"Selected option {chosen}; the correct option is {key}."),
+        reasoning=reasoning,
         marking_points=outcomes,
         strengths=([point.description] if correct and point else []),
         gaps=([] if correct else [f"Correct option was {key}"]),

@@ -113,7 +113,7 @@ class EventStore:
         """Per-learner aggregate: counts by kind, correct answers, span."""
         row = self.conn.execute(
             """SELECT COUNT(*) n, SUM(kind='answer') answers,
-                      SUM(outcome >= 0.5) correct,
+                      SUM(kind='answer' AND outcome >= 0.5) correct,
                       MIN(ts) first_ts, MAX(ts) last_ts
                FROM learner_events WHERE learner_id=?""",
             (learner_id,)).fetchone()
@@ -139,7 +139,9 @@ class EventStore:
         and the full log is replayed deterministically.
         """
         m = model or LearnerModel(learner_id=learner_id)
-        for i in self.events(learner_id):
+        since = 0 if model is None else sum(
+            len(cs.history) for cs in m.concepts.values())
+        for i in self.events(learner_id, since_seq=since):
             m.observe(i)
         return m
 

@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import imaging, llm_evaluate, scan, vision
+from .audit_log import get_audit_log
 from .scan_session_store import ScanSessionStore
 from .schemas import GeneratedQuestionSchema, QuestionSchema
 from .supabase_kv import SupabaseStorage
@@ -66,7 +67,7 @@ class ReviewItem:
     marking_points: list[dict[str, Any]]
     ocr_warnings: list[str]
     needs_review: bool
-    status: str = "pending"          # pending | approved | edited
+    status: str = "pending"          # pending | approved | edited | failed
     teacher_marks: Optional[int] = None
     teacher_comment: str = ""
     # Captured page(s) this answer's text was read from — lets the review UI
@@ -110,6 +111,10 @@ class ScanSession:
 # the durable copy that survives a Render idle-restart (see module docstring).
 _sessions: dict[str, ScanSession] = {}
 _WORKDIR_ROOT = Path("academicos-data") / "scan-sessions"
+# Derived from the workdir configure_workdir() receives (app startup passes
+# `cfg.data_root / "scan-sessions"`), so audit logging has somewhere to land
+# even when callers don't pass a data_root explicitly.
+_DATA_ROOT: Optional[Path] = None
 _store: Optional[ScanSessionStore] = None
 
 
@@ -147,8 +152,9 @@ def fetch_storage_bytes(key: str) -> Optional[bytes]:
 
 
 def configure_workdir(root: Path) -> None:
-    global _WORKDIR_ROOT, _store
+    global _WORKDIR_ROOT, _store, _DATA_ROOT
     _WORKDIR_ROOT = root
+    _DATA_ROOT = root.parent
     _store = ScanSessionStore(root / "sessions.sqlite")
 
 
@@ -241,15 +247,57 @@ def process_session(session: ScanSession,
     segments = scan.segment_answers(page_ocrs)
     by_number = {s.question_no: s for s in segments}
 
+    # A page whose OCR call itself failed (network/provider error, see
+    # add_page's "OCR failed for this page" warning) is deliberately treated
+    # as blank so one bad page doesn't sink the session -- but a question
+    # with no segment on a session that had an OCR failure is NOT the same
+    # as a student genuinely leaving it blank, and must not be presented to
+    # a teacher with the same silent, high-confidence "blank, no review
+    # needed" verdict as a real blank. We can't always tell which failed
+    # page a missing answer would have been on, so any OCR failure anywhere
+    # in the session forces every unmatched question to route to review
+    # instead of guessing.
+    ocr_failed_pages = [p.page_no for p in session.pages
+                        if any("ocr failed" in w.lower() for w in p.warnings)]
+
     items: list[ReviewItem] = []
     for gq in ordered_questions:
         q = questions_by_id.get(gq.question_id)
         if q is None:
-            log.warning("question %s in paper not found in question bank; skipped", gq.question_id)
+            # C3: a scanned answer whose question id isn't in the session's
+            # question bank must NOT vanish silently -- the sheet used to just
+            # come back short, with no signal to the teacher about why. Emit a
+            # visible review item that says the question couldn't be matched,
+            # carrying any answer text the student did write under that number
+            # so the teacher can still see it. status="failed" marks it as
+            # unmatchable (not pending a normal approve/edit decision); the
+            # distinct verdict keeps it from reading as a genuine zero-credit.
+            seg = by_number.get(gq.display_number)
+            answer_text = seg.text if seg else ""
+            items.append(ReviewItem(
+                question_id=gq.question_id, display_number=gq.display_number,
+                stem=gq.stem, max_marks=gq.marks,
+                student_answer=answer_text, awarded_marks=0,
+                verdict="noMatch", confidence=0.0,
+                reasoning=("This question could not be matched to the session's "
+                           "question bank — there is no marking scheme to score it "
+                           "against; verify the paper and question bank manually."),
+                marking_points=[],
+                ocr_warnings=([] if seg else ["no answer found under this question number"]),
+                needs_review=True, status="failed",
+                page_numbers=list(seg.page_numbers) if seg else [],
+            ))
             continue
         seg = by_number.get(gq.display_number)
         answer_text = seg.text if seg else ""
         seg_warnings = seg.warnings if seg else (["no answer found under this question number"])
+        force_review = False
+        if seg is None and ocr_failed_pages:
+            seg_warnings = seg_warnings + [
+                f"OCR failed on page(s) {ocr_failed_pages} in this session -- "
+                "this 'blank' may be an OCR outage, not a genuinely blank answer; verify manually"
+            ]
+            force_review = True
 
         ev = llm_evaluate.evaluate_answer_llm(q, q.answer_scheme, answer_text)
         items.append(ReviewItem(
@@ -261,7 +309,7 @@ def process_session(session: ScanSession,
                              "awarded": m.awarded, "marks": m.marks, "reason": m.reason}
                             for m in ev.marking_points],
             ocr_warnings=list(dict.fromkeys(ev.ocr_warnings + seg_warnings)),
-            needs_review=ev.needs_review,
+            needs_review=ev.needs_review or force_review,
             page_numbers=list(seg.page_numbers) if seg else [],
         ))
     items.sort(key=lambda i: i.display_number)
@@ -272,21 +320,89 @@ def process_session(session: ScanSession,
 
 
 def review_decision(session: ScanSession, question_id: str, action: str, *,
-                    marks: Optional[int] = None, comment: str = "") -> ReviewItem:
+                    marks: Optional[int] = None, comment: str = "",
+                    reason: str = "", reviewer_id: str = "",
+                    data_root: Optional[Path] = None) -> ReviewItem:
+    """Applies one teacher decision to a review item.
+
+    Actions:
+      * "approve"  — accept the AI's score as-is (no marks change).
+      * "edit"     — the *first* decision on a still-pending item: set marks /
+                     comment directly, no reason required (matches historical
+                     behavior).
+      * "regrade"  — a *correction* to an already-decided item (status
+                     "approved" or "edited"): changing marks requires a reason
+                     and a reviewer identity, and every regrade is written to
+                     the append-only AuditLog as "grade_regraded" with the old
+                     and new marks.
+
+    `edit` on an already-decided item is treated the same as "regrade" when it
+    changes marks — silently overwriting an existing grade is exactly the
+    compliance gap docs/compliance.md flags, so it demands the same reason +
+    reviewer + audit trail as the explicit regrade action. Comment-only edits
+    (marks=None) on a decided item stay lenient: no grade is being changed.
+    """
     item = next((i for i in session.review if i.question_id == question_id), None)
     if item is None:
         raise ScanError(f"question {question_id} not in this session's review queue")
     if action == "approve":
         item.status = "approved"
-    elif action == "edit":
-        item.status = "edited"
-        if marks is not None:
-            item.teacher_marks = max(0, min(item.max_marks, marks))
-        item.teacher_comment = comment
+    elif action in ("edit", "regrade"):
+        correcting_marks = marks is not None and item.status in ("approved", "edited")
+        if action == "regrade":
+            if item.status not in ("approved", "edited"):
+                raise ScanError(
+                    f"question {question_id} has not been decided yet — 'regrade' corrects an "
+                    "existing approved/edited decision; use 'edit' for the first review"
+                )
+            if marks is None:
+                raise ScanError(f"regrade of question {question_id} requires new marks")
+            correcting_marks = True
+        if correcting_marks:
+            _apply_regrade(session, item, marks, comment, reason, reviewer_id, data_root)
+        else:
+            item.status = "edited"
+            if marks is not None:
+                item.teacher_marks = max(0, min(item.max_marks, marks))
+            item.teacher_comment = comment
     else:
         raise ScanError(f"unknown review action {action!r}")
     save_session(session)
     return item
+
+
+def _apply_regrade(session: ScanSession, item: ReviewItem, marks: int, comment: str,
+                   reason: str, reviewer_id: str, data_root: Optional[Path]) -> None:
+    """Correction to an already-decided item: guarded by a mandatory reason +
+    reviewer identity, then recorded append-only in the AuditLog."""
+    if not reason or not reason.strip():
+        raise ScanError(f"changing the existing grade on question {item.question_id} "
+                        "requires a non-empty reason")
+    if not reviewer_id or not reviewer_id.strip():
+        raise ScanError(f"changing the existing grade on question {item.question_id} "
+                        "requires a reviewer_id")
+    old_marks = item.final_marks
+    new_marks = max(0, min(item.max_marks, marks))
+    item.status = "edited"
+    item.teacher_marks = new_marks
+    item.teacher_comment = comment
+
+    log_root = data_root or _DATA_ROOT
+    if log_root is None:
+        raise ScanError("no data_root configured for audit logging; regrade refused")
+    get_audit_log(log_root).append(
+        "grade_regraded",
+        assessment_id=session.assessment_id,
+        student_id=session.student_id,
+        actor=reviewer_id,
+        details={
+            "questionId": item.question_id,
+            "oldMarks": old_marks,
+            "newMarks": new_marks,
+            "reason": reason,
+            "reviewerId": reviewer_id,
+        },
+    )
 
 
 def finalize_totals(session: ScanSession) -> tuple[int, int]:

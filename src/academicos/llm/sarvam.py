@@ -12,12 +12,14 @@ import os
 import re
 from typing import Any
 
+from .base import LLMProvider
+
 log = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://api.sarvam.ai"
 
 
-class SarvamLLM:
+class SarvamLLM(LLMProvider):
     def __init__(self, api_key: str | None = None, base_url: str = DEFAULT_BASE_URL,
                  model: str = "sarvam-105b", timeout: float = 120.0):
         self.api_key = api_key or os.environ.get("SARVAM_API_KEY", "")

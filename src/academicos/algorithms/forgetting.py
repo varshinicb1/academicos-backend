@@ -276,6 +276,15 @@ class RevisionScheduler:
 
     def plan(self, model: LearnerModel, now: str | None = None) -> RevisionPlan:
         now_iso = now or _now_utc()
+        # Mastery is computed here rather than read off ``state.mastery``:
+        # that attribute is a cache only ``demo()`` below ever fills in, so on
+        # any real learner (``EventStore.replay`` -> ``observe`` -> ``record``)
+        # it stays 0.0 forever. Reading it made ``importance`` the constant
+        # 0.5 for every concept, collapsing the urgency*importance ranking
+        # into pure urgency and silently discarding the mastery weighting
+        # this planner exists to apply. Same defect as the calibration-advice
+        # gate in daily_loop.py; see docs/compliance.md.
+        km = KnowledgeMastery()
         due, upcoming, confident = [], [], True
         for cid, state in model.concepts.items():
             r = self.prediction.predict_forgetting(model, cid, now_iso)
@@ -283,11 +292,16 @@ class RevisionScheduler:
             if r.retention_now < self.prediction.p.threshold:
                 urgency = max(0.0, min(1.0, (self.prediction.p.threshold - r.retention_now)
                                        / self.prediction.p.threshold))
-                importance = 0.5 + 0.5 * state.mastery
+                importance = 0.5 + 0.5 * km.score(model, cid, now=now_iso).mastery
                 due.append((cid, r.retention_now, round(urgency * importance, 4)))
             else:
                 days = max(1, math.ceil(r.days_until_forgotten))
-                due_iso = (_dt(now_iso).date() + timedelta(days=days)).isoformat()
+                # Exponential-model stability can push 'days' far past the max
+                # representable date (date + timedelta overflows after year
+                # 9999); cap at the furthest valid day instead of crashing.
+                today = _dt(now_iso).date()
+                days = min(days, (datetime.max.date() - today).days)
+                due_iso = (today + timedelta(days=days)).isoformat()
                 upcoming.append((cid, due_iso))
         due.sort(key=lambda t: t[2], reverse=True)
         upcoming.sort(key=lambda t: t[1])

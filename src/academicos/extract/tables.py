@@ -48,11 +48,10 @@ def detect_tables(page_raw: dict[str, Any], page_no: int) -> list[Table]:
             if not spans:
                 continue
             y = line["bbox"][1]
-            x0 = min(s["bbox"][0] for s in spans)
-            x1 = max(s["bbox"][2] for s in spans)
-            text = " ".join(s["text"] for s in spans).strip()
-            if text:
-                lines.append((y, x0, x1, text))
+            for s in spans:
+                text = s.get("text", "").strip()
+                if text:
+                    lines.append((y, s["bbox"][0], s["bbox"][2], text))
 
     if len(lines) < 2:
         return []

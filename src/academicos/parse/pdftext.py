@@ -143,7 +143,7 @@ class PdfTextParser(ParserProvider):
     @staticmethod
     def _kind(btype: int, text: str, order: int, prev: list[Block]) -> BlockKind:
         if btype == 1:
-            return BlockKind.IMAGE_ONLY
+            return BlockKind.FIGURE
         low = text.strip().lower()
         if order == 0 and (len(low) < 120 and (low.endswith((")", "]", "»")) or " " not in low.strip())):
             return BlockKind.HEADING

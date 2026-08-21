@@ -75,10 +75,13 @@ class KnowledgeMastery:
         half_life = self.p.recency_half_life_days * 86400.0
         w_sum = c_sum = 0.0
         for i in answers:
-            w = math.exp(-(t_now - _ts(i.ts)) / half_life)
+            age = max(0.0, t_now - _ts(i.ts))
+            w = math.exp(-age / half_life)
             w_sum += w
             c_sum += w * i.outcome
-        confidence = (c_sum / w_sum) if w_sum > 0 else accuracy
+        # outcomes are expected in [0, 1]; clamp anyway so a single out-of-range
+        # evaluation can't push a served signal outside the unit interval
+        confidence = max(0.0, min(1.0, (c_sum / w_sum) if w_sum > 0 else accuracy))
 
         # retention: exponential decay since last practice
         last = _ts(state.last_seen or _now_utc())
@@ -89,7 +92,8 @@ class KnowledgeMastery:
         # application: higher-bloom evidence counts toward transfer
         app_levels = [i for i in state.history
                       if i.bloom and i.bloom.lower() in APPLICATION_LEVELS and i.outcome is not None]
-        application = (sum(i.outcome for i in app_levels) / len(app_levels)) if app_levels else 0.0
+        application = max(0.0, min(1.0, (sum(i.outcome for i in app_levels) / len(app_levels))
+                                   if app_levels else 0.0))
 
         mastery = (self.p.w_acc * accuracy + self.p.w_conf * confidence
                    + self.p.w_ret * retention + self.p.w_app * application)

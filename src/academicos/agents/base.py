@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from ..graph.store import GraphStore
@@ -71,4 +71,4 @@ class EvidencePack:
     def __init__(self) -> None:
         self.evidence = Evidence()
         self.tool_calls: list[dict[str, Any]] = []
-        self.messages: list[dict[str, str]] = field(default_factory=list)
+        self.messages: list[dict[str, str]] = []

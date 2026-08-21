@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from ..agents.orchestrator import DoubtSolver, ExaminerScorer, PaperAnalyst
-from ..assessment import mobile_routes, mobile_scan, pillar_routes
+from ..assessment import ingest_routes, mobile_routes, mobile_scan, pillar_routes
 from ..assessment import routes as assessment_routes
 from ..config import Config
 from ..graph.store import GraphStore
@@ -30,6 +30,7 @@ app.add_middleware(
 app.include_router(assessment_routes.router)
 app.include_router(pillar_routes.router)
 app.include_router(mobile_routes.router)
+app.include_router(ingest_routes.router)
 
 
 class SearchRequest(BaseModel):
@@ -82,6 +83,7 @@ def init_runtime(config: Optional[Config] = None) -> None:
     _registry = SourceRegistry(cfg.registry_db)
     assessment_routes.init(cfg)
     pillar_routes.init(cfg)
+    ingest_routes.init(cfg)
     mobile_scan.configure_workdir(cfg.data_root / "scan-sessions")
     if cfg.llm_api_key:
         from ..agents.critic import SarvamCritic

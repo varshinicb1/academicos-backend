@@ -44,7 +44,6 @@ class ReflectionScores:
     utility: float = 0.0
     detail: dict = field(default_factory=dict)
 
-    @property
     def final(self, w_rel: float = 1.0, w_sup: float = 1.0, w_use: float = 0.5) -> float:
         return w_rel * self.relevance + w_sup * self.support + w_use * self.utility
 

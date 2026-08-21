@@ -472,11 +472,29 @@ def cmd_learn(args: argparse.Namespace) -> int:
             print(f"recorded {event_id} (seq {seq})")
         elif args.action == "replay":
             m = store.replay(args.learner)
+            # mastery/confidence are computed here, not read off ConceptState.
+            # Those attributes are caches that only forgetting.demo() ever
+            # assigns: replay() -> observe() -> record() updates
+            # attempts/correct/last_seen and leaves them at their defaults, so
+            # printing them reported mastery=0.000 confidence=0.000 for every
+            # learner no matter how well they had actually done. Retention is
+            # deliberately not cached anywhere either -- it decays with wall
+            # time, so it is only ever correct when computed at the moment of
+            # use. See docs/compliance.md.
+            from .algorithms.confidence_model import ConfidenceModel
+            from .algorithms.mastery import KnowledgeMastery
+
+            km, cm = KnowledgeMastery(), ConfidenceModel()
             print(f"learner {m.learner_id}: {len(m.concepts)} concepts tracked, "
                   f"{sum(c.attempts for c in m.concepts.values())} interactions")
             for cid, cs in sorted(m.concepts.items()):
+                mastery = km.score(m, cid).mastery
+                # ConceptState.confidence documents itself as "recency-weighted
+                # accuracy", which is ConfidenceResult.accuracy (the observed
+                # skill proxy), not .efficacy (the learner's self-belief).
+                accuracy = cm.estimate(m, cid).accuracy
                 print(f"  {cid}: attempts={cs.attempts} correct={cs.correct} "
-                      f"mastery={cs.mastery:.3f} confidence={cs.confidence:.3f} "
+                      f"mastery={mastery:.3f} confidence={accuracy:.3f} "
                       f"last_seen={cs.last_seen}")
         else:  # stats
             print(json.dumps(store.stats(args.learner), indent=2))

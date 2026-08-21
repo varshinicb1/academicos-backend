@@ -21,11 +21,23 @@ from . import vision
 
 log = logging.getLogger(__name__)
 
-# "12.", "12)", "Q12", "Ans 12", "Answer 12." at the start of a line.
+# "12.", "12)", "Q12", "Ans 12", "Answer 12." at the start of a line. The
+# leading `\.?` tolerates a stray period OCR sometimes inserts before the
+# real marker (observed on a real CBSE booklet: ".13)" for "13)").
 _Q_MARKER = re.compile(
-    r"^\s*(?:(?:ans(?:wer)?|q(?:uestion)?)[\s.:\-]*)?(\d{1,2})\s*[.):\-]\s*",
+    r"^\s*\.?\s*(?:(?:ans(?:wer)?|q(?:uestion)?)[\s.:\-]*)?(\d{1,2})\s*[.):\-]\s*",
     re.I | re.M,
 )
+
+# Sarvam Vision renders some tabular MCQ answer blocks as markdown/HTML tables
+# (e.g. "<td>Ans1.</td><td>(A) No Solution</td>") instead of plain
+# "1. (A) No Solution" lines. _Q_MARKER requires the marker at the start of a
+# line, but inside a table every line starts with a tag, so every answer was
+# silently discarded as "no answer found" -- confirmed against a real CBSE
+# Class X Math Standard handwritten booklet, all 20 real answers lost. Strip
+# tags before segmenting; each table row already renders on its own line, so
+# once the tags are gone "Ans1." naturally lands at the start of its line.
+_HTML_TAG = re.compile(r"<[^>]+>")
 
 
 @dataclass
@@ -78,6 +90,24 @@ def render_pdf_pages(pdf_path: Path, out_dir: Path, *, dpi: int = 140,
     return paths
 
 
+def _split_nested_marker(qno: int, body: str) -> tuple[int, str]:
+    """A matched marker can itself be OCR noise swallowing the real marker
+    right after it -- confirmed on a real CBSE booklet where Sarvam misread
+    handwritten "Q." as "9." (so "Q.5)" and "Q.7)" both matched as a bogus
+    "9)", eating both answers into question 9's slot), and separately
+    prefixed a spurious leading digit before a real two-digit number
+    ("8.14)" for what should be "14)", landing question 14's answer inside
+    question 8's segment). A genuine single-answer body never legitimately
+    starts with its own "<digit><separator>" -- students don't write MCQ
+    answers that way -- so if the body we just captured itself begins with
+    a clean, distinct marker, that inner one is the real question number.
+    """
+    nested = _Q_MARKER.match(body)
+    if nested and int(nested.group(1)) != qno:
+        return int(nested.group(1)), body[nested.end():].strip()
+    return qno, body
+
+
 def segment_answers(pages: list[vision.PageOCR]) -> list[AnswerSegment]:
     """Split OCR'd pages into per-question answers on question-number markers."""
     segments: dict[int, AnswerSegment] = {}
@@ -85,7 +115,7 @@ def segment_answers(pages: list[vision.PageOCR]) -> list[AnswerSegment]:
     orphan: list[str] = []
 
     for page in pages:
-        text = page.text or ""
+        text = _HTML_TAG.sub("", page.text or "")
         if not text.strip():
             continue
         matches = list(_Q_MARKER.finditer(text))
@@ -111,6 +141,7 @@ def segment_answers(pages: list[vision.PageOCR]) -> list[AnswerSegment]:
             qno = int(m.group(1))
             end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
             body = text[m.end():end].strip()
+            qno, body = _split_nested_marker(qno, body)
             seg = segments.get(qno)
             if seg is None:
                 seg = AnswerSegment(question_no=qno, text=body, page_numbers=[page.page_no])

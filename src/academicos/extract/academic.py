@@ -41,7 +41,7 @@ def extract_questions(doc: ParsedDocument, doc_type: DocType) -> list[Question]:
     def flush() -> None:
         nonlocal current
         if current is not None:
-            current.parts = part_queue
+            current.parts = list(part_queue)  # copy: part_queue is cleared below
             out.append(current)
         current = None
         part_queue.clear()

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from ..graph.store import GraphStore
 from ..llm.sarvam import SarvamLLM
-from ..models.common import Evidence, Provenance, SourceSpan
+from ..models.common import Confidence, Evidence, Provenance, SourceSpan
 from ..models.enums import ExtractionMethod
 from ..retrieval.hybrid import HybridRetriever
 from .base import EvidencePack, SearchTool, Tool, ToolResult
@@ -41,7 +41,7 @@ class Agent:
             ev.add(Provenance(
                 source=SourceSpan(document_id=h["document_id"], page=h.get("page", 1)),
                 method=ExtractionMethod.PDF_NATIVE,
-                confidence=None,
+                confidence=Confidence(method=ExtractionMethod.PDF_NATIVE, score=1.0),
             ))
         return ev
 

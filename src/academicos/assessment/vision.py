@@ -230,12 +230,14 @@ def ocr_page(image_path: Path, page_no: int, *, workdir: Path,
     warnings: list[str] = []
     hallucinated = False
     passes: list[str] = []
+    last_error: VisionError | None = None
     for attempt in range(_VOTE_RUNS):
         try:
             raw = extract(source, language=language)
         except VisionError as exc:
             log.warning("vision pass %d/%d failed for page %s: %s",
                        attempt + 1, _VOTE_RUNS, page_no, exc)
+            last_error = exc
             continue
         cleaned, was_hallucinated = strip_hallucinations(raw)
         hallucinated = hallucinated or was_hallucinated
@@ -243,6 +245,13 @@ def ocr_page(image_path: Path, page_no: int, *, workdir: Path,
             passes.append(cleaned)
 
     if not passes:
+        if last_error is not None:
+            # Every pass failed outright: this is a capture failure, not a
+            # blank page. Raise so the caller's except-handler records it as
+            # "OCR failed" (which the ocr_failed_pages detector routes to
+            # review) instead of silently treating a failed transcription as a
+            # confident blank.
+            raise last_error
         warnings.append("no text recovered from this page")
         return PageOCR(page_no=page_no, text="", hallucinated=hallucinated, warnings=warnings)
 
