@@ -1,0 +1,18 @@
+{
+  "subject": "English",
+  "grade": 10,
+  "source": "CBSE Curriculum 2025-26, English_LL_2025-26.pdf, Class X Section-wise Weightage",
+  "total_marks": 80,
+  "units": [
+    {"unit_no": "A", "name": "Reading Skills", "marks": 20, "chapters": [
+      {"id": "reading-comprehension", "name": "Reading Comprehension through Unseen Passages"}
+    ]},
+    {"unit_no": "B", "name": "Writing Skills with Grammar", "marks": 20, "chapters": [
+      {"id": "grammar", "name": "Grammar"},
+      {"id": "writing-skills", "name": "Writing Skills"}
+    ]},
+    {"unit_no": "C", "name": "Language through Literature", "marks": 40, "chapters": [
+      {"id": "literature-textbook", "name": "Prescribed Literature Textbook"}
+    ]}
+  ]
+}

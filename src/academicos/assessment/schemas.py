@@ -177,6 +177,11 @@ class QuestionSearchParams(Camel):
     subject: str
     grade: int
     chapter_ids: Optional[list[str]] = None
+    # curriculum/ Subtopic canonical row ids (not chapter_ids' keyword-
+    # tagger strings) -- questions tagged via
+    # POST /api/v1/curriculum/chapters/{chapter_id}/questions/tag. See
+    # docs/ACADEMIC_DATA_MODEL.md section 1 and qmap.py::map_subtopics.
+    subtopic_ids: Optional[list[str]] = None
     competency_ids: Optional[list[str]] = None
     bloom_levels: Optional[list[BloomLevel]] = None
     difficulties: Optional[list[Difficulty]] = None

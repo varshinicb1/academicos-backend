@@ -10,7 +10,8 @@ Commands:
   serve       run the FastAPI server
   stats       corpus/registry/graph stats
   learn       record/replay/stats learner interaction events
-  sync-gcs    push local artifacts to GCS (when configured)
+  sync-gcs    push local artifacts to GCS (gated on sync_enabled; --force to
+              override, --interval-minutes to loop)
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ import argparse
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 
 from .algorithms.learner_model import Interaction
@@ -66,6 +68,16 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
 
 def cmd_parse(args: argparse.Namespace) -> int:
+    """Ensemble parse over registered sources.
+
+    Gated on `min_confidence` (config.toml / ACOS_MIN_CONFIDENCE, default
+    0.6): a parse whose quality_score falls below it is written to disk (so
+    nothing is lost, and it can be inspected) but registered as
+    status="low_confidence", not "parsed" -- extract/build-graph only pick
+    up "parsed"/"extracted" sources, so a bad OCR result never silently
+    reaches the knowledge graph. `--force` accepts every parse regardless of
+    score (e.g. once a human has looked at the low_confidence backlog and
+    decided a given document is fine as-is)."""
     from .parse.ensemble import EnsembleParser
 
     cfg = Config.load()
@@ -81,6 +93,7 @@ def cmd_parse(args: argparse.Namespace) -> int:
         sources = [s for s in sources if s["source_id"] == args.doc_id]
     done = 0
     failed = 0
+    low_confidence = 0
     for src in sources:
         if src["status"] in ("parsed", "extracted") and not args.reparse:
             continue
@@ -98,11 +111,18 @@ def cmd_parse(args: argparse.Namespace) -> int:
             continue
         dest = cfg.parse_dir / f"{safe_name(src['source_id'])}.json"
         dest.write_text(out.model_dump_json(indent=2), encoding="utf-8")
-        registry.update(src["source_id"], status="parsed", quality_score=round(out.quality_score, 3))
-        done += 1
-        if done % 25 == 0:
-            print(f"parsed {done}/{len(sources)}")
-    print(f"parsed {done} documents ({failed} failed)")
+        quality = round(out.quality_score, 3)
+        if quality < cfg.min_confidence and not args.force:
+            registry.update(src["source_id"], status="low_confidence", quality_score=quality,
+                           notes=f"quality_score {quality} < min_confidence {cfg.min_confidence}")
+            low_confidence += 1
+        else:
+            registry.update(src["source_id"], status="parsed", quality_score=quality)
+            done += 1
+        if (done + low_confidence) % 25 == 0:
+            print(f"parsed {done + low_confidence}/{len(sources)}")
+    print(f"parsed {done} documents ({failed} failed, {low_confidence} held as "
+          f"low_confidence below {cfg.min_confidence} -- rerun with --force to accept them anyway)")
     registry.close()
     return 0
 
@@ -579,12 +599,15 @@ def cmd_stats(args: argparse.Namespace) -> int:
     graph = GraphStore(cfg.graph_db)
     index = ChunkIndex(cfg.index_db)
     by_type: dict[str, int] = {}
+    by_status: dict[str, int] = {}
     for s in registry.all():
         by_type[s["doc_type"] or "unknown"] = by_type.get(s["doc_type"] or "unknown", 0) + 1
+        by_status[s["status"] or "unknown"] = by_status.get(s["status"] or "unknown", 0) + 1
     n, e = graph.count()
     print(json.dumps({
         "registered": registry.count(),
         "by_type": by_type,
+        "by_status": by_status,
         "graph_nodes": n,
         "graph_edges": e,
         "chunks": index.count(),
@@ -673,6 +696,11 @@ def cmd_concept_profile(args: argparse.Namespace) -> int:
     --method rule: deterministic, free, local (verb-list Bloom classifier,
     page-order prerequisite mining, heuristic difficulty). No API calls.
     --method llm:  batched LLM (Groq) enrichment.
+
+    By default skips concepts that already carry a `difficulty` attribute,
+    so repeated runs make forward progress across the graph instead of
+    re-profiling the same top-occurrence concepts every time. `--force`
+    reprofiles everything in scope, including already-done concepts.
     """
     from .models.enums import NodeType
     from .graph.store import GraphStore
@@ -682,9 +710,13 @@ def cmd_concept_profile(args: argparse.Namespace) -> int:
 
     concepts = [n for n in store.query_nodes(ntype=NodeType.CONCEPT, status=None, limit=100000)
                 if (n.attributes or {}).get("occurrences", 0) >= args.min_occ]
+    if not args.force:
+        concepts = [n for n in concepts if (n.attributes or {}).get("difficulty") is None]
     concepts.sort(key=lambda n: (n.attributes or {}).get("occurrences", 0), reverse=True)
     concepts = concepts[: args.top]
-    print(f"profiling {len(concepts)} concepts (min occurrences {args.min_occ}, method={args.method})...")
+    skip_note = "" if args.force else ", skipping already-profiled"
+    print(f"profiling {len(concepts)} concepts (min occurrences {args.min_occ}, "
+          f"method={args.method}{skip_note})...")
 
     if args.method == "rule":
         from .graph.curriculum import (CRITERION_WEIGHTS, JUNK_CONCEPTS,
@@ -889,24 +921,160 @@ def _clean_label(label: str) -> bool:
     return True
 
 
-def cmd_sync_gcs(args: argparse.Namespace) -> int:
-    cfg = Config.load()
-    if not cfg.gcs_bucket:
-        print("GCS not configured (set gcs_bucket in config/config.toml or ACOS_GCS_BUCKET)")
-        return 1
+def _sync_gcs_once(cfg: Config, prefixes: list[str], log=print) -> dict[str, int]:
+    """One full sync pass, local -> GCS, one prefix at a time. Returns
+    {prefix: files_synced} so callers (CLI loop, tests) can inspect it
+    without re-parsing printed output."""
     from .storage.base import LocalStore
     from .storage.gcs import GcsStore
 
     local = LocalStore(cfg.data_root)
     remote = GcsStore(cfg.gcs_bucket, cfg.gcs_prefix)
-    prefixes = args.prefixes.split(",")
+    counts: dict[str, int] = {}
     for prefix in prefixes:
         keys = local.keys(prefix)
         for i, key in enumerate(keys):
             remote.put(local._resolve(key), key)
             if i % 100 == 0:
-                print(f"synced {prefix}: {i}/{len(keys)}")
-        print(f"synced {prefix}: {len(keys)} files")
+                log(f"synced {prefix}: {i}/{len(keys)}")
+        log(f"synced {prefix}: {len(keys)} files")
+        counts[prefix] = len(keys)
+    return counts
+
+
+def cmd_sync_gcs(args: argparse.Namespace) -> int:
+    """P1.12 — push local artifacts to GCS. Gated on `sync_enabled`
+    (config.toml / ACOS_SYNC_ENABLED) so a bucket being *configured* never
+    implies syncing is actually happening; `--force` overrides for a
+    deliberate one-off run. `--interval-minutes` loops the sync so it can be
+    supervised in a terminal or wrapped by an external scheduler (cron /
+    Windows Task Scheduler) — this command does not register one itself."""
+    cfg = Config.load()
+    if not cfg.gcs_bucket:
+        print("GCS not configured (set gcs_bucket in config/config.toml or ACOS_GCS_BUCKET)")
+        return 1
+    if not cfg.sync_enabled and not args.force:
+        print("GCS sync is disabled (sync_enabled=false in config/config.toml or "
+              "ACOS_SYNC_ENABLED=false). Set sync_enabled=true to allow scheduled "
+              "syncs, or pass --force to run once anyway.")
+        return 1
+
+    prefixes = args.prefixes.split(",")
+    if not args.interval_minutes:
+        _sync_gcs_once(cfg, prefixes)
+        return 0
+
+    cycles = 0
+    try:
+        while args.max_cycles is None or cycles < args.max_cycles:
+            _sync_gcs_once(cfg, prefixes)
+            cycles += 1
+            if args.max_cycles is not None and cycles >= args.max_cycles:
+                break
+            print(f"next sync in {args.interval_minutes} min "
+                  f"(ctrl-c to stop)")
+            time.sleep(args.interval_minutes * 60)
+    except KeyboardInterrupt:
+        print(f"stopped after {cycles} sync cycle(s)")
+    return 0
+
+
+def cmd_curriculum_extract(args: argparse.Namespace) -> int:
+    """Bulk-runs Topic/Subtopic extraction proposals across every chapter
+    of a book that doesn't already have real topics -- the transcript
+    follow-up's "close the bulk-extraction gap" step. Uses the real
+    configured LLM (SarvamLLM, real SARVAM_API_KEY) when available; a
+    chapter with no LLM available is skipped with a clear message rather
+    than silently marked done (status="manual_required" on its run, real
+    content still needs either a key or manual entry -- see
+    curriculum/extraction.py's module docstring).
+
+    Only ever creates DRAFT proposals -- never approves anything. Review +
+    approve with `curriculum-approve` afterward."""
+    from .curriculum.store import get_curriculum_store
+    from .curriculum import extraction as extraction_mod
+    from .llm.sarvam import SarvamLLM
+
+    cfg = Config.load()
+    store = get_curriculum_store(cfg.data_root)
+    llm = SarvamLLM(api_key=cfg.llm_api_key or None)
+    if not llm.available:
+        print("no LLM available (SARVAM_API_KEY not set) -- every chapter would "
+              "get status=manual_required. Not running (nothing to do); "
+              "set SARVAM_API_KEY or use manual topic/subtopic entry instead.")
+        return 1
+
+    chapters = store.chapters_for_book(args.book_id)
+    run_ids: list[str] = []
+    skipped_already_done = 0
+    failed = 0
+    for chapter in chapters:
+        if store.topics_for_chapter(chapter.id) and not args.force:
+            skipped_already_done += 1
+            continue
+        book = store.get_book(args.book_id)
+        unit = store.get_unit(chapter.unit_id)
+        subject_obj = store.get_subject(book.subject_id)
+        grade_obj = store.get_grade(subject_obj.grade_id)
+        try:
+            run = extraction_mod.propose(
+                store, school_id=args.school_id, chapter=chapter, book_id=args.book_id,
+                subject=subject_obj.name, grade=grade_obj.number, llm=llm)
+        except Exception as e:
+            log.warning("extraction failed for chapter %s (%s): %s", chapter.id, chapter.name, e)
+            failed += 1
+            continue
+        status_note = "" if run.status == "pending" else f" [{run.status}]"
+        n_proposals = len(store.proposals_for_run(run.id))
+        print(f"  {chapter.name:<50} run={run.id} {n_proposals} proposals{status_note}")
+        run_ids.append(run.id)
+
+    print(f"\nextraction: {len(run_ids)} chapters proposed, "
+          f"{skipped_already_done} already had real topics (skipped), {failed} failed")
+    if run_ids:
+        print("review with: python -m academicos.cli curriculum-approve --run-id <id> --dry-run")
+    return 0
+
+
+def cmd_curriculum_approve(args: argparse.Namespace) -> int:
+    """Reviews (prints) and, unless --dry-run, approves one extraction
+    run's proposals. Prints every proposed topic/subtopic before deciding
+    anything -- this is the one place a human (or, disclosed as such, an
+    AI-assisted reviewer) actually looks at what the LLM proposed before
+    it can become real curriculum. --reject accepts a comma-separated list
+    of proposal ids to exclude."""
+    from .curriculum.store import get_curriculum_store
+    from .curriculum import extraction as extraction_mod
+
+    cfg = Config.load()
+    store = get_curriculum_store(cfg.data_root)
+    run = store.get_extraction_run(args.run_id)
+    if run is None:
+        print(f"no such extraction run: {args.run_id}")
+        return 1
+    proposals = store.proposals_for_run(args.run_id)
+    if not proposals:
+        print(f"run {args.run_id} has no proposals (status={run.status})")
+        return 1
+
+    by_topic: dict[str, list] = {}
+    topics_by_id = {p.id: p for p in proposals if p.entity_type == "topic"}
+    for p in proposals:
+        if p.entity_type == "subtopic":
+            by_topic.setdefault(p.proposed_parent, []).append(p)
+    for tid, tp in topics_by_id.items():
+        print(f"  {tp.proposed_name}  (confidence {tp.confidence:.2f})")
+        for sp in by_topic.get(tid, []):
+            print(f"      - {sp.proposed_name}  (confidence {sp.confidence:.2f})")
+
+    if args.dry_run:
+        print("\n(--dry-run: nothing approved)")
+        return 0
+
+    rejected = set(args.reject.split(",")) if args.reject else set()
+    result = extraction_mod.approve_run(store, args.run_id, approved_by=args.approved_by,
+                                        rejected_proposal_ids=rejected)
+    print(f"\napproved: {result.topics_created} topics, {result.subtopics_created} subtopics")
     return 0
 
 
@@ -925,14 +1093,14 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="command", required=True)
 
     pi = sub.add_parser("ingest"); pi.add_argument("--limit", type=int, default=None); pi.add_argument("--reingest", action="store_true"); pi.set_defaults(fn=cmd_ingest)
-    pp = sub.add_parser("parse"); pp.add_argument("--doc-id"); pp.add_argument("--reparse", action="store_true"); pp.add_argument("--vlm-mode", default="service"); pp.add_argument("--vlm-url", default="http://127.0.0.1:8910"); pp.set_defaults(fn=cmd_parse)
+    pp = sub.add_parser("parse"); pp.add_argument("--doc-id"); pp.add_argument("--reparse", action="store_true"); pp.add_argument("--vlm-mode", default="service"); pp.add_argument("--vlm-url", default="http://127.0.0.1:8910"); pp.add_argument("--force", action="store_true", help="accept every parse as 'parsed' regardless of quality_score / min_confidence"); pp.set_defaults(fn=cmd_parse)
     pe = sub.add_parser("extract"); pe.add_argument("--doc-id"); pe.set_defaults(fn=cmd_extract)
     pg = sub.add_parser("build-graph"); pg.add_argument("--doc-id"); pg.set_defaults(fn=cmd_build_graph)
     po = sub.add_parser("openie"); po.add_argument("--doc-id"); po.add_argument("--limit", type=int, default=None); po.add_argument("--max-chunks", type=int, default=20); po.add_argument("--model", default=None); po.add_argument("--extractor", choices=["llm", "local"], default="local"); po.set_defaults(fn=cmd_openie)
     ps = sub.add_parser("search"); ps.add_argument("query", nargs="?"); ps.add_argument("--limit", type=int, default=10); ps.set_defaults(fn=cmd_search)
     pst = sub.add_parser("stats"); pst.set_defaults(fn=cmd_stats)
     psp = sub.add_parser("concept-spine"); psp.add_argument("--top", type=int, default=25); psp.set_defaults(fn=cmd_concept_spine)
-    pcp = sub.add_parser("concept-profile"); pcp.add_argument("--top", type=int, default=200); pcp.add_argument("--min-occ", type=int, default=3); pcp.add_argument("--model", default=None); pcp.add_argument("--method", choices=["rule", "llm"], default="rule"); pcp.set_defaults(fn=cmd_concept_profile)
+    pcp = sub.add_parser("concept-profile"); pcp.add_argument("--top", type=int, default=200); pcp.add_argument("--min-occ", type=int, default=3); pcp.add_argument("--model", default=None); pcp.add_argument("--method", choices=["rule", "llm"], default="rule"); pcp.add_argument("--force", action="store_true", help="reprofile concepts that already have a difficulty attribute"); pcp.set_defaults(fn=cmd_concept_profile)
     psv = sub.add_parser("serve"); psv.add_argument("--host", default="127.0.0.1"); psv.add_argument("--port", type=int, default=8000); psv.set_defaults(fn=cmd_serve)
     pln = sub.add_parser("learn")
     pln.add_argument("--learner", default="default")
@@ -980,7 +1148,29 @@ def main(argv: list[str] | None = None) -> int:
     plt = sub.add_parser("lifelong")
     plt.add_argument("--learner", default="default")
     plt.set_defaults(fn=cmd_lifelong)
-    psg = sub.add_parser("sync-gcs"); psg.add_argument("--prefixes", default="documents,extracted,parse,graph,index,registry"); psg.set_defaults(fn=cmd_sync_gcs)
+    psg = sub.add_parser("sync-gcs")
+    psg.add_argument("--prefixes", default="documents,extracted,parse,graph,index,registry")
+    psg.add_argument("--force", action="store_true",
+                     help="sync once even if sync_enabled=false")
+    psg.add_argument("--interval-minutes", type=int, default=0,
+                     help="loop, syncing every N minutes (0 = run once and exit)")
+    psg.add_argument("--max-cycles", type=int, default=None,
+                     help="with --interval-minutes, stop after N cycles instead of running forever")
+    psg.set_defaults(fn=cmd_sync_gcs)
+
+    pce = sub.add_parser("curriculum-extract")
+    pce.add_argument("--school-id", required=True)
+    pce.add_argument("--book-id", required=True)
+    pce.add_argument("--force", action="store_true",
+                     help="re-propose even for chapters that already have real topics")
+    pce.set_defaults(fn=cmd_curriculum_extract)
+
+    pca = sub.add_parser("curriculum-approve")
+    pca.add_argument("--run-id", required=True)
+    pca.add_argument("--approved-by", default="cli_admin")
+    pca.add_argument("--reject", default="", help="comma-separated proposal ids to exclude")
+    pca.add_argument("--dry-run", action="store_true", help="print proposals, approve nothing")
+    pca.set_defaults(fn=cmd_curriculum_approve)
 
     args = p.parse_args(argv)
     _setup_logging(args.verbose)

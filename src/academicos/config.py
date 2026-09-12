@@ -59,13 +59,12 @@ class Config:
         self.registry_db = self.data_root / "registry" / "registry.sqlite"
         self.events_db = self.data_root / "events" / "events.sqlite"
         self.question_map_db = self.data_root / "questions" / "question-maps.jsonl"
-        self.audit_log = self.data_root / "governance" / "audit.jsonl"
         self.artifacts_dir = self.data_root / "artifacts"
 
         for d in (
             self.documents_dir, self.pages_dir, self.parse_dir, self.extracted_dir,
             self.data_root / "graph", self.data_root / "index", self.data_root / "registry",
-            self.data_root / "events", self.data_root / "governance", self.artifacts_dir,
+            self.data_root / "events", self.artifacts_dir,
             self.question_map_db.parent,
         ):
             d.mkdir(parents=True, exist_ok=True)
@@ -88,6 +87,13 @@ class Config:
             "w_sup": float(t.get("critic_w_sup", 1.0)),
             "w_use": float(t.get("critic_w_use", 0.5)),
         }
+
+        # Principal-role bootstrap key (see assessment/users.py). Secret --
+        # belongs in the gitignored config/secrets.env via
+        # ACOS_PRINCIPAL_BOOTSTRAP_KEY, never in config.toml. Empty by
+        # default, which is the secure default: no key configured means no
+        # self-registration can ever be granted the principal role.
+        self.principal_bootstrap_key = env("PRINCIPAL_BOOTSTRAP_KEY", t.get("principal_bootstrap_key", ""))
 
     @classmethod
     def load(cls, toml_path: Path | None = None) -> "Config":

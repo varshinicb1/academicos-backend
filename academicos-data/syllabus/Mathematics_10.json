@@ -1,0 +1,15 @@
+{
+  "subject": "Mathematics",
+  "grade": 10,
+  "source": "CBSE Curriculum 2025-26, Maths_Sec_2025-26.pdf, Class X Course Structure",
+  "total_marks": 80,
+  "units": [
+    {"unit_no": "I", "name": "Number Systems", "marks": 6, "chapters": []},
+    {"unit_no": "II", "name": "Algebra", "marks": 20, "chapters": []},
+    {"unit_no": "III", "name": "Coordinate Geometry", "marks": 6, "chapters": []},
+    {"unit_no": "IV", "name": "Geometry", "marks": 15, "chapters": []},
+    {"unit_no": "V", "name": "Trigonometry", "marks": 12, "chapters": []},
+    {"unit_no": "VI", "name": "Mensuration", "marks": 10, "chapters": []},
+    {"unit_no": "VII", "name": "Statistics and Probability", "marks": 11, "chapters": []}
+  ]
+}

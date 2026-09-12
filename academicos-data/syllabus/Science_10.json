@@ -1,0 +1,31 @@
+{
+  "subject": "Science",
+  "grade": 10,
+  "source": "CBSE Curriculum 2025-26, Science_Sec_2025-26.pdf, Class X Course Structure",
+  "total_marks": 80,
+  "units": [
+    {"unit_no": "I", "name": "Chemical Substances - Nature and Behaviour", "marks": 25, "chapters": [
+      {"id": "chemical-reactions-equations", "name": "Chemical Reactions and Equations"},
+      {"id": "acids-bases-salts", "name": "Acids, Bases and Salts"},
+      {"id": "metals-non-metals", "name": "Metals and Non-metals"},
+      {"id": "carbon-compounds", "name": "Carbon and its Compounds"}
+    ]},
+    {"unit_no": "II", "name": "World of Living", "marks": 25, "chapters": [
+      {"id": "life-processes", "name": "Life Processes"},
+      {"id": "control-coordination", "name": "Control and Coordination"},
+      {"id": "reproduction", "name": "How do Organisms Reproduce"},
+      {"id": "heredity", "name": "Heredity"}
+    ]},
+    {"unit_no": "III", "name": "Natural Phenomena", "marks": 12, "chapters": [
+      {"id": "light-reflection-refraction", "name": "Light – Reflection and Refraction"},
+      {"id": "human-eye", "name": "The Human Eye and the Colourful World"}
+    ]},
+    {"unit_no": "IV", "name": "Effects of Current", "marks": 13, "chapters": [
+      {"id": "electricity", "name": "Electricity"},
+      {"id": "magnetic-effects", "name": "Magnetic Effects of Electric Current"}
+    ]},
+    {"unit_no": "V", "name": "Natural Resources", "marks": 5, "chapters": [
+      {"id": "our-environment", "name": "Our Environment"}
+    ]}
+  ]
+}

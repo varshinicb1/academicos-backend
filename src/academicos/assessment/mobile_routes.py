@@ -10,16 +10,20 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from typing import Optional
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import Field
 
 from . import mobile_scan
 from . import routes as assessment_routes
+from .auth_routes import get_current_user_optional
 from .evaluate import Evaluation, MarkingPointOutcome
 from .mapping import to_question_schema
 from .pool import get_pool
 from .schemas import Camel
+from .users import User
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1")
@@ -181,17 +185,24 @@ class ReviewDecisionRequest(Camel):
 
 @router.post("/scan/sessions/{session_id}/review/{question_id}", response_model=ReviewItemResponse)
 def submit_review_decision(session_id: str, question_id: str,
-                           req: ReviewDecisionRequest) -> ReviewItemResponse:
+                           req: ReviewDecisionRequest,
+                           current: Optional[User] = Depends(get_current_user_optional),
+                           ) -> ReviewItemResponse:
     try:
         session = mobile_scan.get_session(session_id)
     except mobile_scan.ScanError as e:
         raise HTTPException(404, str(e))
     cfg, _ = assessment_routes._require()
+    # A logged-in caller's real identity wins over the client-supplied
+    # free-text reviewerId (which used to be the only option, and is kept as
+    # a fallback for a client that has never logged in) -- same reasoning as
+    # pillar_routes.finalize_sheet_review.
+    reviewer_id = current.id if current else req.reviewer_id
     try:
         item = mobile_scan.review_decision(
             session, question_id, req.action,
             marks=req.marks, comment=req.comment,
-            reason=req.reason, reviewer_id=req.reviewer_id,
+            reason=req.reason, reviewer_id=reviewer_id,
             data_root=cfg.data_root,
         )
     except mobile_scan.ScanError as e:

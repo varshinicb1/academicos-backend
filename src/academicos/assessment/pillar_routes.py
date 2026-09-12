@@ -6,10 +6,11 @@ endpoints stay readable. Mounted under the same /api/v1 prefix.
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import FileResponse
 from pydantic import Field
 
@@ -17,6 +18,7 @@ from ..config import Config
 from . import insights as insights_mod
 from . import mailer as mailer_mod
 from . import remediation as remediation_mod
+from .auth_routes import get_current_user
 from .evaluate import Evaluation, evaluate_answer
 from .graded_store import GradedStore
 from .knowledge import KnowledgeStore
@@ -32,6 +34,8 @@ from .schemas import (
     SectionBlueprint,
 )
 from .school_templates import TemplateStore
+from .store import AssessmentStore
+from .users import User
 from ..syllabus.cbse_syllabus import load_syllabus
 from ..syllabus.timetable import generate_timetable
 
@@ -42,17 +46,21 @@ _knowledge: Optional[KnowledgeStore] = None
 _templates: Optional[TemplateStore] = None
 _graded: Optional[GradedStore] = None
 _practice: Optional[PracticeStore] = None
+_assessments: Optional[AssessmentStore] = None
 # Write-only scratch state (never read back) -- fine to lose on restart.
 _answer_keys: dict[str, dict[str, AnswerSchemeSchema]] = {}
 
 
 def init(config: Config) -> None:
-    global _cfg, _knowledge, _templates, _graded, _practice
+    global _cfg, _knowledge, _templates, _graded, _practice, _assessments
     _cfg = config
     _knowledge = KnowledgeStore(config.data_root / "knowledge")
     _templates = TemplateStore(config.data_root / "templates" / "templates.sqlite")
     _graded = GradedStore(config.data_root / "assessments" / "graded.sqlite")
     _practice = PracticeStore(config.data_root / "assessments" / "practice.sqlite")
+    # Same path routes.py's AssessmentStore uses -- read-only here (just the
+    # school-ownership check below), routes.py remains the sole writer.
+    _assessments = AssessmentStore(config.data_root / "assessments" / "assessments.sqlite")
 
 
 def _require() -> tuple[Config, KnowledgeStore, TemplateStore]:
@@ -71,6 +79,20 @@ def _require_practice() -> PracticeStore:
     if _practice is None:
         raise HTTPException(503, "pillar module not initialized")
     return _practice
+
+
+def _require_school_owns_assessment(assessment_id: str, current: User) -> None:
+    """Same school-scoping check as routes.approve_assessment: 404 if the
+    assessment doesn't exist, 403 if the caller's school doesn't own it --
+    called before any of this module's endpoints read or mutate a graded
+    sheet for that assessment."""
+    if _assessments is None:
+        raise HTTPException(503, "pillar module not initialized")
+    a = _assessments.get(assessment_id)
+    if a is None:
+        raise HTTPException(404, "assessment not found")
+    if a.school_id != current.school_id:
+        raise HTTPException(403, "this assessment belongs to a different school")
 
 
 def _pool_questions(subject: str = "Science", grade: str = "X") -> list[QuestionSchema]:
@@ -468,7 +490,14 @@ def evaluate_sheet(req: EvaluateSheetRequest) -> EvaluateSheetResponse:
         graded.append((q, ev))
 
     _require_graded().save(req.assessment_id, req.student_id, graded)
-    knowledge.record_evaluations(req.student_id, graded)   # Pillar 3 update
+    # Deliberately NOT knowledge.record_evaluations() here -- this is the raw
+    # AI pass, before any teacher has looked at it. Folding it into mastery
+    # immediately would let an unreviewed (and per docs/compliance.md's own
+    # calibration run, sometimes wrong) score reach the learner model before
+    # a human confirms it. finalize_sheet_review() below is the single point
+    # that does this, once, using whatever marks the teacher actually
+    # approved -- mirrors mobile_scan.finalize_scan_session's same one-shot
+    # design for the scan-and-grade flow.
 
     awarded = sum(e.awarded_marks for _, e in graded)
     maximum = sum(e.max_marks for _, e in graded)
@@ -483,6 +512,115 @@ def evaluate_sheet(req: EvaluateSheetRequest) -> EvaluateSheetResponse:
         percentage=round(100.0 * awarded / maximum, 2) if maximum else 0.0,
         needs_review_count=sum(1 for _, e in graded if e.needs_review),
         evaluations=[_to_response(e, q, req.answers.get(q.id, "")) for q, e in graded],
+    )
+
+
+class SheetReviewRequest(Camel):
+    action: str  # "approve" | "edit"
+    marks: Optional[int] = None
+
+
+class SheetReviewResponse(Camel):
+    question_id: str
+    awarded_marks: int
+    max_marks: int
+
+
+@router.post("/evaluations/sheet/{assessment_id}/{student_id}/review/{question_id}",
+             response_model=SheetReviewResponse)
+def review_sheet_answer(assessment_id: str, student_id: str, question_id: str,
+                         req: SheetReviewRequest,
+                         current: User = Depends(get_current_user)) -> SheetReviewResponse:
+    """Records the teacher's approve/adjust decision on one answer from a
+    prior POST /evaluations/sheet, so it survives past the Evaluate tab's
+    local widget state. Each question here is decided exactly once (there is
+    no "already approved, now correcting" case like mobile_scan's ReviewItem
+    has) so this mirrors mobile_scan.review_decision's "edit" branch only --
+    no reason/reviewer_id gate, since that gate exists specifically for
+    *changing* an existing decision, which can't happen in this flow.
+
+    Requires a real logged-in caller from the assessment's own school (fixed
+    2026-09-11: this endpoint mutated the graded store for any
+    assessment/student/question with zero authorization -- flagged by
+    automated security review)."""
+    _require()
+    _require_school_owns_assessment(assessment_id, current)
+    store = _require_graded()
+    graded = store.get(assessment_id, student_id)
+    if graded is None:
+        raise HTTPException(404, "no evaluated sheet found for this assessment/student")
+    idx = next((i for i, (q, _e) in enumerate(graded) if q.id == question_id), None)
+    if idx is None:
+        raise HTTPException(404, f"question {question_id} not in this sheet")
+    question, ev = graded[idx]
+
+    if req.action == "approve":
+        pass  # accept the AI's award as-is
+    elif req.action == "edit":
+        if req.marks is None:
+            raise HTTPException(400, "edit requires marks")
+        ev = replace(ev, awarded_marks=max(0, min(ev.max_marks, req.marks)))
+        graded[idx] = (question, ev)
+    else:
+        raise HTTPException(400, f"unknown action {req.action!r}")
+
+    store.save(assessment_id, student_id, graded)
+    return SheetReviewResponse(
+        question_id=question_id, awarded_marks=ev.awarded_marks, max_marks=ev.max_marks,
+    )
+
+
+class SheetFinalizeRequest(Camel):
+    reviewer_id: str = ""
+
+
+class SheetFinalizeResponse(Camel):
+    assessment_id: str
+    student_id: str
+    total_awarded: int
+    total_max: int
+    percentage: float
+
+
+@router.post("/evaluations/sheet/{assessment_id}/{student_id}/finalize",
+             response_model=SheetFinalizeResponse)
+def finalize_sheet_review(assessment_id: str, student_id: str,
+                           req: SheetFinalizeRequest,
+                           current: User = Depends(get_current_user),
+                           ) -> SheetFinalizeResponse:
+    """Folds a teacher-reviewed sheet (whatever mix of approved/edited marks
+    is currently in the graded store) into the student's knowledge state,
+    exactly once. See the comment on evaluate_sheet() for why that endpoint
+    doesn't do this itself.
+
+    Requires a real logged-in caller from the assessment's own school (fixed
+    2026-09-11: auth used to be optional here despite this endpoint mutating
+    the knowledge model and writing an authoritative audit entry, falling
+    back to a client-supplied free-text reviewerId with no verification at
+    all -- flagged by automated security review). req.reviewer_id is no
+    longer read; the field stays on the wire schema only so an older client
+    that still sends it doesn't 422."""
+    cfg, knowledge, _templates = _require()
+    _require_school_owns_assessment(assessment_id, current)
+    store = _require_graded()
+    graded = store.get(assessment_id, student_id)
+    if not graded:
+        raise HTTPException(404, "no evaluated sheet found for this assessment/student")
+
+    knowledge.record_evaluations(student_id, graded)
+    awarded = sum(e.awarded_marks for _, e in graded)
+    maximum = sum(e.max_marks for _, e in graded)
+    from .audit_log import get_audit_log
+    get_audit_log(cfg.data_root).append(
+        "sheet_reviewed", assessment_id=assessment_id, student_id=student_id,
+        actor=current.id,
+        details={"totalAwarded": awarded, "totalMax": maximum, "questionCount": len(graded),
+                 "reviewerName": current.name},
+    )
+    return SheetFinalizeResponse(
+        assessment_id=assessment_id, student_id=student_id,
+        total_awarded=awarded, total_max=maximum,
+        percentage=round(100.0 * awarded / maximum, 2) if maximum else 0.0,
     )
 
 

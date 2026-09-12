@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from typing import get_args
 
@@ -18,6 +18,8 @@ from ..integrations.composio_calendar import sync_to_google_calendar
 from . import pdf as pdf_export
 from . import selection
 from .audit_log import get_audit_log
+from .auth_routes import require_principal
+from .users import User
 from .mapping import grade_to_int, to_question_schema
 from .paper import generate_paper as build_generated_paper
 from .pool import get_pool
@@ -150,6 +152,14 @@ def search_questions(params: QuestionSearchParams) -> list[QuestionSchema]:
     candidates = pool.filter(subject=params.subject, grade=grade_roman, chapter_ids=params.chapter_ids)
     schemas = [to_question_schema(c) for c in candidates]
 
+    if params.subtopic_ids:
+        # The §21-25 bridge: "Generate Question Paper" from a set of
+        # selected, approved Subtopics. Real question ids only -- a
+        # subtopic with nothing tagged to it correctly excludes every
+        # question rather than falling back to the whole chapter.
+        from ..curriculum.store import get_curriculum_store
+        eligible = set(get_curriculum_store(cfg.data_root).question_ids_for_subtopics(params.subtopic_ids))
+        schemas = [q for q in schemas if q.id in eligible]
     if params.bloom_levels:
         schemas = [q for q in schemas if q.bloom_level in params.bloom_levels]
     if params.difficulties:
@@ -377,4 +387,29 @@ def update_status(assessment_id: str, body: dict) -> Assessment:
     a.status = new_status
     a.updated_at = _now()
     store.save(a)
+    return a
+
+
+# docs/compliance.md's recommended minimal principal-approval workflow: the
+# *lock* (principalApproved being terminal, enforced by _require_editable
+# above) already existed with no real way to reach it, since nothing could
+# authenticate as a principal. This is that missing action -- gated on a
+# real principal identity (auth_routes.require_principal, itself gated on
+# users.py's "first registrant per school" bootstrap rule) rather than a
+# bare status PATCH anyone could call.
+@router.patch("/assessments/{assessment_id}/approve", response_model=Assessment)
+def approve_assessment(assessment_id: str, principal: User = Depends(require_principal)) -> Assessment:
+    cfg, store = _require()
+    a = store.get(assessment_id)
+    if a is None:
+        raise HTTPException(404, "assessment not found")
+    if a.school_id != principal.school_id:
+        raise HTTPException(403, "this assessment belongs to a different school")
+    a.status = "principalApproved"
+    a.updated_at = _now()
+    store.save(a)
+    get_audit_log(cfg.data_root).append(
+        "assessment_approved", assessment_id=assessment_id, actor=principal.id,
+        details={"principalName": principal.name, "principalEmail": principal.email},
+    )
     return a

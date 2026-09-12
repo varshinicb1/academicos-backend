@@ -190,6 +190,48 @@ class QuestionMapper:
         return None
 
 
+@dataclass
+class SubtopicMatch:
+    subtopic_id: str
+    subtopic_name: str
+    method: str = "lexical"
+    confidence: float = 0.0
+
+
+def map_subtopics(curriculum_store, *, chapter_id: str, question_text: str,
+                  min_score: float = 0.15, max_matches: int = 3) -> list[SubtopicMatch]:
+    """Question -> real curriculum Subtopic resolution -- the docs/
+    ACADEMIC_DATA_MODEL.md section 1 bridge, added once real, approved
+    Subtopic ids exist (curriculum/extraction.py's review flow). Same
+    token-overlap approach as _propose_lexical above, scoped to one
+    chapter's real topics/subtopics rather than the whole graph: a
+    question is already chapter-tagged by the existing
+    assessment/chapters.py keyword-tagger, so searching only that
+    chapter's subtopics is both cheaper and more precise than a
+    school-wide lexical search would be.
+
+    No LLM path (yet) -- unlike question->concept mapping, question->
+    subtopic text is usually short and specific enough for token overlap
+    to work well; revisit if real usage shows otherwise.
+    """
+    q_tokens = _tokenize(question_text)
+    if not q_tokens:
+        return []
+    candidates: list[tuple[float, str, str]] = []
+    for topic in curriculum_store.topics_for_chapter(chapter_id):
+        for sub in curriculum_store.subtopics_for_topic(topic.id):
+            label_tokens = _tokenize(sub.name)
+            if not label_tokens:
+                continue
+            overlap = len(q_tokens & label_tokens) / (len(label_tokens | q_tokens) or 1)
+            if overlap >= min_score:
+                candidates.append((overlap, sub.id, sub.name))
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return [SubtopicMatch(subtopic_id=sid, subtopic_name=name, method="lexical",
+                          confidence=round(score, 3))
+            for score, sid, name in candidates[:max_matches]]
+
+
 def _tokenize(text: str) -> set[str]:
     return {t for t in re.findall(r"[a-z0-9]+", text.lower())
             if t not in _STOPWORDS}

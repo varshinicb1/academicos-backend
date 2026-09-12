@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS sources (
   academic_year  TEXT,
   series         TEXT,
   page_count     INTEGER,
-  status         TEXT DEFAULT 'registered',  -- registered|parsed|extracted|failed|retracted
+  status         TEXT DEFAULT 'registered',  -- registered|parsed|low_confidence|extracted|failed|retracted
   quality_score  REAL DEFAULT 0,
   notes          TEXT,
   meta           TEXT,                   -- json

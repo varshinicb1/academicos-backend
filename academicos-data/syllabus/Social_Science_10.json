@@ -1,0 +1,38 @@
+{
+  "subject": "Social Science",
+  "grade": 10,
+  "source": "CBSE Curriculum 2025-26, Social_Science_Sec_2025-26.pdf, Class X Course Structure",
+  "total_marks": 80,
+  "units": [
+    {"unit_no": "I", "name": "History (India and the Contemporary World-II)", "marks": 20, "chapters": [
+      {"id": "rise-of-nationalism-europe", "name": "The Rise of Nationalism in Europe"},
+      {"id": "nationalism-india", "name": "Nationalism in India"},
+      {"id": "making-global-world", "name": "The Making of a Global World"},
+      {"id": "age-of-industrialisation", "name": "The Age of Industrialisation"},
+      {"id": "print-culture-modern-world", "name": "Print Culture and the Modern World"}
+    ]},
+    {"unit_no": "II", "name": "Geography (Contemporary India-II)", "marks": 20, "chapters": [
+      {"id": "resources-development", "name": "Resources and Development"},
+      {"id": "forest-wildlife-resources", "name": "Forest and Wildlife Resources"},
+      {"id": "water-resources", "name": "Water Resources"},
+      {"id": "agriculture", "name": "Agriculture"},
+      {"id": "minerals-energy-resources", "name": "Minerals and Energy Resources"},
+      {"id": "manufacturing-industries", "name": "Manufacturing Industries"},
+      {"id": "lifelines-national-economy", "name": "Lifelines of National Economy"}
+    ]},
+    {"unit_no": "III", "name": "Political Science (Democratic Politics-II)", "marks": 20, "chapters": [
+      {"id": "power-sharing", "name": "Power-sharing"},
+      {"id": "federalism", "name": "Federalism"},
+      {"id": "gender-religion-caste", "name": "Gender, Religion and Caste"},
+      {"id": "political-parties", "name": "Political Parties"},
+      {"id": "outcomes-of-democracy", "name": "Outcomes of Democracy"}
+    ]},
+    {"unit_no": "IV", "name": "Economics (Understanding Economic Development)", "marks": 20, "chapters": [
+      {"id": "development", "name": "Development"},
+      {"id": "sectors-indian-economy", "name": "Sectors of the Indian Economy"},
+      {"id": "money-credit", "name": "Money and Credit"},
+      {"id": "globalisation-indian-economy", "name": "Globalisation and the Indian Economy"},
+      {"id": "consumer-rights", "name": "Consumer Rights"}
+    ]}
+  ]
+}
