@@ -167,6 +167,10 @@ class RenameRequest(Camel):
     name: str = Field(min_length=1)
 
 
+class SetSequenceRequest(Camel):
+    seq: int
+
+
 class TagQuestionRequest(Camel):
     question_id: str
     question_text: str = Field(min_length=1)
@@ -226,6 +230,9 @@ class AddHolidayRequest(Camel):
     date: str
     label: str = Field(min_length=1)
     kind: str = "holiday"
+    # Set for a real multi-day block (a 30-45 day summer break) instead of
+    # entering one row per date; omitted/None means a single-day holiday.
+    end_date: Optional[str] = None
 
 
 class HolidayResponse(Camel):
@@ -234,6 +241,7 @@ class HolidayResponse(Camel):
     date: str
     label: str
     kind: str
+    end_date: Optional[str] = None
 
 
 class SetPeriodConfigurationRequest(Camel):
@@ -257,8 +265,40 @@ class WorkingDaysResponse(Camel):
     dates: list[str]
 
 
-class ComputeTeachingTimeRequest(Camel):
+class SetSubjectPeriodAllocationRequest(Camel):
+    subject: str = Field(min_length=1)
     periods_per_week: int = Field(gt=0)
+
+
+class SubjectPeriodAllocationResponse(Camel):
+    id: str
+    school_id: str
+    academic_year_id: str
+    subject: str
+    periods_per_week: int
+
+
+class AddTimetableSlotRequest(Camel):
+    subject: str = Field(min_length=1)
+    day_of_week: int = Field(ge=0, le=6)
+    period_number: int = Field(gt=0)
+
+
+class TimetableSlotResponse(Camel):
+    id: str
+    school_id: str
+    academic_year_id: str
+    subject: str
+    day_of_week: int
+    period_number: int
+
+
+class ComputeTeachingTimeRequest(Camel):
+    # Optional: when omitted, the route resolves this book's subject's
+    # persisted SubjectPeriodAllocation for the year instead -- an explicit
+    # value here still always wins (a one-off override), see
+    # compute_teaching_time_estimates route's docstring.
+    periods_per_week: Optional[int] = Field(default=None, gt=0)
 
 
 class TeachingTimeEstimateResponse(Camel):

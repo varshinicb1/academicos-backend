@@ -42,10 +42,26 @@ class SourceRegistry:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=60000")
         self.conn.executescript(SCHEMA)
         self.conn.commit()
 
     def register(self, source_id: str, file_key: str, **fields: Any) -> None:
+        """Real bug found and fixed 2026-09-14: re-registering an
+        already-known source_id (`ingest --reingest` re-discovering a file
+        that was already parsed/extracted) used to reset status back to
+        'registered' unconditionally on every call -- silently discarding
+        pipeline progress even though the underlying parse/extract output
+        files on disk were completely untouched. Confirmed as the real
+        cause of a live discrepancy: `cli stats` showed only 14 sources as
+        status='extracted' while the chunk index and extracted/ directory
+        held real, valid output for 408 more, all sitting at status='parsed'
+        because a --reingest had reset them and only `parse` (not
+        `extract`) was ever re-run afterward. The ON CONFLICT branch below
+        now only refreshes file_key (in case the file moved) and leaves an
+        existing row's status alone -- a brand-new source_id still gets
+        status='registered' from the INSERT branch, unaffected."""
         cols = ["source_id", "file_key", "registered_at", "meta"]
         vals: dict[str, Any] = dict(fields)
         meta = vals.pop("meta", None)
@@ -65,7 +81,7 @@ class SourceRegistry:
         cols_sql = ",".join(keys)
         self.conn.execute(
             f"INSERT INTO sources ({cols_sql}) VALUES ({placeholders}) "
-            f"ON CONFLICT(source_id) DO UPDATE SET file_key=excluded.file_key, status='registered'",
+            f"ON CONFLICT(source_id) DO UPDATE SET file_key=excluded.file_key",
             list(values.values()),
         )
         self.conn.commit()

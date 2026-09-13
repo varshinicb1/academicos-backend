@@ -53,6 +53,7 @@ from .schemas import (
     QuestionsForSubtopicsRequest,
     QuestionsForSubtopicsResponse,
     RenameRequest,
+    SetSequenceRequest,
     RescheduleHistoryEntryResponse,
     RescheduleResultResponse,
     ScheduleBookRequest,
@@ -60,7 +61,11 @@ from .schemas import (
     ScheduledLessonResponse,
     SeedCbse10Request,
     SeedCbse10Response,
+    AddTimetableSlotRequest,
     SetPeriodConfigurationRequest,
+    SetSubjectPeriodAllocationRequest,
+    SubjectPeriodAllocationResponse,
+    TimetableSlotResponse,
     StudentEnrollmentResponse,
     SubjectProgressResponse,
     SubjectResponse,
@@ -134,6 +139,14 @@ def _llm():
     from ..llm.sarvam import SarvamLLM
     api_key = _cfg.llm_api_key if _cfg else None
     return SarvamLLM(api_key=api_key or None)
+
+
+def _require_school_owns_unit(unit_id: str, current: User) -> None:
+    owner = _require().school_id_for_unit(unit_id)
+    if owner is None:
+        raise HTTPException(404, "unit not found")
+    if owner != current.school_id:
+        raise HTTPException(403, "this unit belongs to a different school")
 
 
 def _require_school_owns_chapter(chapter_id: str, current: User) -> None:
@@ -440,6 +453,55 @@ def delete_subtopic(subtopic_id: str, force: bool = False,
     return {"ok": True}
 
 
+# ---------------- delivery-sequence reordering (§13) ----------------
+# One endpoint per entity type (matching rename_topic/rename_subtopic's own
+# shape) rather than a single polymorphic route, so each keeps its own
+# specific school-ownership check. A change here is read live by
+# chapters_for_unit/topics_for_chapter/subtopics_for_topic/units_for_book
+# (all ORDER BY seq) and by scheduling.py::schedule_book(), which walks
+# exactly that order -- see store.py::set_sequence's docstring for what this
+# does and does not do to any schedule a previous run already produced.
+
+@router.patch("/units/{unit_id}/sequence", response_model=UnitResponse)
+def set_unit_sequence(unit_id: str, req: SetSequenceRequest,
+                      principal: User = Depends(require_principal)) -> UnitResponse:
+    store = _require()
+    _require_school_owns_unit(unit_id, principal)
+    store.set_sequence("unit", unit_id, req.seq)
+    u = store.get_unit(unit_id)
+    return UnitResponse(id=u.id, canonical_id=u.canonical_id, book_id=u.book_id,
+                        unit_no=u.unit_no, name=u.name, marks=u.marks, seq=u.seq)
+
+
+@router.patch("/chapters/{chapter_id}/sequence", response_model=ChapterResponse)
+def set_chapter_sequence(chapter_id: str, req: SetSequenceRequest,
+                         principal: User = Depends(require_principal)) -> ChapterResponse:
+    store = _require()
+    _require_school_owns_chapter(chapter_id, principal)
+    store.set_sequence("chapter", chapter_id, req.seq)
+    c = store.get_chapter(chapter_id)
+    return ChapterResponse(id=c.id, canonical_id=c.canonical_id, unit_id=c.unit_id,
+                           name=c.name, seq=c.seq)
+
+
+@router.patch("/topics/{topic_id}/sequence", response_model=TopicResponse)
+def set_topic_sequence(topic_id: str, req: SetSequenceRequest,
+                       principal: User = Depends(require_principal)) -> TopicResponse:
+    store = _require()
+    _require_school_owns_topic(topic_id, principal)
+    store.set_sequence("topic", topic_id, req.seq)
+    return _topic_response(store.get_topic(topic_id))
+
+
+@router.patch("/subtopics/{subtopic_id}/sequence", response_model=SubtopicResponse)
+def set_subtopic_sequence(subtopic_id: str, req: SetSequenceRequest,
+                          principal: User = Depends(require_principal)) -> SubtopicResponse:
+    store = _require()
+    _require_school_owns_subtopic(subtopic_id, principal)
+    store.set_sequence("subtopic", subtopic_id, req.seq)
+    return _subtopic_response(store.get_subtopic(subtopic_id))
+
+
 # ---------------- question <-> subtopic tagging (qmap.py bridge) ----------------
 # §4 of the ordered milestone: only wired here, after real canonical
 # Subtopic ids exist above -- see qmap.py's map_subtopics() for the
@@ -529,8 +591,10 @@ def add_holiday(academic_year_id: str, req: AddHolidayRequest,
     cal = store.get_calendar_for_year(academic_year_id)
     if cal is None:
         raise HTTPException(404, "create a calendar for this academic year first")
-    h = store.add_holiday(calendar_id=cal.id, date=req.date, label=req.label, kind=req.kind)
-    return HolidayResponse(id=h.id, calendar_id=h.calendar_id, date=h.date, label=h.label, kind=h.kind)
+    h = store.add_holiday(calendar_id=cal.id, date=req.date, label=req.label, kind=req.kind,
+                          end_date=req.end_date)
+    return HolidayResponse(id=h.id, calendar_id=h.calendar_id, date=h.date, label=h.label,
+                           kind=h.kind, end_date=h.end_date)
 
 
 @router.get("/academic-years/{academic_year_id}/holidays", response_model=list[HolidayResponse])
@@ -541,7 +605,8 @@ def list_holidays(academic_year_id: str,
     cal = store.get_calendar_for_year(academic_year_id)
     if cal is None:
         return []
-    return [HolidayResponse(id=h.id, calendar_id=h.calendar_id, date=h.date, label=h.label, kind=h.kind)
+    return [HolidayResponse(id=h.id, calendar_id=h.calendar_id, date=h.date, label=h.label,
+                            kind=h.kind, end_date=h.end_date)
             for h in store.holidays_for_calendar(cal.id)]
 
 
@@ -559,6 +624,83 @@ def set_period_configuration(academic_year_id: str, req: SetPeriodConfigurationR
     return PeriodConfigurationResponse(id=cfg.id, school_id=cfg.school_id,
                                        academic_year_id=cfg.academic_year_id,
                                        period_minutes=cfg.period_minutes)
+
+
+@router.post("/academic-years/{academic_year_id}/subject-period-allocations",
+             response_model=SubjectPeriodAllocationResponse)
+def set_subject_period_allocation(academic_year_id: str, req: SetSubjectPeriodAllocationRequest,
+                                  principal: User = Depends(require_principal),
+                                  ) -> SubjectPeriodAllocationResponse:
+    """Persists a subject's real periods/week for this school year --
+    previously a value every caller of compute_teaching_time_estimates()/
+    schedule_book() had to re-supply on every call (see calendar.py's
+    docstring). An upsert, not one-time-set-then-409 -- see
+    SubjectPeriodAllocation's own docstring for why that differs from
+    period-configuration's posture."""
+    store = _require()
+    _require_school_owns_academic_year(academic_year_id, principal)
+    alloc = store.set_subject_period_allocation(
+        school_id=principal.school_id, academic_year_id=academic_year_id,
+        subject=req.subject, periods_per_week=req.periods_per_week)
+    return SubjectPeriodAllocationResponse(id=alloc.id, school_id=alloc.school_id,
+                                           academic_year_id=alloc.academic_year_id,
+                                           subject=alloc.subject, periods_per_week=alloc.periods_per_week)
+
+
+@router.get("/academic-years/{academic_year_id}/subject-period-allocations",
+           response_model=list[SubjectPeriodAllocationResponse])
+def list_subject_period_allocations(academic_year_id: str,
+                                    current: User = Depends(get_current_user),
+                                    ) -> list[SubjectPeriodAllocationResponse]:
+    store = _require()
+    _require_school_owns_academic_year(academic_year_id, current)
+    return [
+        SubjectPeriodAllocationResponse(id=a.id, school_id=a.school_id, academic_year_id=a.academic_year_id,
+                                        subject=a.subject, periods_per_week=a.periods_per_week)
+        for a in store.subject_period_allocations_for_year(academic_year_id)
+    ]
+
+
+@router.post("/academic-years/{academic_year_id}/timetable-slots", response_model=TimetableSlotResponse)
+def add_timetable_slot(academic_year_id: str, req: AddTimetableSlotRequest,
+                       principal: User = Depends(require_principal)) -> TimetableSlotResponse:
+    """Persists one real weekday+period a subject meets -- once any slots
+    exist for a subject/year, scheduling.py's schedule_book() uses exactly
+    those real weekdays instead of its "first N working days of the week"
+    fallback heuristic (see _subject_teaching_days's docstring)."""
+    store = _require()
+    _require_school_owns_academic_year(academic_year_id, principal)
+    slot = store.add_timetable_slot(
+        school_id=principal.school_id, academic_year_id=academic_year_id,
+        subject=req.subject, day_of_week=req.day_of_week, period_number=req.period_number)
+    return TimetableSlotResponse(id=slot.id, school_id=slot.school_id, academic_year_id=slot.academic_year_id,
+                                 subject=slot.subject, day_of_week=slot.day_of_week,
+                                 period_number=slot.period_number)
+
+
+@router.get("/academic-years/{academic_year_id}/timetable-slots",
+           response_model=list[TimetableSlotResponse])
+def list_timetable_slots(academic_year_id: str, subject: str,
+                         current: User = Depends(get_current_user)) -> list[TimetableSlotResponse]:
+    store = _require()
+    _require_school_owns_academic_year(academic_year_id, current)
+    return [
+        TimetableSlotResponse(id=s.id, school_id=s.school_id, academic_year_id=s.academic_year_id,
+                              subject=s.subject, day_of_week=s.day_of_week, period_number=s.period_number)
+        for s in store.timetable_slots_for_subject(academic_year_id, subject)
+    ]
+
+
+@router.delete("/timetable-slots/{slot_id}")
+def delete_timetable_slot(slot_id: str, principal: User = Depends(require_principal)) -> dict:
+    store = _require()
+    slot = store.get_timetable_slot(slot_id)
+    if slot is None:
+        raise HTTPException(404, "timetable slot not found")
+    if slot.school_id != principal.school_id:
+        raise HTTPException(403, "this timetable slot belongs to a different school")
+    store.remove_timetable_slot(slot_id)
+    return {"ok": True}
 
 
 @router.get("/academic-years/{academic_year_id}/working-days", response_model=WorkingDaysResponse)
@@ -589,14 +731,30 @@ def compute_teaching_time_estimates(book_id: str, academic_year_id: str,
     compute_teaching_time_estimates() docstring for the full method.
     Idempotent per subtopic: re-running never duplicates or silently
     overwrites an existing estimate (§29 -- an admin who has since
-    hand-adjusted an estimate must not have it clobbered by a re-run)."""
+    hand-adjusted an estimate must not have it clobbered by a re-run).
+
+    `periods_per_week`: an explicit value in the request always wins (a
+    one-off override); when omitted, resolves this book's subject's real,
+    persisted SubjectPeriodAllocation for the year instead of forcing the
+    caller to re-supply it every time -- 400 with a clear message if
+    neither exists, never a guessed default."""
     store = _require()
     _require_school_owns_book(book_id, principal)
     _require_school_owns_academic_year(academic_year_id, principal)
+    periods_per_week = req.periods_per_week
+    if periods_per_week is None:
+        subject = store.subject_name_for_book(book_id)
+        allocation = store.subject_period_allocation(academic_year_id, subject) if subject else None
+        if allocation is None:
+            raise HTTPException(
+                400, "periods_per_week not given and no SubjectPeriodAllocation is set for this "
+                "subject/year -- either pass periodsPerWeek explicitly or "
+                "POST .../subject-period-allocations first")
+        periods_per_week = allocation.periods_per_week
     try:
         result = calendar_mod.compute_teaching_time_estimates(
             store, academic_year_id=academic_year_id, book_id=book_id,
-            periods_per_week=req.periods_per_week, approved_by=principal.id)
+            periods_per_week=periods_per_week, approved_by=principal.id)
     except ValueError as e:
         raise HTTPException(404, str(e))
     return ComputeTeachingTimeResponse(

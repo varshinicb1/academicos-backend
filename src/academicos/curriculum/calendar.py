@@ -34,6 +34,17 @@ def _parse_date(s: str) -> date:
     return date.fromisoformat(s)
 
 
+def _date_range(start: str, end: str) -> list[str]:
+    """Every ISO date from start to end, inclusive of both ends."""
+    s, e = _parse_date(start), _parse_date(end)
+    out = []
+    d = s
+    while d <= e:
+        out.append(d.isoformat())
+        d += timedelta(days=1)
+    return out
+
+
 def _nth_weekday_of_month(d: date) -> int:
     """1 for the first occurrence of d's weekday in its month, 2 for the
     second, etc. -- used to resolve "2nd,4th Saturday" against a real date."""
@@ -126,8 +137,17 @@ def working_days_for_year(store: CurriculumStore, academic_year_id: str) -> Work
             "create one first (POST .../calendar)")
     holidays = store.holidays_for_calendar(cal.id)
     # "event" markers (e.g. Annual Day) don't remove a teaching day; only
-    # real closures do.
-    holiday_dates = {h.date for h in holidays if h.kind in ("holiday", "unexpected_closure")}
+    # real closures do. A holiday with end_date set (a real multi-day block --
+    # a 30-45 day summer break) expands to every date in the inclusive range,
+    # not just its start date.
+    holiday_dates: set[str] = set()
+    for h in holidays:
+        if h.kind not in ("holiday", "unexpected_closure"):
+            continue
+        if h.end_date is None:
+            holiday_dates.add(h.date)
+        else:
+            holiday_dates.update(_date_range(h.date, h.end_date))
     return compute_working_days(
         start_date=year.start_date, end_date=year.end_date,
         weekly_off_days=cal.weekly_off_days, alternate_saturday_rule=cal.alternate_saturday_rule,

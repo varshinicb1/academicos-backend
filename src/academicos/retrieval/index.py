@@ -30,6 +30,7 @@ class ChunkIndex:
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=60000")
         self.conn.executescript(SCHEMA)
         self._df: Counter = Counter()
         self._doc_tokens: dict[str, Counter] = {}

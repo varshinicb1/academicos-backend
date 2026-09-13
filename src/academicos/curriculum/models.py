@@ -137,6 +137,41 @@ class PeriodConfiguration:
 
 
 @dataclass
+class SubjectPeriodAllocation:
+    """How many periods/week a subject gets -- previously taken as an
+    explicit call argument every time (calendar.py's
+    compute_teaching_time_estimates(), scheduling.py's schedule_book()),
+    documented there as a real per-school decision this module didn't yet
+    persist. One real school row per (academic_year, subject); unlike
+    PeriodConfiguration's one-time-set-then-409 posture, this is a real
+    upsert -- periods-per-week is the kind of thing a school plausibly
+    revises term to term, where period duration in minutes is not."""
+    id: str
+    school_id: str
+    academic_year_id: str
+    subject: str
+    periods_per_week: int
+
+
+@dataclass
+class SubjectTimetableSlot:
+    """One real weekday a subject meets this year (e.g. "Science meets
+    Monday, Wednesday, Friday") -- what scheduling.py's own docstring
+    called the missing "real signal for exactly *which* weekdays a school
+    actually assigns this subject", previously always the deterministic
+    "first N working days of the week" heuristic regardless of a school's
+    real timetable. `period_number` (which slot of the day, e.g. 1st
+    period) is real, forward-looking data for a future period-by-period
+    timetable display -- scheduling itself only needs day_of_week."""
+    id: str
+    school_id: str
+    academic_year_id: str
+    subject: str
+    day_of_week: int         # 0=Monday .. 6=Sunday, matching date.weekday()
+    period_number: int
+
+
+@dataclass
 class Calendar:
     id: str
     academic_year_id: str
@@ -148,9 +183,14 @@ class Calendar:
 class Holiday:
     id: str
     calendar_id: str
-    date: str                # ISO date
+    date: str                # ISO date -- start date for a multi-day block
     label: str
     kind: str = "holiday"    # holiday | event | unexpected_closure
+    # None means a single-day holiday (the common case: a national holiday,
+    # Annual Day). Set for a real multi-day block -- a 30-45 day summer
+    # break -- so it doesn't require one row per date; inclusive of both
+    # ends, same convention as `date`.
+    end_date: Optional[str] = None
 
 
 @dataclass

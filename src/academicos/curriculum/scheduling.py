@@ -21,19 +21,22 @@ from .calendar import working_days_for_year
 from .store import CurriculumStore
 
 
-def _subject_teaching_days(working_days: list[date], periods_per_week: int) -> list[date]:
-    """Groups the real working days into real calendar weeks (ISO
-    Mon-Sun) and takes the first `periods_per_week` of each week, in date
-    order, as the days this subject meets.
+def _subject_teaching_days(working_days: list[date], periods_per_week: int,
+                           weekday_slots: Optional[set[int]] = None) -> list[date]:
+    """When `weekday_slots` is given (a school's real
+    SubjectTimetableSlot rows for this subject/year -- "Science meets
+    Monday, Wednesday, Friday"), returns every real working day landing on
+    one of those weekdays: the school's actual timetable, not a guess.
 
-    This data model has no school-wide, period-by-period timetable (no
-    `SubjectPeriodAllocation`/weekday-slot concept exists -- confirmed
-    missing, see docs/TRANSCRIPT_REQUIREMENTS_MATRIX.md), so there is no
-    real signal for exactly *which* weekdays a school actually assigns this
-    subject. This is a deterministic, explainable, honestly-documented
-    simplification -- the same "no finer real signal exists, don't
-    fabricate one" stance seed_cbse10.py and calendar.py already take --
-    not a claim to reproduce a real school's actual timetable."""
+    Without it (no real timetable entered yet for this subject), falls back
+    to the previous deterministic simplification: groups the real working
+    days into real calendar weeks (ISO Mon-Sun) and takes the first
+    `periods_per_week` of each week, in date order. Still honestly
+    documented as a fallback, not a claim to reproduce a real school's
+    actual timetable -- the same "no finer real signal exists, don't
+    fabricate one" stance seed_cbse10.py and calendar.py already take."""
+    if weekday_slots:
+        return [d for d in working_days if d.weekday() in weekday_slots]
     by_week: dict[tuple[int, int], list[date]] = defaultdict(list)
     for d in working_days:
         iso_year, iso_week, _ = d.isocalendar()
@@ -94,7 +97,14 @@ def schedule_book(
         store.delete_scheduled_lessons_for_book(academic_year_id, book_id)
 
     wd = working_days_for_year(store, academic_year_id)
-    teaching_days = _subject_teaching_days([date.fromisoformat(s) for s in wd.dates], periods_per_week)
+    subject = store.subject_name_for_book(book_id)
+    weekday_slots = None
+    if subject is not None:
+        slots = store.timetable_slots_for_subject(academic_year_id, subject)
+        if slots:
+            weekday_slots = {s.day_of_week for s in slots}
+    teaching_days = _subject_teaching_days(
+        [date.fromisoformat(s) for s in wd.dates], periods_per_week, weekday_slots)
 
     ordered: list[tuple[str, int]] = []   # (subtopic_id, periods_needed)
     without_estimate: list[str] = []

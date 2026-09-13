@@ -19,6 +19,7 @@ from ..models.document import ParsedDocument
 from ..models.enums import DocType
 from . import notation
 from .chapters import chapter_name, tag_chapter
+from .embedding_chapter_tagger import ChapterTagCache, tag_questions
 
 log = logging.getLogger(__name__)
 
@@ -398,7 +399,19 @@ class _NearDuplicateIndex:
 
 def build_pool(cfg: Config, *, subject: str = "Science", grade: str = "X") -> QuestionPool:
     """Loads every parsed question_paper for (subject, grade) from the registry,
-    extracts + chapter-tags its questions, dedupes near-identical stems."""
+    extracts + chapter-tags its questions, dedupes near-identical stems.
+
+    Chapter tagging: Science keeps chapters.py's hand-curated keyword tagger
+    (already validated, free, no network call). Every other subject with a
+    real syllabus chapter list (see syllabus/cbse_syllabus.py) is tagged via
+    embedding_chapter_tagger.tag_questions -- sentence-embedding cosine
+    similarity against the real chapter names, cached persistently, silently
+    untagged (not crashed) if no syllabus data exists yet for that subject
+    (e.g. Hindi has none as of this writing). Chosen over an LLM-JSON
+    approach after a live comparison: an LLM asked to emit structured JSON
+    failed ~40-50% of batches for Social Science's longer (21-chapter)
+    candidate list, where embeddings have no generation step to fail at all
+    -- see embedding_chapter_tagger.py's docstring for the full comparison."""
     import sqlite3
 
     pool = QuestionPool()
@@ -412,6 +425,7 @@ def build_pool(cfg: Config, *, subject: str = "Science", grade: str = "X") -> Qu
 
     reg = sqlite3.connect(cfg.registry_db)
     reg.row_factory = sqlite3.Row
+    reg.execute("PRAGMA busy_timeout=60000")
     rows = reg.execute(
         "SELECT source_id, doc_type, subject, grade, academic_year FROM sources "
         "WHERE doc_type='question_paper' AND subject=? AND grade=?",
@@ -470,12 +484,13 @@ def build_pool(cfg: Config, *, subject: str = "Science", grade: str = "X") -> Qu
             seen_hashes.add(text_hash)
 
             q.source_text = text
-            # tag_chapter's keyword set is Class X Science only (see chapters.py's
-            # docstring) — running it on other subjects produces false positives:
-            # "base" (geometry) matching "Acids, Bases and Salts", "reflection"
-            # (coordinate geometry) matching the Light chapter, etc. 61/752 real
-            # Mathematics/X questions were mistagged with a Science chapter this
-            # way before this guard was added.
+            # chapters.py's keyword set is Class X Science only -- running it on
+            # other subjects produces false positives: "base" (geometry) matching
+            # "Acids, Bases and Salts", "reflection" (coordinate geometry) matching
+            # the Light chapter, etc. 61/752 real Mathematics/X questions were
+            # mistagged with a Science chapter this way before this guard was
+            # added. Other subjects are tagged below, after the loop, via the LLM
+            # classifier (batched) instead of reusing the Science keyword set.
             is_science = (row["subject"] or subject).strip().lower() == "science"
             cid, conf = tag_chapter(text) if is_science else (None, 0.0)
             pq = PoolQuestion(
@@ -501,6 +516,33 @@ def build_pool(cfg: Config, *, subject: str = "Science", grade: str = "X") -> Qu
 
     if keys:
         keys.close()
+
+    is_science_subject = subject.strip().lower() == "science"
+    if not is_science_subject and pool.questions:
+        untagged = [pq for pq in pool.questions if pq.chapter_id is None]
+        if untagged:
+            from ..syllabus.cbse_syllabus import load_syllabus
+            from .mapping import grade_to_int
+            syllabus = load_syllabus(subject, grade_to_int(grade))
+            names_by_id = ({c.id: c.name for _, c in syllabus.all_chapters()}
+                           if syllabus is not None else {})
+
+            cache = ChapterTagCache(cfg.chapter_tags_db)
+            try:
+                items = [(pq.text_hash, pq.question.source_text or "") for pq in untagged]
+                tags = tag_questions(cache, subject=subject, grade_label=grade,
+                                     grade_int=grade_to_int(grade), items=items)
+            finally:
+                cache.close()
+            embed_tagged = 0
+            for pq in untagged:
+                cid, conf = tags.get(pq.text_hash, (None, 0.0))
+                if cid is not None:
+                    pq.chapter_id = cid
+                    pq.chapter_name = names_by_id.get(cid)
+                    pq.chapter_confidence = conf
+                    embed_tagged += 1
+            log.info("Embedding chapter tagging: %d/%d %s questions tagged", embed_tagged, len(untagged), subject)
 
     log.info("question pool built: %d questions from %d papers, %d with official answers "
              "(skipped: %d need a figure, %d unreadable Hindi, %d near-duplicates, "

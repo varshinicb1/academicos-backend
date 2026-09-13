@@ -770,4 +770,5 @@ def _connect_index(index_db):
     import sqlite3
     conn = sqlite3.connect(index_db, timeout=60)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=60000")
     return conn

@@ -60,12 +60,13 @@ class Config:
         self.events_db = self.data_root / "events" / "events.sqlite"
         self.question_map_db = self.data_root / "questions" / "question-maps.jsonl"
         self.artifacts_dir = self.data_root / "artifacts"
+        self.chapter_tags_db = self.data_root / "assessment" / "chapter_tags.sqlite"
 
         for d in (
             self.documents_dir, self.pages_dir, self.parse_dir, self.extracted_dir,
             self.data_root / "graph", self.data_root / "index", self.data_root / "registry",
             self.data_root / "events", self.artifacts_dir,
-            self.question_map_db.parent,
+            self.question_map_db.parent, self.chapter_tags_db.parent,
         ):
             d.mkdir(parents=True, exist_ok=True)
 

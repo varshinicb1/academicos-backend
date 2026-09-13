@@ -36,6 +36,8 @@ from .models import (
     Grade,
     Holiday,
     PeriodConfiguration,
+    SubjectPeriodAllocation,
+    SubjectTimetableSlot,
     QuestionSubtopicLink,
     STATUS_VALUES,
     ScheduledLesson,
@@ -191,6 +193,27 @@ CREATE TABLE IF NOT EXISTS period_configurations (
 );
 CREATE INDEX IF NOT EXISTS idx_periodcfg_year ON period_configurations(academic_year_id);
 
+CREATE TABLE IF NOT EXISTS subject_period_allocations (
+  id           TEXT PRIMARY KEY,
+  school_id    TEXT NOT NULL,
+  academic_year_id TEXT NOT NULL,
+  subject      TEXT NOT NULL,
+  periods_per_week INTEGER NOT NULL,
+  UNIQUE(academic_year_id, subject)
+);
+CREATE INDEX IF NOT EXISTS idx_spa_year_subject ON subject_period_allocations(academic_year_id, subject);
+
+CREATE TABLE IF NOT EXISTS subject_timetable_slots (
+  id           TEXT PRIMARY KEY,
+  school_id    TEXT NOT NULL,
+  academic_year_id TEXT NOT NULL,
+  subject      TEXT NOT NULL,
+  day_of_week  INTEGER NOT NULL,
+  period_number INTEGER NOT NULL,
+  UNIQUE(academic_year_id, subject, day_of_week, period_number)
+);
+CREATE INDEX IF NOT EXISTS idx_sts_year_subject ON subject_timetable_slots(academic_year_id, subject);
+
 CREATE TABLE IF NOT EXISTS calendars (
   id           TEXT PRIMARY KEY,
   academic_year_id TEXT NOT NULL UNIQUE,
@@ -203,7 +226,8 @@ CREATE TABLE IF NOT EXISTS holidays (
   calendar_id  TEXT NOT NULL,
   date         TEXT NOT NULL,
   label        TEXT NOT NULL,
-  kind         TEXT NOT NULL DEFAULT 'holiday'
+  kind         TEXT NOT NULL DEFAULT 'holiday',
+  end_date     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_holidays_calendar ON holidays(calendar_id);
 
@@ -265,8 +289,22 @@ class CurriculumStore:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=60000")
+        self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """CREATE TABLE IF NOT EXISTS never adds a column to a table that
+        already exists on disk -- unlike scheduled_lessons' note/completed_by
+        columns (added when zero real rows existed yet, so no migration was
+        needed), school_1 already has real seeded holiday rows by the time
+        `end_date` was added, so a real ALTER TABLE is required here."""
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(holidays)").fetchall()}
+        if "end_date" not in cols:
+            self.conn.execute("ALTER TABLE holidays ADD COLUMN end_date TEXT")
 
     def close(self) -> None:
         self.conn.close()
@@ -496,6 +534,16 @@ class CurriculumStore:
             (grade_id,)).fetchall()
         return [r["id"] for r in rows]
 
+    def school_id_for_unit(self, unit_id: str) -> Optional[str]:
+        r = self.conn.execute(
+            "SELECT y.school_id FROM units u "
+            "JOIN books b ON u.book_id = b.id "
+            "JOIN subjects s ON b.subject_id = s.id "
+            "JOIN grades g ON s.grade_id = g.id "
+            "JOIN academic_years y ON g.academic_year_id = y.id "
+            "WHERE u.id=?", (unit_id,)).fetchone()
+        return r["school_id"] if r else None
+
     def school_id_for_chapter(self, chapter_id: str) -> Optional[str]:
         r = self.conn.execute(
             "SELECT y.school_id FROM chapters c "
@@ -532,6 +580,31 @@ class CurriculumStore:
             "WHERE st.id=?", (subtopic_id,)).fetchone()
         return r["school_id"] if r else None
 
+    _SEQUENCE_TABLES = {"unit": "units", "chapter": "chapters", "topic": "topics", "subtopic": "subtopics"}
+
+    def set_sequence(self, entity_type: str, entity_id: str, seq: int) -> None:
+        """Changes one Unit/Chapter/Topic/Subtopic's delivery-order `seq` --
+        the field `chapters_for_unit`/`topics_for_chapter`/
+        `subtopics_for_topic`/`units_for_book` all `ORDER BY`, and the field
+        `scheduling.py::schedule_book()` walks in that same order (unit ->
+        chapter -> topic -> subtopic) to decide what gets taught when. A
+        change here takes effect on the *next* `schedule_book()` call --
+        it does not retroactively touch any `ScheduledLesson` rows a
+        previous run already created (see the matrix's own open item on
+        re-running/flagging schedules stale after a reorder).
+
+        Unlike rename_topic/rename_subtopic's silent no-op on an unknown id,
+        this raises: a reorder is a deliberate, meaningful admin action, and
+        a caller reordering something that doesn't exist deserves a real
+        error, not quiet success."""
+        table = self._SEQUENCE_TABLES.get(entity_type)
+        if table is None:
+            raise ValueError(f"unknown sequence entity_type: {entity_type!r}")
+        cur = self.conn.execute(f"UPDATE {table} SET seq=? WHERE id=?", (seq, entity_id))
+        if cur.rowcount == 0:
+            raise ValueError(f"no {entity_type} with id {entity_id!r}")
+        self.conn.commit()
+
     def chapters_for_unit(self, unit_id: str) -> list[Chapter]:
         rows = self.conn.execute("SELECT * FROM chapters WHERE unit_id=? ORDER BY seq", (unit_id,)).fetchall()
         return [Chapter(**dict(r)) for r in rows]
@@ -544,12 +617,6 @@ class CurriculumStore:
             "SELECT c.* FROM chapters c JOIN units u ON c.unit_id = u.id "
             "WHERE u.book_id=? ORDER BY u.seq, c.seq", (book_id,)).fetchall()
         return [Chapter(**dict(r)) for r in rows]
-
-    def reorder_chapter(self, chapter_id: str, new_seq: int) -> None:
-        """§13: teach last chapter first, etc. -- delivery order is
-        independent of textbook/unit order and admin-changeable."""
-        self.conn.execute("UPDATE chapters SET seq=? WHERE id=?", (new_seq, chapter_id))
-        self.conn.commit()
 
     # ---------------- topics ----------------
 
@@ -778,6 +845,76 @@ class CurriculumStore:
             "SELECT * FROM period_configurations WHERE academic_year_id=?", (academic_year_id,)).fetchone()
         return PeriodConfiguration(**dict(r)) if r else None
 
+    def set_subject_period_allocation(self, *, school_id: str, academic_year_id: str,
+                                      subject: str, periods_per_week: int) -> SubjectPeriodAllocation:
+        """Upsert, not create-once-then-409 (see SubjectPeriodAllocation's
+        own docstring for why): a school setting Science to 6 periods/week
+        this term and 7 next term should not need a distinct row per term,
+        and re-POSTing must update, not IntegrityError."""
+        existing = self.conn.execute(
+            "SELECT id FROM subject_period_allocations WHERE academic_year_id=? AND subject=?",
+            (academic_year_id, subject)).fetchone()
+        alloc_id = existing["id"] if existing else new_id("spa")
+        self.conn.execute(
+            "INSERT INTO subject_period_allocations "
+            "(id, school_id, academic_year_id, subject, periods_per_week) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(academic_year_id, subject) DO UPDATE SET periods_per_week=excluded.periods_per_week",
+            (alloc_id, school_id, academic_year_id, subject, periods_per_week))
+        self.conn.commit()
+        return SubjectPeriodAllocation(id=alloc_id, school_id=school_id, academic_year_id=academic_year_id,
+                                       subject=subject, periods_per_week=periods_per_week)
+
+    def subject_period_allocation(self, academic_year_id: str, subject: str) -> Optional[SubjectPeriodAllocation]:
+        r = self.conn.execute(
+            "SELECT * FROM subject_period_allocations WHERE academic_year_id=? AND subject=?",
+            (academic_year_id, subject)).fetchone()
+        return SubjectPeriodAllocation(**dict(r)) if r else None
+
+    def subject_period_allocations_for_year(self, academic_year_id: str) -> list[SubjectPeriodAllocation]:
+        rows = self.conn.execute(
+            "SELECT * FROM subject_period_allocations WHERE academic_year_id=? ORDER BY subject",
+            (academic_year_id,)).fetchall()
+        return [SubjectPeriodAllocation(**dict(r)) for r in rows]
+
+    def subject_name_for_book(self, book_id: str) -> Optional[str]:
+        r = self.conn.execute(
+            "SELECT s.name FROM books b JOIN subjects s ON b.subject_id = s.id WHERE b.id=?",
+            (book_id,)).fetchone()
+        return r["name"] if r else None
+
+    def add_timetable_slot(self, *, school_id: str, academic_year_id: str, subject: str,
+                           day_of_week: int, period_number: int) -> SubjectTimetableSlot:
+        if not (0 <= day_of_week <= 6):
+            raise ValueError(f"day_of_week must be 0 (Monday) .. 6 (Sunday), got {day_of_week}")
+        slot = SubjectTimetableSlot(id=new_id("slot"), school_id=school_id,
+                                    academic_year_id=academic_year_id, subject=subject,
+                                    day_of_week=day_of_week, period_number=period_number)
+        self.conn.execute(
+            "INSERT INTO subject_timetable_slots "
+            "(id, school_id, academic_year_id, subject, day_of_week, period_number) VALUES (?,?,?,?,?,?)",
+            (slot.id, slot.school_id, slot.academic_year_id, slot.subject,
+             slot.day_of_week, slot.period_number))
+        self.conn.commit()
+        return slot
+
+    def timetable_slots_for_subject(self, academic_year_id: str, subject: str) -> list[SubjectTimetableSlot]:
+        rows = self.conn.execute(
+            "SELECT * FROM subject_timetable_slots WHERE academic_year_id=? AND subject=? "
+            "ORDER BY day_of_week, period_number",
+            (academic_year_id, subject)).fetchall()
+        return [SubjectTimetableSlot(**dict(r)) for r in rows]
+
+    def get_timetable_slot(self, slot_id: str) -> Optional[SubjectTimetableSlot]:
+        r = self.conn.execute(
+            "SELECT * FROM subject_timetable_slots WHERE id=?", (slot_id,)).fetchone()
+        return SubjectTimetableSlot(**dict(r)) if r else None
+
+    def remove_timetable_slot(self, slot_id: str) -> None:
+        cur = self.conn.execute("DELETE FROM subject_timetable_slots WHERE id=?", (slot_id,))
+        if cur.rowcount == 0:
+            raise ValueError(f"no timetable slot with id {slot_id!r}")
+        self.conn.commit()
+
     # ---------------- calendar / holidays ----------------
 
     def create_calendar(self, *, academic_year_id: str,
@@ -802,11 +939,15 @@ class CurriculumStore:
         d["weekly_off_days"] = json.loads(d["weekly_off_days"])
         return Calendar(**d)
 
-    def add_holiday(self, *, calendar_id: str, date: str, label: str, kind: str = "holiday") -> Holiday:
-        h = Holiday(id=new_id("holiday"), calendar_id=calendar_id, date=date, label=label, kind=kind)
+    def add_holiday(self, *, calendar_id: str, date: str, label: str, kind: str = "holiday",
+                    end_date: Optional[str] = None) -> Holiday:
+        if end_date is not None and end_date < date:
+            raise ValueError(f"holiday end_date {end_date} is before its date {date}")
+        h = Holiday(id=new_id("holiday"), calendar_id=calendar_id, date=date, label=label,
+                   kind=kind, end_date=end_date)
         self.conn.execute(
-            "INSERT INTO holidays (id, calendar_id, date, label, kind) VALUES (?,?,?,?,?)",
-            (h.id, h.calendar_id, h.date, h.label, h.kind))
+            "INSERT INTO holidays (id, calendar_id, date, label, kind, end_date) VALUES (?,?,?,?,?,?)",
+            (h.id, h.calendar_id, h.date, h.label, h.kind, h.end_date))
         self.conn.commit()
         return h
 
