@@ -12,12 +12,17 @@ but for the object that ties everything else together.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any, Optional
 
+import requests
+
 from .schemas import Assessment
 from .supabase_kv import SupabaseTable
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS assessments (
@@ -57,12 +62,18 @@ class AssessmentStore:
 
     def save(self, a: Assessment) -> None:
         if self._remote.enabled:
-            self._remote.upsert({
-                "id": a.id, "school_id": a.school_id, "teacher_id": a.teacher_id,
-                "created_at": a.created_at.isoformat(),
-                "payload": json.loads(a.model_dump_json()),
-            }, on_conflict="id")
-            return
+            try:
+                self._remote.upsert({
+                    "id": a.id, "school_id": a.school_id, "teacher_id": a.teacher_id,
+                    "created_at": a.created_at.isoformat(),
+                    "payload": json.loads(a.model_dump_json()),
+                }, on_conflict="id")
+                return
+            except requests.exceptions.RequestException:
+                logger.warning(
+                    "Supabase unreachable, falling back to local SQLite for assessment %s", a.id,
+                    exc_info=True,
+                )
         self.conn.execute(
             """INSERT INTO assessments (id, school_id, teacher_id, title, subject, grade,
                  chapter_ids, blueprint, status, created_at, updated_at, scheduled_at,
@@ -95,15 +106,21 @@ class AssessmentStore:
 
     def get(self, assessment_id: str) -> Optional[Assessment]:
         if self._remote.enabled:
-            rows = self._remote.select(id=assessment_id)
-            return Assessment.model_validate(rows[0]["payload"]) if rows else None
+            try:
+                rows = self._remote.select(id=assessment_id)
+                return Assessment.model_validate(rows[0]["payload"]) if rows else None
+            except requests.exceptions.RequestException:
+                logger.warning("Supabase unreachable, falling back to local SQLite for get(%s)", assessment_id, exc_info=True)
         row = self.conn.execute("SELECT * FROM assessments WHERE id=?", (assessment_id,)).fetchone()
         return _row_to_assessment(row) if row else None
 
     def list_by_teacher(self, teacher_id: str) -> list[Assessment]:
         if self._remote.enabled:
-            rows = self._remote.select(teacher_id=teacher_id, order="created_at.desc")
-            return [Assessment.model_validate(r["payload"]) for r in rows]
+            try:
+                rows = self._remote.select(teacher_id=teacher_id, order="created_at.desc")
+                return [Assessment.model_validate(r["payload"]) for r in rows]
+            except requests.exceptions.RequestException:
+                logger.warning("Supabase unreachable, falling back to local SQLite for list_by_teacher(%s)", teacher_id, exc_info=True)
         rows = self.conn.execute(
             "SELECT * FROM assessments WHERE teacher_id=? ORDER BY created_at DESC", (teacher_id,)
         ).fetchall()
@@ -111,8 +128,11 @@ class AssessmentStore:
 
     def list_by_school(self, school_id: str) -> list[Assessment]:
         if self._remote.enabled:
-            rows = self._remote.select(school_id=school_id, order="created_at.desc")
-            return [Assessment.model_validate(r["payload"]) for r in rows]
+            try:
+                rows = self._remote.select(school_id=school_id, order="created_at.desc")
+                return [Assessment.model_validate(r["payload"]) for r in rows]
+            except requests.exceptions.RequestException:
+                logger.warning("Supabase unreachable, falling back to local SQLite for list_by_school(%s)", school_id, exc_info=True)
         rows = self.conn.execute(
             "SELECT * FROM assessments WHERE school_id=? ORDER BY created_at DESC", (school_id,)
         ).fetchall()
@@ -120,8 +140,11 @@ class AssessmentStore:
 
     def delete(self, assessment_id: str) -> None:
         if self._remote.enabled:
-            self._remote.delete(id=assessment_id)
-            return
+            try:
+                self._remote.delete(id=assessment_id)
+                return
+            except requests.exceptions.RequestException:
+                logger.warning("Supabase unreachable, falling back to local SQLite for delete(%s)", assessment_id, exc_info=True)
         self.conn.execute("DELETE FROM assessments WHERE id=?", (assessment_id,))
         self.conn.commit()
 
