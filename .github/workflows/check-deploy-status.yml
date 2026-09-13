@@ -7,12 +7,16 @@ jobs:
     env:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
       RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+      RENDER_OWNER_ID: tea-d01mafje5dus73bbh6fg
     steps:
-      - name: Fetch latest deploys
+      - name: Trigger a fresh failing request so it shows up in logs
+        run: >
+          curl -s -X POST -H "Content-Type: application/json"
+          -d '{"teacherId":"t","schoolId":"school_1","title":"x","subject":"Science","grade":10,"chapterIds":[],"blueprint":{"totalMarks":40,"durationMinutes":90,"difficulty":{"easy":0.3,"medium":0.5,"hard":0.2},"bloom":{"remember":0.2,"understand":0.25,"apply":0.3,"analyze":0.15,"evaluate":0.05,"create":0.05},"chapterWeights":{"weights":{}},"competencyWeights":{"weights":{}}}}'
+          "https://academicos-backend.onrender.com/api/v1/assessments"
+      - name: Wait a moment for logs to land
+        run: sleep 8
+      - name: Fetch recent logs
         run: >
           curl -s -H "Authorization: Bearer $RENDER_API_KEY"
-          "https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys?limit=3"
-      - name: Fetch service details
-        run: >
-          curl -s -H "Authorization: Bearer $RENDER_API_KEY"
-          "https://api.render.com/v1/services/$RENDER_SERVICE_ID"
+          "https://api.render.com/v1/logs?ownerId=$RENDER_OWNER_ID&resource=$RENDER_SERVICE_ID&limit=100"
