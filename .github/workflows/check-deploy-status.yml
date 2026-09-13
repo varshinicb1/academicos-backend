@@ -1,0 +1,33 @@
+name: Check Render deploy status
+on:
+  workflow_dispatch: {}
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+    steps:
+      - name: Fetch latest deploys (status only, no secret values printed)
+        run: |
+          echo "Latest 3 deploys:"
+          curl -s -H "Authorization: Bearer $RENDER_API_KEY" \
+            "https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys?limit=3" \
+            | python3 -c "
+import json, sys
+deploys = json.load(sys.stdin)
+for d in deploys:
+    dep = d.get('deploy', d)
+    print(f\"id={dep.get('id')} status={dep.get('status')} createdAt={dep.get('createdAt')} updatedAt={dep.get('updatedAt')} finishedAt={dep.get('finishedAt')}\")
+"
+          echo ""
+          echo "Service status:"
+          curl -s -H "Authorization: Bearer $RENDER_API_KEY" \
+            "https://api.render.com/v1/services/$RENDER_SERVICE_ID" \
+            | python3 -c "
+import json, sys
+s = json.load(sys.stdin)
+print(f\"suspended={s.get('suspended')} type={s.get('type')}\")
+img = s.get('serviceDetails', {}).get('image') or s.get('imagePath')
+print('image:', img)
+"
