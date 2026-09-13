@@ -1,0 +1,14 @@
+name: Keep Supabase project alive
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch: {}
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping a Supabase-backed endpoint on the live backend
+        run: >
+          curl -sf "https://academicos-backend.onrender.com/api/v1/assessments?school_id=school_1"
+          -o /dev/null
+          && echo "Pinged assessments endpoint (Supabase-backed) -- project should stay active."
