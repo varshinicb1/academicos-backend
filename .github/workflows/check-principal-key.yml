@@ -1,0 +1,30 @@
+name: Check principal bootstrap key configured
+on:
+  workflow_dispatch: {}
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+    steps:
+      - name: Check whether PRINCIPAL_BOOTSTRAP_KEY is set (prints presence/length only, never the value)
+        run: |
+          curl -s -H "Authorization: Bearer $RENDER_API_KEY" \
+            "https://api.render.com/v1/services/$RENDER_SERVICE_ID/env-vars?limit=100" \
+            | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+found = None
+for item in data:
+    ev = item.get('envVar', item)
+    if ev.get('key') == 'PRINCIPAL_BOOTSTRAP_KEY':
+        found = ev.get('value', '')
+        break
+if found is None:
+    print('PRINCIPAL_BOOTSTRAP_KEY: NOT SET (no such env var on the service)')
+elif found == '':
+    print('PRINCIPAL_BOOTSTRAP_KEY: SET BUT EMPTY STRING')
+else:
+    print(f'PRINCIPAL_BOOTSTRAP_KEY: SET (length={len(found)} chars)')
+"
