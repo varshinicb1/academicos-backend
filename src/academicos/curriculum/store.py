@@ -1125,6 +1125,198 @@ class CurriculumStore:
             "SELECT * FROM student_enrollments WHERE student_id=?", (student_id,)).fetchone()
         return StudentEnrollment(**dict(r)) if r else None
 
+    # ---------------- management reporting & variance (§17, §32) ----------------
+
+    def get_coverage_report(self, *, school_id: str, academic_year_id: str,
+                            as_of_date: Optional[str] = None) -> dict[str, Any]:
+        """Planned vs. actually-taught coverage, variance, and completion %
+        aggregated by Subject and Chapter for school management (§17, §32)."""
+        from datetime import datetime, timezone
+        if not as_of_date:
+            as_of_date = datetime.now(timezone.utc).date().isoformat()
+
+        rows = self.conn.execute(
+            """
+            SELECT l.id, l.date, l.status, l.subtopic_id,
+                   st.name as subtopic_name, tp.id as topic_id, tp.name as topic_name,
+                   ch.id as chapter_id, ch.name as chapter_name,
+                   b.id as book_id, b.title as book_title,
+                   s.id as subject_id, s.name as subject_name,
+                   g.id as grade_id, g.number as grade_number
+            FROM scheduled_lessons l
+            JOIN subtopics st ON l.subtopic_id = st.id
+            JOIN topics tp ON st.topic_id = tp.id
+            JOIN chapters ch ON tp.chapter_id = ch.id
+            JOIN books b ON l.book_id = b.id
+            JOIN subjects s ON b.subject_id = s.id
+            JOIN grades g ON s.grade_id = g.id
+            WHERE l.school_id = ? AND l.academic_year_id = ?
+            ORDER BY g.number, s.name, ch.name, l.date
+            """,
+            (school_id, academic_year_id),
+        ).fetchall()
+
+        assignment_rows = self.conn.execute(
+            "SELECT teacher_id, book_id FROM teacher_assignments WHERE school_id=?",
+            (school_id,),
+        ).fetchall()
+        teacher_for_book = {r["book_id"]: r["teacher_id"] for r in assignment_rows}
+
+        subjects_map: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            sid = r["subject_id"]
+            if sid not in subjects_map:
+                subjects_map[sid] = {
+                    "subject_id": sid,
+                    "subject_name": r["subject_name"],
+                    "grade_number": r["grade_number"],
+                    "book_id": r["book_id"],
+                    "book_title": r["book_title"],
+                    "teacher_id": teacher_for_book.get(r["book_id"]),
+                    "lessons": [],
+                    "chapters": {},
+                }
+            cid = r["chapter_id"]
+            if cid not in subjects_map[sid]["chapters"]:
+                subjects_map[sid]["chapters"][cid] = {
+                    "chapter_id": cid,
+                    "chapter_name": r["chapter_name"],
+                    "lessons": [],
+                }
+            subjects_map[sid]["lessons"].append(r)
+            subjects_map[sid]["chapters"][cid]["lessons"].append(r)
+
+        total_lessons = len(rows)
+        completed_lessons = sum(1 for r in rows if r["status"] == "completed")
+        skipped_lessons = sum(1 for r in rows if r["status"] == "skipped")
+        planned_to_date = sum(1 for r in rows if r["date"] <= as_of_date)
+        completed_to_date = sum(1 for r in rows if r["date"] <= as_of_date and r["status"] == "completed")
+
+        overall_coverage_pct = round((completed_lessons / total_lessons * 100), 2) if total_lessons > 0 else 0.0
+        overall_pace_pct = round((completed_to_date / planned_to_date * 100), 2) if planned_to_date > 0 else 100.0
+        overall_variance = completed_to_date - planned_to_date
+
+        subjects_out = []
+        for sid, sdata in subjects_map.items():
+            s_lessons = sdata["lessons"]
+            s_total = len(s_lessons)
+            s_completed = sum(1 for l in s_lessons if l["status"] == "completed")
+            s_skipped = sum(1 for l in s_lessons if l["status"] == "skipped")
+            s_planned_to_date = sum(1 for l in s_lessons if l["date"] <= as_of_date)
+            s_completed_to_date = sum(1 for l in s_lessons if l["date"] <= as_of_date and l["status"] == "completed")
+            s_coverage_pct = round((s_completed / s_total * 100), 2) if s_total > 0 else 0.0
+            s_pace_pct = round((s_completed_to_date / s_planned_to_date * 100), 2) if s_planned_to_date > 0 else 100.0
+            s_variance = s_completed_to_date - s_planned_to_date
+
+            chapters_out = []
+            for cid, cdata in sdata["chapters"].items():
+                c_lessons = cdata["lessons"]
+                c_total = len(c_lessons)
+                c_completed = sum(1 for l in c_lessons if l["status"] == "completed")
+                c_skipped = sum(1 for l in c_lessons if l["status"] == "skipped")
+                c_cov = round((c_completed / c_total * 100), 2) if c_total > 0 else 0.0
+                chapters_out.append({
+                    "chapter_id": cid,
+                    "chapter_name": cdata["chapter_name"],
+                    "total_lessons": c_total,
+                    "completed_lessons": c_completed,
+                    "skipped_lessons": c_skipped,
+                    "coverage_pct": c_cov,
+                })
+
+            subjects_out.append({
+                "subject_id": sid,
+                "subject_name": sdata["subject_name"],
+                "grade_number": sdata["grade_number"],
+                "book_id": sdata["book_id"],
+                "book_title": sdata["book_title"],
+                "teacher_id": sdata["teacher_id"],
+                "teacher_name": None,
+                "total_lessons": s_total,
+                "completed_lessons": s_completed,
+                "skipped_lessons": s_skipped,
+                "planned_to_date": s_planned_to_date,
+                "completed_to_date": s_completed_to_date,
+                "coverage_pct": s_coverage_pct,
+                "pace_pct": s_pace_pct,
+                "variance": s_variance,
+                "chapters": chapters_out,
+            })
+
+        return {
+            "school_id": school_id,
+            "academic_year_id": academic_year_id,
+            "as_of_date": as_of_date,
+            "total_lessons": total_lessons,
+            "completed_lessons": completed_lessons,
+            "skipped_lessons": skipped_lessons,
+            "planned_to_date": planned_to_date,
+            "completed_to_date": completed_to_date,
+            "overall_coverage_pct": overall_coverage_pct,
+            "overall_pace_pct": overall_pace_pct,
+            "overall_variance": overall_variance,
+            "subjects": subjects_out,
+        }
+
+    def get_delayed_topics(self, *, school_id: str, academic_year_id: str,
+                           as_of_date: Optional[str] = None) -> dict[str, Any]:
+        """All scheduled lessons past due (date < as_of_date) still in
+        'scheduled' status (§17, §32)."""
+        from datetime import date, datetime, timezone
+        if not as_of_date:
+            as_of_date = datetime.now(timezone.utc).date().isoformat()
+        as_of = date.fromisoformat(as_of_date)
+
+        rows = self.conn.execute(
+            """
+            SELECT l.id as lesson_id, l.date as scheduled_date, l.subtopic_id,
+                   st.name as subtopic_name, tp.name as topic_name,
+                   ch.name as chapter_name, s.name as subject_name,
+                   g.number as grade_number, b.id as book_id
+            FROM scheduled_lessons l
+            JOIN subtopics st ON l.subtopic_id = st.id
+            JOIN topics tp ON st.topic_id = tp.id
+            JOIN chapters ch ON tp.chapter_id = ch.id
+            JOIN books b ON l.book_id = b.id
+            JOIN subjects s ON b.subject_id = s.id
+            JOIN grades g ON s.grade_id = g.id
+            WHERE l.school_id = ? AND l.academic_year_id = ? AND l.date < ? AND l.status = 'scheduled'
+            ORDER BY l.date, g.number, s.name
+            """,
+            (school_id, academic_year_id, as_of_date),
+        ).fetchall()
+
+        assignment_rows = self.conn.execute(
+            "SELECT teacher_id, book_id FROM teacher_assignments WHERE school_id=?",
+            (school_id,),
+        ).fetchall()
+        teacher_for_book = {r["book_id"]: r["teacher_id"] for r in assignment_rows}
+
+        delayed = []
+        for r in rows:
+            sched_d = date.fromisoformat(r["scheduled_date"])
+            days_overdue = (as_of - sched_d).days
+            delayed.append({
+                "lesson_id": r["lesson_id"],
+                "scheduled_date": r["scheduled_date"],
+                "days_overdue": days_overdue,
+                "grade_number": r["grade_number"],
+                "subject_name": r["subject_name"],
+                "chapter_name": r["chapter_name"],
+                "topic_name": r["topic_name"],
+                "subtopic_name": r["subtopic_name"],
+                "teacher_id": teacher_for_book.get(r["book_id"]),
+                "teacher_name": None,
+            })
+
+        return {
+            "school_id": school_id,
+            "academic_year_id": academic_year_id,
+            "as_of_date": as_of_date,
+            "delayed_count": len(delayed),
+            "delayed_lessons": delayed,
+        }
+
 
 _INSTANCE: Optional[CurriculumStore] = None
 

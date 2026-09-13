@@ -475,3 +475,69 @@ class MyScheduleEntryResponse(Camel):
     topic_name: str
     subtopic_id: str
     subtopic_name: str
+
+
+# ---------------- management reporting & variance (§17, §32) ----------------
+
+class ChapterCoverageResponse(Camel):
+    chapter_id: str
+    chapter_name: str
+    total_lessons: int
+    completed_lessons: int
+    skipped_lessons: int
+    coverage_pct: float
+
+
+class SubjectCoverageResponse(Camel):
+    subject_id: str
+    subject_name: str
+    grade_number: int
+    book_id: str
+    book_title: str
+    teacher_id: Optional[str] = None
+    teacher_name: Optional[str] = None
+    total_lessons: int
+    completed_lessons: int
+    skipped_lessons: int
+    planned_to_date: int
+    completed_to_date: int
+    coverage_pct: float
+    pace_pct: float
+    variance: int
+    chapters: list[ChapterCoverageResponse] = Field(default_factory=list)
+
+
+class CoverageReportResponse(Camel):
+    school_id: str
+    academic_year_id: str
+    as_of_date: str
+    total_lessons: int
+    completed_lessons: int
+    skipped_lessons: int
+    planned_to_date: int
+    completed_to_date: int
+    overall_coverage_pct: float
+    overall_pace_pct: float
+    overall_variance: int
+    subjects: list[SubjectCoverageResponse]
+
+
+class DelayedLessonResponse(Camel):
+    lesson_id: str
+    scheduled_date: str
+    days_overdue: int
+    grade_number: int
+    subject_name: str
+    chapter_name: str
+    topic_name: str
+    subtopic_name: str
+    teacher_id: Optional[str] = None
+    teacher_name: Optional[str] = None
+
+
+class DelayedTopicsReportResponse(Camel):
+    school_id: str
+    academic_year_id: str
+    as_of_date: str
+    delayed_count: int
+    delayed_lessons: list[DelayedLessonResponse]

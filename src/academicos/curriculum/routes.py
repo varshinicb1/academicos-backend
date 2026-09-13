@@ -32,7 +32,11 @@ from .schemas import (
     BookResponse,
     BoardResponse,
     CalendarResponse,
+    ChapterCoverageResponse,
     ChapterResponse,
+    CoverageReportResponse,
+    DelayedLessonResponse,
+    DelayedTopicsReportResponse,
     ComputeTeachingTimeRequest,
     ComputeTeachingTimeResponse,
     CreateCalendarRequest,
@@ -113,6 +117,9 @@ def _require_users():
     config.data_root) -- reused here only to verify a teacher_id being
     assigned actually belongs to the assigning principal's school, not to
     duplicate any auth logic."""
+    from ..assessment import auth_routes
+    if auth_routes._users is not None:
+        return auth_routes._users
     if _cfg is None:
         raise HTTPException(503, "curriculum module not initialized")
     from ..assessment.users import get_user_store
@@ -1099,3 +1106,44 @@ def get_my_progress(academic_year_id: str,
             completed_count=completed_count, skipped_count=skipped_count, total_count=len(lessons)))
 
     return MyProgressResponse(academic_year_id=academic_year_id, as_of_date=as_of, subjects=subjects)
+
+
+# ---------------- management reporting & variance (§17, §32) ----------------
+
+@router.get("/reporting/coverage", response_model=CoverageReportResponse)
+def get_coverage_report(academic_year_id: str, as_of_date: Optional[str] = None,
+                        principal: User = Depends(require_principal)) -> CoverageReportResponse:
+    """Planned vs. actually-taught coverage, variance, and completion %
+    aggregated by Subject and Chapter for school management (§17, §32)."""
+    store = _require()
+    _require_school_owns_academic_year(academic_year_id, principal)
+    data = store.get_coverage_report(school_id=principal.school_id,
+                                     academic_year_id=academic_year_id,
+                                     as_of_date=as_of_date)
+    users_store = _require_users()
+    for s in data["subjects"]:
+        if s.get("teacher_id"):
+            u = users_store.get(s["teacher_id"])
+            if u:
+                s["teacher_name"] = u.name
+    return CoverageReportResponse(**data)
+
+
+@router.get("/reporting/delayed-topics", response_model=DelayedTopicsReportResponse)
+def get_delayed_topics(academic_year_id: str, as_of_date: Optional[str] = None,
+                       principal: User = Depends(require_principal)) -> DelayedTopicsReportResponse:
+    """All scheduled lessons past due (date < as_of_date) still in
+    'scheduled' status, with days overdue (§17, §32)."""
+    store = _require()
+    _require_school_owns_academic_year(academic_year_id, principal)
+    data = store.get_delayed_topics(school_id=principal.school_id,
+                                    academic_year_id=academic_year_id,
+                                    as_of_date=as_of_date)
+    users_store = _require_users()
+    for l in data["delayed_lessons"]:
+        if l.get("teacher_id"):
+            u = users_store.get(l["teacher_id"])
+            if u:
+                l["teacher_name"] = u.name
+    return DelayedTopicsReportResponse(**data)
+

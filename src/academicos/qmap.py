@@ -217,15 +217,35 @@ def map_subtopics(curriculum_store, *, chapter_id: str, question_text: str,
     q_tokens = _tokenize(question_text)
     if not q_tokens:
         return []
+    q_clean = " " + " ".join(re.findall(r"[a-z0-9]+", question_text.lower())) + " "
     candidates: list[tuple[float, str, str]] = []
     for topic in curriculum_store.topics_for_chapter(chapter_id):
         for sub in curriculum_store.subtopics_for_topic(topic.id):
             label_tokens = _tokenize(sub.name)
             if not label_tokens:
                 continue
-            overlap = len(q_tokens & label_tokens) / (len(label_tokens | q_tokens) or 1)
-            if overlap >= min_score:
-                candidates.append((overlap, sub.id, sub.name))
+            sub_clean = " " + " ".join(re.findall(r"[a-z0-9]+", sub.name.lower())) + " "
+            exact_phrase = sub_clean in q_clean
+
+            matched_tokens = q_tokens & label_tokens
+            if not matched_tokens and not exact_phrase:
+                continue
+
+            recall = len(matched_tokens) / len(label_tokens)
+            jaccard = len(matched_tokens) / (len(label_tokens | q_tokens) or 1)
+
+            # Calibrated scoring for multi-clause questions:
+            # When a question contains multiple clauses or paragraphs, Jaccard
+            # denominator (|label_tokens | q_tokens|) inflates heavily. Blending
+            # subtopic concept recall (coverage) with Jaccard and phrase detection
+            # prevents relevant multi-clause exam questions from dropping below threshold.
+            if exact_phrase:
+                score = max(0.85, 0.60 * recall + 0.40)
+            else:
+                score = 0.70 * recall + 0.30 * jaccard
+
+            if score >= min_score:
+                candidates.append((score, sub.id, sub.name))
     candidates.sort(key=lambda x: x[0], reverse=True)
     return [SubtopicMatch(subtopic_id=sid, subtopic_name=name, method="lexical",
                           confidence=round(score, 3))
