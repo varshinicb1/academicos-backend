@@ -10,7 +10,10 @@ guessed-at superset.
 """
 from __future__ import annotations
 
-from typing import Optional
+import json
+from dataclasses import asdict
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -1168,4 +1171,127 @@ def get_delayed_topics(academic_year_id: str, as_of_date: Optional[str] = None,
             if u:
                 l["teacher_name"] = u.name
     return DelayedTopicsReportResponse(**data)
+
+
+# ---------------- school data export ("easy transfer of school data") ----------------
+
+_EXPORT_SCHEMA_VERSION = 1
+
+
+def _curriculum_tree_for_export(store: CurriculumStore, school_id: str) -> list[dict[str, Any]]:
+    """Full Academic Year -> Grade -> Subject -> Book -> Unit -> Chapter ->
+    Topic -> Subtopic tree for one school, plus the operational config
+    (period allocations, timetable slots, holidays) attached to each year.
+    Boards are intentionally omitted -- global/shared across schools
+    (CBSE isn't school-specific), not part of any one school's data."""
+    years = []
+    for y in store.academic_years_for_school(school_id):
+        year_dict = asdict(y)
+        year_dict["grades"] = []
+        year_dict["subject_period_allocations"] = [
+            asdict(a) for a in store.subject_period_allocations_for_year(y.id)
+        ]
+        calendar = store.get_calendar_for_year(y.id)
+        year_dict["holidays"] = (
+            [asdict(h) for h in store.holidays_for_calendar(calendar.id)] if calendar else []
+        )
+        for g in store.grades_for_year(y.id):
+            grade_dict = asdict(g)
+            grade_dict["subjects"] = []
+            for s in store.subjects_for_grade(g.id):
+                subject_dict = asdict(s)
+                subject_dict["timetable_slots"] = [
+                    asdict(slot) for slot in store.timetable_slots_for_subject(y.id, s.name)
+                ]
+                subject_dict["books"] = []
+                for b in store.books_for_subject(s.id):
+                    book_dict = asdict(b)
+                    book_dict["units"] = []
+                    for u in store.units_for_book(b.id):
+                        unit_dict = asdict(u)
+                        unit_dict["chapters"] = []
+                        for c in store.chapters_for_book(b.id):
+                            if c.unit_id != u.id:
+                                continue
+                            chapter_dict = asdict(c)
+                            chapter_dict["topics"] = []
+                            for t in store.topics_for_chapter(c.id):
+                                topic_dict = asdict(t)
+                                topic_dict["subtopics"] = [
+                                    asdict(st) for st in store.subtopics_for_topic(t.id)
+                                ]
+                                chapter_dict["topics"].append(topic_dict)
+                            unit_dict["chapters"].append(chapter_dict)
+                        book_dict["units"].append(unit_dict)
+                    subject_dict["books"].append(book_dict)
+                grade_dict["subjects"].append(subject_dict)
+            year_dict["grades"].append(grade_dict)
+        years.append(year_dict)
+    return years
+
+
+@router.get("/export")
+def export_school_data(principal: User = Depends(require_principal)) -> dict[str, Any]:
+    """Bulk export of everything this principal's school owns, for backup
+    or manual transfer to another AcademicOS instance -- the concrete
+    "easy transfer of school data" feature. school_id always comes from
+    the authenticated principal, never a request parameter, same reason
+    seed_cbse10 above does the same: nothing here should let one school's
+    admin pull another school's data by guessing an id.
+
+    Covers everything that's cleanly school_id-scoped today: the full
+    curriculum tree (years/grades/subjects/books/units/chapters/topics/
+    subtopics) with period allocations/timetable/holidays, assessments,
+    paper templates, and this school's user accounts (password
+    hashes/salts excluded -- this is a data export, not a credential dump).
+
+    Deliberately does NOT include papers, practice sets, or scan sessions:
+    those three stores have no school_id column at all today (school
+    identity, if present, lives unindexed inside their JSON payload) --
+    see curriculum/store.py and this export's own `notes` field below.
+    Partitioning them per-school is real follow-up work, not silently
+    pretended to be covered here.
+    """
+    store = _require()
+    school_id = principal.school_id
+
+    from ..assessment import routes as assessment_routes
+    from ..assessment import pillar_routes
+
+    assessments = []
+    if assessment_routes._store is not None:
+        assessments = [
+            json.loads(a.model_dump_json())
+            for a in assessment_routes._store.list_by_school(school_id)
+        ]
+
+    templates = []
+    if pillar_routes._templates is not None:
+        templates = [t.model_dump() for t in pillar_routes._templates.list_for_school(school_id)]
+
+    users_store = _require_users()
+    users = [
+        {"id": u.id, "school_id": u.school_id, "name": u.name, "email": u.email,
+         "role": u.role, "created_at": u.created_at}
+        for u in users_store.users_for_school(school_id)
+    ]
+
+    return {
+        "schema_version": _EXPORT_SCHEMA_VERSION,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "school_id": school_id,
+        "curriculum": _curriculum_tree_for_export(store, school_id),
+        "assessments": assessments,
+        "paper_templates": templates,
+        "users": users,
+        "notes": [
+            "Papers, practice sets, and scan sessions are not included: those "
+            "stores have no school_id column, only assessment_id/opaque JSON "
+            "payloads, so a clean per-school export isn't possible without a "
+            "schema change. Reachable papers can still be found via each "
+            "exported assessment's generated_paper_id.",
+            "User rows exclude password_hash/password_salt -- this bundle is "
+            "not sufficient to log in as an exported user on another instance.",
+        ],
+    }
 

@@ -1,14 +1,48 @@
 """CurriculumStore: SQLite persistence for the operational curriculum/
 schedule hierarchy -- see docs/ACADEMIC_DATA_MODEL.md.
 
-Same pattern as assessment/store.py and assessment/users.py: local SQLite
-by default. Unlike those two, this one is NOT yet wired to
-SupabaseTable/Postgres -- deliberately deferred rather than half-done,
-since nothing writes real school data into it yet (only the CBSE-10 seed,
-which is safe to lose and re-run). Wire the same Postgres-when-configured
-pattern in before any real admin-entered data (period configs, approved
-time estimates, calendars) depends on surviving a Render restart --
-tracked as a follow-up, not silently skipped.
+Durability, 2026-09-15: this was the last store the AGENTS.md inventory
+listed as "Deferred (Target for Path B)" -- the deferral note used to say
+it was safe because "nothing writes real school data into it yet." That's
+no longer true: the School Admin Console (Master Calendar, Sequence
+Reorder, Reschedule PUSH/ADJUST, Calendar Setup) now writes real
+admin-entered operational data here, so losing it on every Render
+redeploy/restart is a real problem, not a hypothetical one.
+
+Unlike the flat single-object stores (assessment/store.py,
+assessment/paper_store.py, ...), this store owns 18 relational tables with
+real FK relationships (`PRAGMA foreign_keys=ON` above) -- wrapping each
+table individually in SupabaseTable the way those stores do would mean 18
+new REST call sites and would lose that FK integrity across the two
+storage layers. Instead this store snapshots/restores the *whole SQLite
+file* as one blob via SupabaseStorage (the same class already used for
+scan-session photos/PDFs, just a different bucket):
+  - `_commit()` (replaces every direct `self.conn.commit()` call in this
+    file, ~35 call sites) checkpoints the WAL into the main file and
+    uploads it, debounced to once per `_SNAPSHOT_DEBOUNCE_SECONDS` so a
+    burst of edits doesn't re-upload the whole file on every single write.
+  - `__init__` downloads the last snapshot and writes it to `db_path`
+    *before* opening the connection, but only if `db_path` doesn't already
+    exist locally -- a fresh container with no prior local state restores
+    the last known-good state instead of starting empty; a container that
+    already has local data (e.g. mid-request restart within the same
+    disk lifetime) never overwrites it with a possibly-older remote copy.
+  - Requires a "curriculum-snapshots" bucket to exist in the Supabase
+    project (see docs/deployment.md) -- `.enabled` is False without
+    SUPABASE_KNOWLEDGE_URL/SUPABASE_KNOWLEDGE_ANON_KEY set, in which case
+    this whole mechanism is a no-op and behavior is unchanged from before.
+
+Known gap this pass does NOT fix: like every other SQLite store in this
+codebase before EventStore's fix earlier in this pass, CurriculumStore's
+methods call `self.conn.execute(...)` without any lock protecting the
+shared `sqlite3.Connection` from concurrent access by two threads at once
+-- a real latent risk under true multi-teacher concurrent writes, not
+introduced by this change but not fixed by it either. `_commit()` below
+takes `self._conn_lock` around its own checkpoint+read (so a snapshot
+can't race with itself), but the other 30+ pre-existing call sites in this
+file are unguarded, same as before this pass. Flagged here rather than
+silently left undocumented; hardening every call site is a larger,
+separate change.
 
 IDs are short opaque strings (`{prefix}_{uuid4 hex[:12]}`), matching
 users.py's `user_{...}` convention -- NOT the graph's descriptive
@@ -21,10 +55,17 @@ key against -- see models.py's docstrings on Unit/Chapter/Subtopic.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
+
+import requests
+
+from ..assessment.supabase_kv import SupabaseStorage
 
 from .models import (
     AcademicYear,
@@ -49,6 +90,8 @@ from .models import (
     Topic,
     Unit,
 )
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS boards (
@@ -285,8 +328,19 @@ def new_id(prefix: str) -> str:
 
 
 class CurriculumStore:
+    _SNAPSHOT_KEY = "curriculum.sqlite"
+    _SNAPSHOT_DEBOUNCE_SECONDS = 30.0
+
     def __init__(self, db_path: Path):
+        self.db_path = db_path
+        self._remote_storage = SupabaseStorage("curriculum-snapshots")
+        self._conn_lock = threading.Lock()
+        self._last_snapshot_at = 0.0
+
         db_path.parent.mkdir(parents=True, exist_ok=True)
+        if not db_path.exists() and self._remote_storage.enabled:
+            self._restore_from_remote()
+
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
@@ -294,7 +348,7 @@ class CurriculumStore:
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
         self._migrate()
-        self.conn.commit()
+        self._commit()
 
     def _migrate(self) -> None:
         """CREATE TABLE IF NOT EXISTS never adds a column to a table that
@@ -306,6 +360,51 @@ class CurriculumStore:
         if "end_date" not in cols:
             self.conn.execute("ALTER TABLE holidays ADD COLUMN end_date TEXT")
 
+    def _restore_from_remote(self) -> None:
+        """Called only when db_path doesn't exist locally yet and Supabase
+        is configured -- a fresh container restoring last known state
+        instead of starting empty. No snapshot yet (first-ever boot) is the
+        normal, expected case, not an error: falls through to a fresh
+        CREATE TABLE against an empty file exactly like before this pass."""
+        try:
+            data = self._remote_storage.download(self._SNAPSHOT_KEY)
+        except requests.exceptions.RequestException:
+            logger.info(
+                "No curriculum snapshot restored from Supabase (none uploaded yet, "
+                "or unreachable) -- starting with a fresh local database",
+                exc_info=True,
+            )
+            return
+        self.db_path.write_bytes(data)
+        logger.info("Restored CurriculumStore from Supabase snapshot (%d bytes)", len(data))
+
+    def _commit(self) -> None:
+        self.conn.commit()
+        self._maybe_snapshot()
+
+    def _maybe_snapshot(self) -> None:
+        if not self._remote_storage.enabled:
+            return
+        now = time.monotonic()
+        with self._conn_lock:
+            if now - self._last_snapshot_at < self._SNAPSHOT_DEBOUNCE_SECONDS:
+                return
+            self._last_snapshot_at = now
+            try:
+                # WAL mode means recent commits can still live only in the
+                # -wal sidecar file -- checkpoint first so db_path itself is
+                # a complete, self-contained snapshot, not a stale main file
+                # missing whatever hasn't been checkpointed back into it yet.
+                self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                data = self.db_path.read_bytes()
+            except OSError:
+                logger.warning("Could not read CurriculumStore db file to snapshot", exc_info=True)
+                return
+        try:
+            self._remote_storage.upload(self._SNAPSHOT_KEY, data, "application/x-sqlite3")
+        except requests.exceptions.RequestException:
+            logger.warning("Failed to upload CurriculumStore snapshot to Supabase", exc_info=True)
+
     def close(self) -> None:
         self.conn.close()
 
@@ -315,7 +414,7 @@ class CurriculumStore:
         b = Board(id=new_id("board"), name=name, code=code)
         self.conn.execute("INSERT INTO boards (id, name, code) VALUES (?,?,?)",
                           (b.id, b.name, b.code))
-        self.conn.commit()
+        self._commit()
         return b
 
     def get_board(self, board_id: str) -> Optional[Board]:
@@ -340,7 +439,7 @@ class CurriculumStore:
             "INSERT INTO academic_years (id, school_id, label, start_date, end_date, status) "
             "VALUES (?,?,?,?,?,?)",
             (y.id, y.school_id, y.label, y.start_date, y.end_date, y.status))
-        self.conn.commit()
+        self._commit()
         return y
 
     def get_academic_year(self, year_id: str) -> Optional[AcademicYear]:
@@ -365,7 +464,7 @@ class CurriculumStore:
         self.conn.execute(
             "INSERT INTO grades (id, academic_year_id, number, section) VALUES (?,?,?,?)",
             (g.id, g.academic_year_id, g.number, g.section))
-        self.conn.commit()
+        self._commit()
         return g
 
     def get_grade(self, grade_id: str) -> Optional[Grade]:
@@ -393,7 +492,7 @@ class CurriculumStore:
         s = Subject(id=new_id("subj"), grade_id=grade_id, name=name, code=code)
         self.conn.execute("INSERT INTO subjects (id, grade_id, name, code) VALUES (?,?,?,?)",
                           (s.id, s.grade_id, s.name, s.code))
-        self.conn.commit()
+        self._commit()
         return s
 
     def get_subject(self, subject_id: str) -> Optional[Subject]:
@@ -423,7 +522,7 @@ class CurriculumStore:
             "VALUES (?,?,?,?,?,?,?)",
             (b.id, b.subject_id, b.board_id, b.title, b.publisher,
              json.dumps(b.source_doc_ids), b.status))
-        self.conn.commit()
+        self._commit()
         return b
 
     def get_book(self, book_id: str):
@@ -465,7 +564,7 @@ class CurriculumStore:
             "INSERT INTO units (id, canonical_id, book_id, unit_no, name, marks, seq) "
             "VALUES (?,?,?,?,?,?,?)",
             (u.id, u.canonical_id, u.book_id, u.unit_no, u.name, u.marks, u.seq))
-        self.conn.commit()
+        self._commit()
         return u
 
     def get_unit(self, unit_id: str) -> Optional[Unit]:
@@ -487,7 +586,7 @@ class CurriculumStore:
         self.conn.execute(
             "INSERT INTO chapters (id, canonical_id, unit_id, name, seq) VALUES (?,?,?,?,?)",
             (c.id, c.canonical_id, c.unit_id, c.name, c.seq))
-        self.conn.commit()
+        self._commit()
         return c
 
     def get_chapter(self, chapter_id: str) -> Optional[Chapter]:
@@ -603,7 +702,7 @@ class CurriculumStore:
         cur = self.conn.execute(f"UPDATE {table} SET seq=? WHERE id=?", (seq, entity_id))
         if cur.rowcount == 0:
             raise ValueError(f"no {entity_type} with id {entity_id!r}")
-        self.conn.commit()
+        self._commit()
 
     def chapters_for_unit(self, unit_id: str) -> list[Chapter]:
         rows = self.conn.execute("SELECT * FROM chapters WHERE unit_id=? ORDER BY seq", (unit_id,)).fetchall()
@@ -636,7 +735,7 @@ class CurriculumStore:
             "generation_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (t.id, t.canonical_id, t.chapter_id, t.name, t.seq, t.description, t.source_type,
              t.source_reference, t.approved_by, t.approved_at, t.model_used, t.generation_version))
-        self.conn.commit()
+        self._commit()
         return t
 
     def get_topic(self, topic_id: str) -> Optional[Topic]:
@@ -652,7 +751,7 @@ class CurriculumStore:
         references -- canonical_id (what qmap.py/QuestionSubtopicLink key
         against) is untouched by this; only the display name changes."""
         self.conn.execute("UPDATE topics SET name=? WHERE id=?", (new_name, topic_id))
-        self.conn.commit()
+        self._commit()
 
     # ---------------- subtopics ----------------
 
@@ -672,7 +771,7 @@ class CurriculumStore:
             "generation_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (s.id, s.canonical_id, s.topic_id, s.name, s.seq, s.description, s.source_type,
              s.source_reference, s.approved_by, s.approved_at, s.model_used, s.generation_version))
-        self.conn.commit()
+        self._commit()
         return s
 
     def get_subtopic(self, subtopic_id: str) -> Optional[Subtopic]:
@@ -689,7 +788,7 @@ class CurriculumStore:
 
     def rename_subtopic(self, subtopic_id: str, new_name: str) -> None:
         self.conn.execute("UPDATE subtopics SET name=? WHERE id=?", (new_name, subtopic_id))
-        self.conn.commit()
+        self._commit()
 
     class SubtopicHasLinkedQuestions(Exception):
         """Raised by delete_subtopic when real question tags exist --
@@ -707,7 +806,7 @@ class CurriculumStore:
         if force:
             self.conn.execute("DELETE FROM question_subtopic_links WHERE subtopic_id=?", (subtopic_id,))
         self.conn.execute("DELETE FROM subtopics WHERE id=?", (subtopic_id,))
-        self.conn.commit()
+        self._commit()
 
     # ---------------- question <-> subtopic links ----------------
 
@@ -723,7 +822,7 @@ class CurriculumStore:
             "ON CONFLICT(question_id, subtopic_id) DO UPDATE SET method=excluded.method, "
             "confidence=excluded.confidence",
             (link.id, link.question_id, link.subtopic_id, link.method, link.confidence))
-        self.conn.commit()
+        self._commit()
         return link
 
     def subtopics_for_question(self, question_id: str) -> list[QuestionSubtopicLink]:
@@ -763,7 +862,7 @@ class CurriculumStore:
             "source_hash, model, prompt_version, created_at, status) VALUES (?,?,?,?,?,?,?,?,?)",
             (run.id, run.school_id, run.book_id, run.chapter_id, run.source_hash, run.model,
              run.prompt_version, run.created_at, run.status))
-        self.conn.commit()
+        self._commit()
         return run
 
     def get_extraction_run(self, run_id: str) -> Optional[CurriculumExtractionRun]:
@@ -780,7 +879,7 @@ class CurriculumStore:
     def update_run_status(self, run_id: str, status: str) -> None:
         self.conn.execute(
             "UPDATE curriculum_extraction_runs SET status=? WHERE id=?", (status, run_id))
-        self.conn.commit()
+        self._commit()
 
     def add_extraction_proposal(self, *, run_id: str, entity_type: str, proposed_name: str,
                                 proposed_description: Optional[str] = None,
@@ -796,7 +895,7 @@ class CurriculumStore:
             "VALUES (?,?,?,?,?,?,?,?,?)",
             (p.id, p.run_id, p.entity_type, p.proposed_name, p.proposed_description,
              p.proposed_parent, p.sequence, p.confidence, p.status))
-        self.conn.commit()
+        self._commit()
         return p
 
     def proposals_for_run(self, run_id: str) -> list[CurriculumExtractionProposal]:
@@ -819,13 +918,13 @@ class CurriculumStore:
         self.conn.execute(
             "UPDATE curriculum_extraction_proposals SET status=?, edited_name=? WHERE id=?",
             (status, edited_name, proposal_id))
-        self.conn.commit()
+        self._commit()
 
     def set_proposal_materialized_id(self, proposal_id: str, materialized_id: str) -> None:
         self.conn.execute(
             "UPDATE curriculum_extraction_proposals SET materialized_id=? WHERE id=?",
             (materialized_id, proposal_id))
-        self.conn.commit()
+        self._commit()
 
     # ---------------- period configuration ----------------
 
@@ -837,7 +936,7 @@ class CurriculumStore:
             "INSERT INTO period_configurations (id, school_id, academic_year_id, period_minutes) "
             "VALUES (?,?,?,?)",
             (p.id, p.school_id, p.academic_year_id, p.period_minutes))
-        self.conn.commit()
+        self._commit()
         return p
 
     def period_configuration_for_year(self, academic_year_id: str) -> Optional[PeriodConfiguration]:
@@ -860,7 +959,7 @@ class CurriculumStore:
             "(id, school_id, academic_year_id, subject, periods_per_week) VALUES (?,?,?,?,?) "
             "ON CONFLICT(academic_year_id, subject) DO UPDATE SET periods_per_week=excluded.periods_per_week",
             (alloc_id, school_id, academic_year_id, subject, periods_per_week))
-        self.conn.commit()
+        self._commit()
         return SubjectPeriodAllocation(id=alloc_id, school_id=school_id, academic_year_id=academic_year_id,
                                        subject=subject, periods_per_week=periods_per_week)
 
@@ -894,7 +993,7 @@ class CurriculumStore:
             "(id, school_id, academic_year_id, subject, day_of_week, period_number) VALUES (?,?,?,?,?,?)",
             (slot.id, slot.school_id, slot.academic_year_id, slot.subject,
              slot.day_of_week, slot.period_number))
-        self.conn.commit()
+        self._commit()
         return slot
 
     def timetable_slots_for_subject(self, academic_year_id: str, subject: str) -> list[SubjectTimetableSlot]:
@@ -913,7 +1012,7 @@ class CurriculumStore:
         cur = self.conn.execute("DELETE FROM subject_timetable_slots WHERE id=?", (slot_id,))
         if cur.rowcount == 0:
             raise ValueError(f"no timetable slot with id {slot_id!r}")
-        self.conn.commit()
+        self._commit()
 
     # ---------------- calendar / holidays ----------------
 
@@ -927,7 +1026,7 @@ class CurriculumStore:
             "INSERT INTO calendars (id, academic_year_id, weekly_off_days, alternate_saturday_rule) "
             "VALUES (?,?,?,?)",
             (c.id, c.academic_year_id, json.dumps(c.weekly_off_days), c.alternate_saturday_rule))
-        self.conn.commit()
+        self._commit()
         return c
 
     def get_calendar_for_year(self, academic_year_id: str) -> Optional[Calendar]:
@@ -948,7 +1047,7 @@ class CurriculumStore:
         self.conn.execute(
             "INSERT INTO holidays (id, calendar_id, date, label, kind, end_date) VALUES (?,?,?,?,?,?)",
             (h.id, h.calendar_id, h.date, h.label, h.kind, h.end_date))
-        self.conn.commit()
+        self._commit()
         return h
 
     def holidays_for_calendar(self, calendar_id: str) -> list[Holiday]:
@@ -972,7 +1071,7 @@ class CurriculumStore:
             "estimated_minutes, estimated_periods, method, approved_by) VALUES (?,?,?,?,?,?,?)",
             (t.id, t.subtopic_id, t.academic_year_id, t.estimated_minutes,
              t.estimated_periods, t.method, t.approved_by))
-        self.conn.commit()
+        self._commit()
         return t
 
     def teaching_time_estimate_for_subtopic(self, subtopic_id: str,
@@ -996,7 +1095,7 @@ class CurriculumStore:
             "date, status, created_at) VALUES (?,?,?,?,?,?,?,?)",
             (lesson.id, lesson.school_id, lesson.academic_year_id, lesson.book_id,
              lesson.subtopic_id, lesson.date, lesson.status, lesson.created_at))
-        self.conn.commit()
+        self._commit()
         return lesson
 
     def get_scheduled_lesson(self, lesson_id: str) -> Optional[ScheduledLesson]:
@@ -1017,7 +1116,7 @@ class CurriculumStore:
         self.conn.execute(
             "UPDATE scheduled_lessons SET status=?, note=?, completed_by=?, completed_at=? WHERE id=?",
             (status, note, completed_by, completed_at, lesson_id))
-        self.conn.commit()
+        self._commit()
         return self.get_scheduled_lesson(lesson_id)
 
     def reschedule_lesson_date(self, lesson_id: str, *, new_date: str) -> Optional[ScheduledLesson]:
@@ -1029,7 +1128,7 @@ class CurriculumStore:
         caller's job (scheduling.py), via the existing assessment audit
         log -- this store method only ever changes the one column."""
         self.conn.execute("UPDATE scheduled_lessons SET date=? WHERE id=?", (new_date, lesson_id))
-        self.conn.commit()
+        self._commit()
         return self.get_scheduled_lesson(lesson_id)
 
     def scheduled_lessons_for_book(self, academic_year_id: str, book_id: str) -> list[ScheduledLesson]:
@@ -1058,7 +1157,7 @@ class CurriculumStore:
         cur = self.conn.execute(
             "DELETE FROM scheduled_lessons WHERE academic_year_id=? AND book_id=?",
             (academic_year_id, book_id))
-        self.conn.commit()
+        self._commit()
         return cur.rowcount
 
     # ---------------- teacher assignments (§15 -- "what do I teach today") ----------------
@@ -1081,7 +1180,7 @@ class CurriculumStore:
             "INSERT INTO teacher_assignments (id, school_id, teacher_id, book_id, created_at) "
             "VALUES (?,?,?,?,?)",
             (a.id, a.school_id, a.teacher_id, a.book_id, a.created_at))
-        self.conn.commit()
+        self._commit()
         return a
 
     def assignments_for_teacher(self, teacher_id: str) -> list[TeacherAssignment]:
@@ -1093,7 +1192,7 @@ class CurriculumStore:
     def unassign_teacher(self, *, teacher_id: str, book_id: str) -> None:
         self.conn.execute("DELETE FROM teacher_assignments WHERE teacher_id=? AND book_id=?",
                           (teacher_id, book_id))
-        self.conn.commit()
+        self._commit()
 
     # ---------------- student enrollment (§18 -- student visibility) ----------------
 
@@ -1108,7 +1207,7 @@ class CurriculumStore:
         if existing:
             self.conn.execute("UPDATE student_enrollments SET grade_id=?, school_id=? WHERE student_id=?",
                               (grade_id, school_id, student_id))
-            self.conn.commit()
+            self._commit()
             return StudentEnrollment(id=existing["id"], school_id=school_id, student_id=student_id,
                                      grade_id=grade_id, created_at=existing["created_at"])
         e = StudentEnrollment(id=new_id("enroll"), school_id=school_id, student_id=student_id,
@@ -1117,7 +1216,7 @@ class CurriculumStore:
             "INSERT INTO student_enrollments (id, school_id, student_id, grade_id, created_at) "
             "VALUES (?,?,?,?,?)",
             (e.id, e.school_id, e.student_id, e.grade_id, e.created_at))
-        self.conn.commit()
+        self._commit()
         return e
 
     def enrollment_for_student(self, student_id: str) -> Optional[StudentEnrollment]:

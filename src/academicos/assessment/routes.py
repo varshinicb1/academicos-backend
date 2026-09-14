@@ -18,8 +18,9 @@ from ..integrations.composio_calendar import sync_to_google_calendar
 from . import pdf as pdf_export
 from . import selection
 from .audit_log import get_audit_log
-from .auth_routes import require_principal
-from .users import User
+from .authz import require_own_school, require_school_owns_assessment, require_school_owns_paper
+from .auth_routes import get_current_user, require_principal
+from .users import User, get_user_store
 from .mapping import grade_to_int, to_question_schema
 from .paper import generate_paper as build_generated_paper
 from .pool import get_pool
@@ -103,6 +104,19 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _users():
+    """Same singleton auth_routes.py's own init() populates (curriculum/
+    routes.py's _require_users() does the identical thing) -- reused here
+    only to verify a principal-supplied teacher_id actually belongs to their
+    own school, never to duplicate registration/auth logic."""
+    from . import auth_routes
+    if auth_routes._users is not None:
+        return auth_routes._users
+    if _cfg is None:
+        raise HTTPException(503, "assessment module not initialized")
+    return get_user_store(_cfg.data_root)
+
+
 # ---- Blueprint ----
 
 @router.post("/blueprints/generate", response_model=Blueprint)
@@ -121,12 +135,13 @@ def generate_blueprint(request: BlueprintRequest) -> Blueprint:
 
 
 @router.get("/schools/{school_id}/templates", response_model=list[SectionBlueprint])
-def get_section_templates(school_id: str) -> list[SectionBlueprint]:
+def get_section_templates(school_id: str, current: User = Depends(get_current_user)) -> list[SectionBlueprint]:
+    require_own_school(school_id, current)
     return list(default_sections(80))
 
 
 @router.get("/schools/{school_id}/paper-templates", response_model=list[SchoolTemplate])
-def get_paper_templates(school_id: str) -> list[SchoolTemplate]:
+def get_paper_templates(school_id: str, current: User = Depends(get_current_user)) -> list[SchoolTemplate]:
     """Kept for the older Dart `ApiClient` (pillar_api.dart's `/school-templates`
     is the canonical one template_maker_page.dart saves to). This used to be a
     stub that always returned a hardcoded "Default CBSE Template" regardless of
@@ -136,6 +151,7 @@ def get_paper_templates(school_id: str) -> list[SchoolTemplate]:
     """
     from .school_templates import TemplateStore
 
+    require_own_school(school_id, current)
     cfg, _ = _require()
     store = TemplateStore(cfg.data_root / "templates" / "templates.sqlite")
     existing = store.list_for_school(school_id)
@@ -143,6 +159,14 @@ def get_paper_templates(school_id: str) -> list[SchoolTemplate]:
 
 
 # ---- Questions ----
+#
+# Deliberately unauthenticated, same reasoning as curriculum/routes.py's own
+# public read endpoints and pillar_routes.py's /catalog and /syllabus: these
+# browse the shared CBSE previous-year-paper question pool (public, official,
+# not any one school's confidential exam), not a specific school's generated
+# assessment. Search/optimize never touch AssessmentStore/PaperStore -- see
+# ---- Papers ---- and ---- Assessments ---- below for where a real school's
+# confidential content actually starts, and where auth is required.
 
 @router.post("/questions/search", response_model=list[QuestionSchema])
 def search_questions(params: QuestionSearchParams) -> list[QuestionSchema]:
@@ -200,7 +224,9 @@ def optimize_questions(request: QuestionOptimizationRequest) -> QuestionOptimiza
 # ---- Papers ----
 
 @router.post("/papers/generate", response_model=GeneratedPaper)
-def generate_paper_endpoint(request: PaperGenerationRequest) -> GeneratedPaper:
+def generate_paper_endpoint(
+    request: PaperGenerationRequest, current: User = Depends(get_current_user),
+) -> GeneratedPaper:
     cfg, store = _require()
     # Found live in production data (2026-08-19): a real assessment whose
     # target chapters didn't match anything in the corpus (search/optimize
@@ -219,6 +245,8 @@ def generate_paper_endpoint(request: PaperGenerationRequest) -> GeneratedPaper:
         )
     assessment = store.get(request.assessment_id)
     if assessment is not None:
+        if assessment.school_id != current.school_id:
+            raise HTTPException(403, "this assessment belongs to a different school")
         _require_editable(assessment)
     title = assessment.title if assessment else "Assessment"
     subject = assessment.subject if assessment else (request.selected_questions[0].subject if request.selected_questions else "Science")
@@ -245,19 +273,15 @@ def generate_paper_endpoint(request: PaperGenerationRequest) -> GeneratedPaper:
 
 
 @router.get("/papers/{paper_id}", response_model=GeneratedPaper)
-def get_paper(paper_id: str) -> GeneratedPaper:
-    paper = _require_papers().get(paper_id)
-    if paper is None:
-        raise HTTPException(404, "paper not found")
-    return paper
+def get_paper(paper_id: str, current: User = Depends(get_current_user)) -> GeneratedPaper:
+    _, store = _require()
+    return require_school_owns_paper(_require_papers(), store, paper_id, current)
 
 
 @router.post("/papers/{paper_id}/export/{fmt}")
-def export_paper(paper_id: str, fmt: str) -> dict:
-    cfg, _ = _require()
-    paper = _require_papers().get(paper_id)
-    if paper is None:
-        raise HTTPException(404, "paper not found")
+def export_paper(paper_id: str, fmt: str, current: User = Depends(get_current_user)) -> dict:
+    cfg, store = _require()
+    paper = require_school_owns_paper(_require_papers(), store, paper_id, current)
     if fmt != "pdf":
         raise HTTPException(400, "only pdf export is supported currently")
     out_dir = cfg.artifacts_dir / "papers"
@@ -282,8 +306,9 @@ def export_paper(paper_id: str, fmt: str) -> dict:
 
 
 @router.get("/papers/{paper_id}/file")
-def get_paper_file(paper_id: str):
-    cfg, _ = _require()
+def get_paper_file(paper_id: str, current: User = Depends(get_current_user)):
+    cfg, store = _require()
+    require_school_owns_paper(_require_papers(), store, paper_id, current)
     path = cfg.artifacts_dir / "papers" / f"{paper_id}.pdf"
     if not path.exists():
         raise HTTPException(404, "pdf not generated yet")
@@ -293,8 +318,25 @@ def get_paper_file(paper_id: str):
 # ---- Assessments ----
 
 @router.post("/assessments", response_model=Assessment)
-def create_assessment(request: CreateAssessmentRequest) -> Assessment:
+def create_assessment(
+    request: CreateAssessmentRequest, current: User = Depends(get_current_user),
+) -> Assessment:
     _, store = _require()
+    # Real bug fixed 2026-09-15: school_id/teacher_id used to come straight
+    # from the request body with zero verification -- full impersonation, not
+    # just a read leak (anyone could POST an assessment claiming to belong to
+    # any school). school_id is always the caller's own now, same principle
+    # curriculum/routes.py's seed_cbse10 already applies. teacher_id: a
+    # principal may legitimately create on behalf of a teacher in their own
+    # school (the request body's value, verified against that school); anyone
+    # else can only create as themselves.
+    school_id = current.school_id
+    teacher_id = current.id
+    if current.role == "principal" and request.teacher_id:
+        teacher = _users().get(request.teacher_id)
+        if teacher is None or teacher.school_id != school_id:
+            raise HTTPException(403, "teacher_id must belong to your own school")
+        teacher_id = request.teacher_id
     sections = request.blueprint.sections or default_sections(request.blueprint.total_marks)
     blueprint = Blueprint(
         total_marks=request.blueprint.total_marks,
@@ -309,8 +351,8 @@ def create_assessment(request: CreateAssessmentRequest) -> Assessment:
     now = _now()
     assessment = Assessment(
         id=f"assess_{uuid.uuid4().hex[:12]}",
-        school_id=request.school_id,
-        teacher_id=request.teacher_id,
+        school_id=school_id,
+        teacher_id=teacher_id,
         title=request.title,
         subject=request.subject,
         grade=request.grade,
@@ -326,31 +368,48 @@ def create_assessment(request: CreateAssessmentRequest) -> Assessment:
 
 
 @router.get("/assessments/{assessment_id}", response_model=Assessment)
-def get_assessment(assessment_id: str) -> Assessment:
+def get_assessment(assessment_id: str, current: User = Depends(get_current_user)) -> Assessment:
     _, store = _require()
-    a = store.get(assessment_id)
-    if a is None:
-        raise HTTPException(404, "assessment not found")
-    return a
+    return require_school_owns_assessment(store, assessment_id, current)
 
 
 @router.get("/assessments", response_model=list[Assessment])
-def list_assessments(teacher_id: Optional[str] = None, school_id: Optional[str] = None) -> list[Assessment]:
+def list_assessments(
+    teacher_id: Optional[str] = None, school_id: Optional[str] = None,
+    current: User = Depends(get_current_user),
+) -> list[Assessment]:
+    # Real bug fixed 2026-09-15: teacher_id/school_id used to be trusted
+    # straight from the query string with no check that the caller actually
+    # was that teacher or belonged to that school -- any authenticated caller
+    # could list any other school's or teacher's assessments by guessing an
+    # id. school_id is always the caller's own now; teacher_id is only
+    # honored if it's the caller's own id or the caller is a principal
+    # (who may legitimately look up any teacher in their own school).
     _, store = _require()
     if teacher_id:
-        return store.list_by_teacher(teacher_id)
-    if school_id:
-        return store.list_by_school(school_id)
-    return []
+        if teacher_id != current.id and current.role != "principal":
+            raise HTTPException(403, "cannot list another teacher's assessments")
+        return [a for a in store.list_by_teacher(teacher_id) if a.school_id == current.school_id]
+    return store.list_by_school(current.school_id)
 
 
 @router.put("/assessments/{assessment_id}", response_model=Assessment)
-def update_assessment(assessment_id: str, assessment: Assessment) -> Assessment:
+def update_assessment(
+    assessment_id: str, assessment: Assessment, current: User = Depends(get_current_user),
+) -> Assessment:
     _, store = _require()
     existing = store.get(assessment_id)
     if existing is not None:
+        if existing.school_id != current.school_id:
+            raise HTTPException(403, "this assessment belongs to a different school")
         _require_editable(existing)
+    elif assessment.school_id != current.school_id:
+        # No pre-existing row to check ownership against (first PUT acting as
+        # create) -- the body must still claim the caller's own school, same
+        # rule as POST /assessments, not an arbitrary one.
+        raise HTTPException(403, "cannot create an assessment for a different school")
     assessment.id = assessment_id
+    assessment.school_id = current.school_id
     assessment.updated_at = _now()
     sync_to_google_calendar(assessment)  # best-effort; never blocks the save below
     store.save(assessment)
@@ -358,20 +417,17 @@ def update_assessment(assessment_id: str, assessment: Assessment) -> Assessment:
 
 
 @router.delete("/assessments/{assessment_id}")
-def delete_assessment(assessment_id: str) -> dict:
+def delete_assessment(assessment_id: str, current: User = Depends(get_current_user)) -> dict:
     _, store = _require()
-    if store.get(assessment_id) is None:
-        raise HTTPException(404, "assessment not found")
+    require_school_owns_assessment(store, assessment_id, current)
     store.delete(assessment_id)
     return {"ok": True}
 
 
 @router.patch("/assessments/{assessment_id}/status", response_model=Assessment)
-def update_status(assessment_id: str, body: dict) -> Assessment:
+def update_status(assessment_id: str, body: dict, current: User = Depends(get_current_user)) -> Assessment:
     _, store = _require()
-    a = store.get(assessment_id)
-    if a is None:
-        raise HTTPException(404, "assessment not found")
+    a = require_school_owns_assessment(store, assessment_id, current)
     new_status = body.get("status", a.status)
     if new_status not in _KNOWN_STATUSES:
         raise HTTPException(

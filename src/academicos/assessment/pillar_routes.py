@@ -18,7 +18,9 @@ from ..config import Config
 from . import insights as insights_mod
 from . import mailer as mailer_mod
 from . import remediation as remediation_mod
-from .auth_routes import get_current_user
+from .authz import require_own_school, require_school_owns_student
+from .authz import require_school_owns_assessment as _authz_require_school_owns_assessment
+from .auth_routes import get_current_user, require_principal
 from .evaluate import Evaluation, evaluate_answer
 from .graded_store import GradedStore
 from .knowledge import KnowledgeStore
@@ -35,7 +37,7 @@ from .schemas import (
 )
 from .school_templates import TemplateStore
 from .store import AssessmentStore
-from .users import User
+from .users import User, get_user_store
 from ..syllabus.cbse_syllabus import load_syllabus
 from ..syllabus.timetable import generate_timetable
 
@@ -82,17 +84,33 @@ def _require_practice() -> PracticeStore:
 
 
 def _require_school_owns_assessment(assessment_id: str, current: User) -> None:
-    """Same school-scoping check as routes.approve_assessment: 404 if the
-    assessment doesn't exist, 403 if the caller's school doesn't own it --
-    called before any of this module's endpoints read or mutate a graded
-    sheet for that assessment."""
+    """Thin wrapper over the shared authz.require_school_owns_assessment,
+    kept as a bare function (returns None, not the Assessment) so the two
+    existing call sites below (review_sheet_answer/finalize_sheet_review)
+    don't need to change."""
     if _assessments is None:
         raise HTTPException(503, "pillar module not initialized")
-    a = _assessments.get(assessment_id)
-    if a is None:
-        raise HTTPException(404, "assessment not found")
-    if a.school_id != current.school_id:
-        raise HTTPException(403, "this assessment belongs to a different school")
+    _authz_require_school_owns_assessment(_assessments, assessment_id, current)
+
+
+def _users():
+    """Same singleton auth_routes.py's own init() populates -- see
+    curriculum/routes.py's _require_users() for the identical pattern."""
+    from . import auth_routes
+    if auth_routes._users is not None:
+        return auth_routes._users
+    if _cfg is None:
+        raise HTTPException(503, "pillar module not initialized")
+    return get_user_store(_cfg.data_root)
+
+
+def _papers():
+    """routes.py owns the real PaperStore singleton; reused here read-only,
+    same reuse-not-duplicate pattern as _users() above."""
+    from . import routes as assessment_routes
+    if assessment_routes._papers is not None:
+        return assessment_routes._papers
+    raise HTTPException(503, "pillar module not initialized")
 
 
 def _pool_questions(subject: str = "Science", grade: str = "X") -> list[QuestionSchema]:
@@ -108,14 +126,18 @@ class TemplateSaveRequest(Camel):
 
 
 @router.get("/schools/{school_id}/school-templates", response_model=list[SchoolTemplate])
-def list_templates(school_id: str) -> list[SchoolTemplate]:
+def list_templates(school_id: str, current: User = Depends(get_current_user)) -> list[SchoolTemplate]:
+    require_own_school(school_id, current)
     _, _, store = _require()
     existing = store.list_for_school(school_id)
     return existing or [store.default_for(school_id)]
 
 
 @router.post("/schools/{school_id}/school-templates", response_model=SchoolTemplate)
-def save_template(school_id: str, req: TemplateSaveRequest) -> SchoolTemplate:
+def save_template(
+    school_id: str, req: TemplateSaveRequest, current: User = Depends(get_current_user),
+) -> SchoolTemplate:
+    require_own_school(school_id, current)
     _, _, store = _require()
     template = req.template.model_copy(update={"school_id": school_id})
     sections = req.sections or store.sections_for(school_id, None, 80)
@@ -124,13 +146,19 @@ def save_template(school_id: str, req: TemplateSaveRequest) -> SchoolTemplate:
 
 @router.get("/schools/{school_id}/school-templates/{template_id}/sections",
             response_model=list[SectionBlueprint])
-def template_sections(school_id: str, template_id: str) -> list[SectionBlueprint]:
+def template_sections(
+    school_id: str, template_id: str, current: User = Depends(get_current_user),
+) -> list[SectionBlueprint]:
+    require_own_school(school_id, current)
     _, _, store = _require()
     return store.sections_for(school_id, template_id, 80)
 
 
 @router.delete("/schools/{school_id}/school-templates/{template_id}")
-def delete_template(school_id: str, template_id: str) -> dict:
+def delete_template(
+    school_id: str, template_id: str, current: User = Depends(get_current_user),
+) -> dict:
+    require_own_school(school_id, current)
     _, _, store = _require()
     store.delete(template_id)
     return {"ok": True}
@@ -150,7 +178,10 @@ class AnswerKeyResponse(Camel):
 
 
 @router.post("/assessments/{assessment_id}/answer-key", response_model=AnswerKeyResponse)
-def make_answer_key(assessment_id: str, req: AnswerKeyRequest) -> AnswerKeyResponse:
+def make_answer_key(
+    assessment_id: str, req: AnswerKeyRequest, current: User = Depends(get_current_user),
+) -> AnswerKeyResponse:
+    _require_school_owns_assessment(assessment_id, current)
     schemes = build_answer_key(req.questions, req.correct_options)
     _answer_keys[assessment_id] = schemes
     return AnswerKeyResponse(
@@ -376,12 +407,20 @@ class SendPaperResponse(Camel):
 
 
 @router.post("/mail/send-paper", response_model=SendPaperResponse)
-def send_paper(req: SendPaperRequest) -> SendPaperResponse:
+def send_paper(req: SendPaperRequest, current: User = Depends(get_current_user)) -> SendPaperResponse:
     """Email an exported paper (and its answer key) to the given recipients.
 
     The PDF must already have been exported — this endpoint never regenerates
     or silently creates content it then sends out.
+
+    Requires the caller's school to own the referenced paper (fixed
+    2026-09-15 -- previously unauthenticated, meaning anyone could mail out
+    any school's exam paper to arbitrary recipients of their own choosing).
     """
+    paper = _papers().get(req.paper_id)
+    if paper is None:
+        raise HTTPException(404, f"paper {req.paper_id} not found")
+    _require_school_owns_assessment(paper.assessment_id, current)
     cfg, _, _ = _require()
     papers_dir = cfg.artifacts_dir / "papers"
     pdf = papers_dir / f"{req.paper_id}.pdf"
@@ -447,7 +486,8 @@ def _to_response(ev: Evaluation, question: QuestionSchema, student_answer: str) 
 
 
 @router.post("/evaluations/answer", response_model=EvaluationResponse)
-def evaluate_one(req: EvaluateAnswerRequest) -> EvaluationResponse:
+def evaluate_one(req: EvaluateAnswerRequest, current: User = Depends(get_current_user)) -> EvaluationResponse:
+    _require_school_owns_assessment(req.assessment_id, current)
     _require()
     scheme = req.answer_scheme or build_answer_scheme(req.question)
     concept = req.question.chapter_ids[0] if req.question.chapter_ids else None
@@ -480,7 +520,8 @@ class EvaluateSheetResponse(Camel):
 
 
 @router.post("/evaluations/sheet", response_model=EvaluateSheetResponse)
-def evaluate_sheet(req: EvaluateSheetRequest) -> EvaluateSheetResponse:
+def evaluate_sheet(req: EvaluateSheetRequest, current: User = Depends(get_current_user)) -> EvaluateSheetResponse:
+    _require_school_owns_assessment(req.assessment_id, current)
     cfg, knowledge, _ = _require()
     schemes = build_answer_key(req.questions, req.correct_options)
     graded: list[tuple[QuestionSchema, Evaluation]] = []
@@ -647,7 +688,8 @@ class StudentMasteryResponse(Camel):
 
 
 @router.get("/knowledge/{student_id}", response_model=StudentMasteryResponse)
-def student_knowledge(student_id: str) -> StudentMasteryResponse:
+def student_knowledge(student_id: str, current: User = Depends(get_current_user)) -> StudentMasteryResponse:
+    require_school_owns_student(_users(), student_id, current)
     _, knowledge, _ = _require()
     views = knowledge.mastery(student_id)
     return StudentMasteryResponse(
@@ -664,7 +706,8 @@ def student_knowledge(student_id: str) -> StudentMasteryResponse:
 
 @router.get("/knowledge/{student_id}/report")
 def student_progress_report(student_id: str, student_name: str = "Student",
-                            subject: str = "Science"):
+                            subject: str = "Science",
+                            current: User = Depends(get_current_user)):
     """Branded PDF progress report: concept mastery table + concrete next
     steps per weak concept. See report_pdf.py for what "branded" means here —
     the school's own template (name, logo, brand color), not a generic export.
@@ -672,6 +715,7 @@ def student_progress_report(student_id: str, student_name: str = "Student",
     from . import report_pdf
     from .school_templates import TemplateStore
 
+    require_school_owns_student(_users(), student_id, current)
     cfg, knowledge, _ = _require()
     views = knowledge.mastery(student_id)
     if not views:
@@ -710,7 +754,8 @@ class PracticeSetResponse(Camel):
 
 
 @router.post("/practice/generate", response_model=PracticeSetResponse)
-def generate_practice(req: PracticeRequestBody) -> PracticeSetResponse:
+def generate_practice(req: PracticeRequestBody, current: User = Depends(get_current_user)) -> PracticeSetResponse:
+    require_school_owns_student(_users(), req.student_id, current)
     _, knowledge, _ = _require()
     weak = knowledge.weak_concepts(req.student_id, limit=3)
     if not weak:
@@ -754,11 +799,12 @@ class PracticeResultResponse(Camel):
 
 
 @router.post("/practice/submit", response_model=PracticeResultResponse)
-def submit_practice(body: PracticeSubmitBody) -> PracticeResultResponse:
+def submit_practice(body: PracticeSubmitBody, current: User = Depends(get_current_user)) -> PracticeResultResponse:
     _, knowledge, _ = _require()
     pset = _require_practice().get(body.set_id)
     if pset is None:
         raise HTTPException(404, "practice set not found")
+    require_school_owns_student(_users(), pset.student_id, current)
     res = remediation_mod.submit_practice(pset, body.answers, knowledge)
     return PracticeResultResponse(
         set_id=res.set_id, student_id=res.student_id, score=res.score, max_score=res.max_score,
@@ -802,7 +848,9 @@ class ClassInsightsResponse(Camel):
 
 
 @router.get("/insights/class/{assessment_id}", response_model=ClassInsightsResponse)
-def class_report(assessment_id: str, class_id: str = "10A") -> ClassInsightsResponse:
+def class_report(assessment_id: str, class_id: str = "10A",
+                 current: User = Depends(get_current_user)) -> ClassInsightsResponse:
+    _require_school_owns_assessment(assessment_id, current)
     _require()
     per_student = _require_graded().for_assessment(assessment_id)
     if not per_student:
@@ -843,7 +891,8 @@ class SchoolInsightsResponse(Camel):
 
 
 @router.get("/insights/school/{school_id}", response_model=SchoolInsightsResponse)
-def school_report(school_id: str) -> SchoolInsightsResponse:
+def school_report(school_id: str, principal: User = Depends(require_principal)) -> SchoolInsightsResponse:
+    require_own_school(school_id, principal)
     cfg, knowledge, _ = _require()
     graded = _require_graded()
     student_ids = sorted(graded.all_student_ids())

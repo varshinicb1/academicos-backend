@@ -96,6 +96,21 @@ class Config:
         # self-registration can ever be granted the principal role.
         self.principal_bootstrap_key = env("PRINCIPAL_BOOTSTRAP_KEY", t.get("principal_bootstrap_key", ""))
 
+        # Supabase (hosted Postgres), used by the operational stores under
+        # assessment/ (and now storage/event_store.py, curriculum/store.py)
+        # as a durability backstop -- Render's disk is ephemeral, so anything
+        # meant to survive a redeploy has to live here instead. The actual
+        # HTTP client (SupabaseTable/SupabaseStorage in
+        # assessment/supabase_kv.py) reads these same two env vars directly
+        # and is left alone -- these Config fields exist purely so CLI
+        # `stats` and the /health endpoint can report whether Supabase is
+        # configured without importing supabase_kv.py or duplicating its
+        # env-var names.
+        self.supabase_url = os.environ.get("SUPABASE_KNOWLEDGE_URL", "").strip() or None
+        self.supabase_enabled = bool(
+            self.supabase_url and os.environ.get("SUPABASE_KNOWLEDGE_ANON_KEY", "").strip()
+        )
+
     @classmethod
     def load(cls, toml_path: Path | None = None) -> "Config":
         load_secrets()

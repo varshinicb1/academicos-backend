@@ -10,20 +10,35 @@ from __future__ import annotations
 
 import logging
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import Field
 
 from . import mobile_scan
 from . import routes as assessment_routes
-from .auth_routes import get_current_user_optional
+from .authz import require_school_owns_scan_session
+from .auth_routes import get_current_user
 from .evaluate import Evaluation, MarkingPointOutcome
 from .mapping import to_question_schema
 from .pool import get_pool
 from .schemas import Camel
 from .users import User
+
+
+def _get_session_owned(session_id: str, current: User) -> mobile_scan.ScanSession:
+    """Fetch a scan session and verify it belongs to the caller's school --
+    every route below needs exactly this pair of checks (404 missing / 403
+    wrong school) before touching session state, scanned photos, or grades.
+    Fixed 2026-09-15: every one of these routes used to skip both checks
+    entirely (or, for submit_review_decision, use optional auth that never
+    actually rejected an unauthenticated caller)."""
+    try:
+        session = mobile_scan.get_session(session_id)
+    except mobile_scan.ScanError as e:
+        raise HTTPException(404, str(e))
+    if assessment_routes._store is None:
+        raise HTTPException(503, "assessment module not initialized")
+    return require_school_owns_scan_session(session, assessment_routes._store, current)
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1")
@@ -63,8 +78,12 @@ def _session_response(session: mobile_scan.ScanSession) -> ScanSessionResponse:
 
 
 @router.post("/scan/sessions", response_model=ScanSessionResponse)
-def create_scan_session(req: CreateScanSessionRequest) -> ScanSessionResponse:
+def create_scan_session(
+    req: CreateScanSessionRequest, current: User = Depends(get_current_user),
+) -> ScanSessionResponse:
     assessment = assessment_routes._store.get(req.assessment_id) if assessment_routes._store else None
+    if assessment is not None and assessment.school_id != current.school_id:
+        raise HTTPException(403, "this assessment belongs to a different school")
     subject = assessment.subject if assessment else "Science"
     grade = assessment.grade if assessment else 10
     session = mobile_scan.create_session(req.assessment_id, req.student_id, req.student_name,
@@ -80,11 +99,10 @@ class CapturedPageResponse(Camel):
 
 
 @router.post("/scan/sessions/{session_id}/pages", response_model=CapturedPageResponse)
-async def upload_scan_page(session_id: str, file: UploadFile = File(...)) -> CapturedPageResponse:
-    try:
-        session = mobile_scan.get_session(session_id)
-    except mobile_scan.ScanError as e:
-        raise HTTPException(404, str(e))
+async def upload_scan_page(
+    session_id: str, file: UploadFile = File(...), current: User = Depends(get_current_user),
+) -> CapturedPageResponse:
+    session = _get_session_owned(session_id, current)
     image_bytes = await file.read()
     if not image_bytes:
         raise HTTPException(400, "empty file upload")
@@ -135,11 +153,8 @@ class ProcessSessionResponse(Camel):
 
 
 @router.post("/scan/sessions/{session_id}/process", response_model=ProcessSessionResponse)
-def process_scan_session(session_id: str) -> ProcessSessionResponse:
-    try:
-        session = mobile_scan.get_session(session_id)
-    except mobile_scan.ScanError as e:
-        raise HTTPException(404, str(e))
+def process_scan_session(session_id: str, current: User = Depends(get_current_user)) -> ProcessSessionResponse:
+    session = _get_session_owned(session_id, current)
 
     papers = assessment_routes._require_papers()
     paper = papers.get(session.assessment_id)
@@ -167,11 +182,8 @@ def process_scan_session(session_id: str) -> ProcessSessionResponse:
 
 
 @router.get("/scan/sessions/{session_id}/review", response_model=ProcessSessionResponse)
-def get_scan_review(session_id: str) -> ProcessSessionResponse:
-    try:
-        session = mobile_scan.get_session(session_id)
-    except mobile_scan.ScanError as e:
-        raise HTTPException(404, str(e))
+def get_scan_review(session_id: str, current: User = Depends(get_current_user)) -> ProcessSessionResponse:
+    session = _get_session_owned(session_id, current)
     return ProcessSessionResponse(items=[_item_response(session_id, i) for i in session.review])
 
 
@@ -186,18 +198,19 @@ class ReviewDecisionRequest(Camel):
 @router.post("/scan/sessions/{session_id}/review/{question_id}", response_model=ReviewItemResponse)
 def submit_review_decision(session_id: str, question_id: str,
                            req: ReviewDecisionRequest,
-                           current: Optional[User] = Depends(get_current_user_optional),
+                           current: User = Depends(get_current_user),
                            ) -> ReviewItemResponse:
-    try:
-        session = mobile_scan.get_session(session_id)
-    except mobile_scan.ScanError as e:
-        raise HTTPException(404, str(e))
+    """Requires a real logged-in caller from the session's own school (fixed
+    2026-09-15: auth used to be optional here -- get_current_user_optional
+    never rejects an unauthenticated request, so this endpoint mutated real
+    grades for any session/question with a client-supplied free-text
+    reviewerId and no verification at all, the weakest of the handful of
+    "gated" examples in this whole module). reviewer_id is always the real
+    authenticated identity now; the request field stays on the wire schema
+    only so an older client that still sends it doesn't 422."""
+    session = _get_session_owned(session_id, current)
     cfg, _ = assessment_routes._require()
-    # A logged-in caller's real identity wins over the client-supplied
-    # free-text reviewerId (which used to be the only option, and is kept as
-    # a fallback for a client that has never logged in) -- same reasoning as
-    # pillar_routes.finalize_sheet_review.
-    reviewer_id = current.id if current else req.reviewer_id
+    reviewer_id = current.id
     try:
         item = mobile_scan.review_decision(
             session, question_id, req.action,
@@ -218,11 +231,8 @@ class FinalizeResponse(Camel):
 
 
 @router.post("/scan/sessions/{session_id}/finalize", response_model=FinalizeResponse)
-def finalize_scan_session(session_id: str) -> FinalizeResponse:
-    try:
-        session = mobile_scan.get_session(session_id)
-    except mobile_scan.ScanError as e:
-        raise HTTPException(404, str(e))
+def finalize_scan_session(session_id: str, current: User = Depends(get_current_user)) -> FinalizeResponse:
+    session = _get_session_owned(session_id, current)
     if not session.review:
         raise HTTPException(409, "nothing to finalize — process the session first")
 
@@ -278,17 +288,18 @@ def finalize_scan_session(session_id: str) -> FinalizeResponse:
 
 
 @router.get("/scan/sessions/{session_id}/pages/{page_no}/image")
-def get_page_image(session_id: str, page_no: int):
+def get_page_image(session_id: str, page_no: int, current: User = Depends(get_current_user)):
     """Serves the processed (cropped/lit) photo of one captured page — lets the
     review UI show a teacher the actual handwriting an answer was read from,
     instead of asking them to trust the transcription blind.
 
     Local disk first (fast path, same-instance), Supabase Storage second
-    (survives a Render restart between capture and review)."""
-    try:
-        session = mobile_scan.get_session(session_id)
-    except mobile_scan.ScanError as e:
-        raise HTTPException(404, str(e))
+    (survives a Render restart between capture and review).
+
+    Requires the caller's school to own the session (fixed 2026-09-15 --
+    previously served to anyone who knew/guessed a session_id, no auth at
+    all, for what is literally a real student's handwritten answer sheet)."""
+    session = _get_session_owned(session_id, current)
     page = next((p for p in session.pages if p.page_no == page_no), None)
     if page is None:
         raise HTTPException(404, f"no page {page_no} in this session")
@@ -303,11 +314,8 @@ def get_page_image(session_id: str, page_no: int):
 
 
 @router.get("/scan/sessions/{session_id}/raw-pdf")
-def get_raw_pdf(session_id: str):
-    try:
-        session = mobile_scan.get_session(session_id)
-    except mobile_scan.ScanError as e:
-        raise HTTPException(404, str(e))
+def get_raw_pdf(session_id: str, current: User = Depends(get_current_user)):
+    session = _get_session_owned(session_id, current)
     if session.raw_pdf_path is not None and session.raw_pdf_path.exists():
         return FileResponse(str(session.raw_pdf_path), media_type="application/pdf",
                             filename=session.raw_pdf_path.name)
@@ -319,11 +327,8 @@ def get_raw_pdf(session_id: str):
 
 
 @router.get("/scan/sessions/{session_id}/corrected-pdf")
-def get_corrected_pdf(session_id: str):
-    try:
-        session = mobile_scan.get_session(session_id)
-    except mobile_scan.ScanError as e:
-        raise HTTPException(404, str(e))
+def get_corrected_pdf(session_id: str, current: User = Depends(get_current_user)):
+    session = _get_session_owned(session_id, current)
     if session.corrected_pdf_path is not None and session.corrected_pdf_path.exists():
         return FileResponse(str(session.corrected_pdf_path), media_type="application/pdf",
                             filename=session.corrected_pdf_path.name)

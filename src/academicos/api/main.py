@@ -10,6 +10,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
 
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -135,6 +136,41 @@ def _startup() -> None:
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+# Durability-critical stores (see AGENTS.md's storage inventory and
+# curriculum/store.py's module docstring): AssessmentStore, PaperStore,
+# PracticeStore, GradedStore, ScanSessionStore, TemplateStore, UserStore
+# and AuditLog use the per-row SupabaseTable fallback pattern; EventStore
+# joined them in this pass; CurriculumStore uses whole-file snapshot/
+# restore via SupabaseStorage instead (too relational to wrap per-table).
+_DURABLE_STORES = [
+    "AssessmentStore", "PaperStore", "PracticeStore", "GradedStore",
+    "ScanSessionStore", "TemplateStore", "UserStore", "AuditLog",
+    "EventStore", "CurriculumStore (snapshot/restore)",
+]
+
+
+@app.get("/health/storage")
+def health_storage() -> dict:
+    """Answers "is this actually live" without guessing from Render's
+    dashboard or grepping env vars on the host -- whether Supabase is
+    configured at all, and (only if so) whether it's reachable right now
+    via one cheap, unfiltered, limit-1 select."""
+    cfg = Config.load()
+    reachable: Optional[bool] = None
+    if cfg.supabase_enabled:
+        from ..assessment.supabase_kv import SupabaseTable
+        try:
+            SupabaseTable("assessments").select(limit=1)
+            reachable = True
+        except requests.exceptions.RequestException:
+            reachable = False
+    return {
+        "supabase_configured": cfg.supabase_enabled,
+        "supabase_reachable": reachable,
+        "durable_stores": _DURABLE_STORES,
+    }
 
 
 @app.get("/v1/registry/stats")

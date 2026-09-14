@@ -37,11 +37,19 @@ class SupabaseTable:
             h["Prefer"] = prefer
         return h
 
-    def select(self, order: str | None = None, **eq_filters: str) -> list[dict[str, Any]]:
+    def select(self, order: str | None = None, limit: int | None = None,
+               gt: dict[str, Any] | None = None, **eq_filters: str) -> list[dict[str, Any]]:
         params: dict[str, str] = {k: f"eq.{v}" for k, v in eq_filters.items()}
+        if gt:
+            # Separate from eq_filters because a column can't appear twice in
+            # one **kwargs dict -- needed by EventStore's `seq > since_seq`
+            # pagination, which an eq-only filter set can't express.
+            params.update({k: f"gt.{v}" for k, v in gt.items()})
         params["select"] = "*"
         if order:
             params["order"] = order
+        if limit is not None:
+            params["limit"] = str(limit)
         r = requests.get(f"{self._url}/rest/v1/{self.table}", params=params,
                          headers=self._headers(), timeout=10)
         r.raise_for_status()
