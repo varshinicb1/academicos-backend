@@ -541,3 +541,15 @@ class DelayedTopicsReportResponse(Camel):
     as_of_date: str
     delayed_count: int
     delayed_lessons: list[DelayedLessonResponse]
+
+
+class IngestTocRequest(Camel):
+    toc_text: str = Field(..., min_length=1, description="Raw text of the textbook Table of Contents")
+
+
+class IngestTocResponse(Camel):
+    book_id: str
+    units_created: int
+    chapters_created: int
+    unit_ids: list[str]
+    chapter_ids: list[str]

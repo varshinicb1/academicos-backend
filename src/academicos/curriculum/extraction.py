@@ -29,7 +29,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -320,3 +320,105 @@ def _get_chapter(store: CurriculumStore, chapter_id: str) -> Chapter:
     if r is None:
         raise ValueError(f"no such chapter: {chapter_id}")
     return Chapter(**dict(r))
+
+
+# ---------------- textbook table of contents ingestion (§5-9) ----------------
+
+@dataclass
+class TocUnit:
+    unit_no: str
+    name: str
+    marks: int = 0
+    chapters: list[str] = field(default_factory=list)
+
+
+@dataclass
+class TocResult:
+    book_id: str
+    units_created: int
+    chapters_created: int
+    unit_ids: list[str]
+    chapter_ids: list[str]
+
+
+def parse_toc_text(toc_text: str) -> list[TocUnit]:
+    """Deterministic parser for raw textbook Table of Contents text.
+    Handles standard patterns like:
+    Unit 1: Chemical Substances - Nature and Behaviour
+      Chapter 1: Chemical Reactions and Equations
+      Chapter 2: Acids, Bases and Salts
+    """
+    import re
+    units: list[TocUnit] = []
+    current_unit: Optional[TocUnit] = None
+
+    unit_pattern = re.compile(r"^(?:Unit|Part|Section)\s+([0-9IVXLCDM]+)[:\.\-\s]*(.*)$", re.IGNORECASE)
+    chapter_pattern = re.compile(r"^(?:Chapter|Lesson)?\s*([0-9]+)[:\.\-\s]+(.*)$", re.IGNORECASE)
+
+    for line in toc_text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+
+        m_unit = unit_pattern.match(line)
+        if m_unit:
+            u_no = m_unit.group(1).strip()
+            u_name = m_unit.group(2).strip() or f"Unit {u_no}"
+            current_unit = TocUnit(unit_no=u_no, name=u_name, chapters=[])
+            units.append(current_unit)
+            continue
+
+        m_chap = chapter_pattern.match(line)
+        if m_chap:
+            chap_name = m_chap.group(2).strip() or line
+            if current_unit is None:
+                current_unit = TocUnit(unit_no=str(len(units) + 1), name=f"Unit {len(units) + 1}", chapters=[])
+                units.append(current_unit)
+            current_unit.chapters.append(chap_name)
+        elif current_unit is not None and not line.lower().startswith(("page", "content", "index", "table of contents")):
+            current_unit.chapters.append(line)
+
+    if not units and toc_text.strip():
+        chapters = [l.strip() for l in toc_text.splitlines() if l.strip()]
+        units.append(TocUnit(unit_no="1", name="General", chapters=chapters))
+
+    return units
+
+
+def extract_and_ingest_toc(store: CurriculumStore, book_id: str, toc_text: str) -> TocResult:
+    """Ingests a textbook's Table of Contents text and materializes Units and Chapters."""
+    book = store.get_book(book_id)
+    if book is None:
+        raise ValueError(f"no such book: {book_id}")
+
+    units = parse_toc_text(toc_text)
+    unit_ids: list[str] = []
+    chapter_ids: list[str] = []
+
+    for u_seq, u in enumerate(units):
+        u_canon = f"{book.id}:unit:{_slug(u.unit_no)}"
+        unit_row = store.get_unit_by_canonical_id(u_canon)
+        if unit_row is None:
+            unit_row = store.create_unit(
+                canonical_id=u_canon, book_id=book.id,
+                unit_no=u.unit_no, name=u.name, marks=u.marks, seq=u_seq,
+            )
+        unit_ids.append(unit_row.id)
+
+        for c_seq, chap_name in enumerate(u.chapters):
+            c_canon = f"{book.id}:chapter:{_slug(chap_name)}"
+            chap_row = store.get_chapter_by_canonical_id(c_canon)
+            if chap_row is None:
+                chap_row = store.create_chapter(
+                    canonical_id=c_canon, unit_id=unit_row.id,
+                    name=chap_name, seq=c_seq,
+                )
+            chapter_ids.append(chap_row.id)
+
+    return TocResult(
+        book_id=book_id,
+        units_created=len(unit_ids),
+        chapters_created=len(chapter_ids),
+        unit_ids=unit_ids,
+        chapter_ids=chapter_ids,
+    )

@@ -70,6 +70,7 @@ _FILENAME_BY_SUBJECT = {
     "Science": "Science_10.json",
     "Social Science": "Social_Science_10.json",
     "English": "English_10.json",
+    "Hindi": "Hindi_10.json",
 }
 
 

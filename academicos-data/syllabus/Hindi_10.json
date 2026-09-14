@@ -1,0 +1,28 @@
+{
+  "subject": "Hindi",
+  "grade": 10,
+  "source": "CBSE Secondary Curriculum 2025-26, Hindi_A_Sec_2025-26.pdf, Class X Course Structure",
+  "total_marks": 80,
+  "units": [
+    {"unit_no": "A", "name": "Apthit Bodh", "marks": 14, "chapters": [
+      {"id": "apthit-gadyansh", "name": "Apthit Gadyansh va Kavyansh"}
+    ]},
+    {"unit_no": "B", "name": "Vyavaharik Vyakaran", "marks": 16, "chapters": [
+      {"id": "rachna-ke-aadhar-par-vakya-bhed", "name": "Rachna ke Aadhar par Vakya Bhed"},
+      {"id": "vachya", "name": "Vachya"},
+      {"id": "pad-parichay", "name": "Pad Parichay"},
+      {"id": "alankar", "name": "Alankar"}
+    ]},
+    {"unit_no": "C", "name": "Pathyapustak va Purak Pustak", "marks": 30, "chapters": [
+      {"id": "kshitij-gadya-khand", "name": "Kshitij Bhag 2 Gadya Khand"},
+      {"id": "kshitij-kavya-khand", "name": "Kshitij Bhag 2 Kavya Khand"},
+      {"id": "kritika-bhag-2", "name": "Kritika Bhag 2"}
+    ]},
+    {"unit_no": "D", "name": "Rachanatmak Lekhan", "marks": 20, "chapters": [
+      {"id": "anuchhed-lekhan", "name": "Anuchhed Lekhan"},
+      {"id": "patra-lekhan", "name": "Patra Lekhan"},
+      {"id": "vigyapan-lekhan", "name": "Vigyapan Lekhan va Sandesh Lekhan"},
+      {"id": "email-lekhan", "name": "E-mail Lekhan va Swavratt Lekhan"}
+    ]}
+  ]
+}

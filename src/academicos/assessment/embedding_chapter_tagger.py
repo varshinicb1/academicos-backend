@@ -151,6 +151,20 @@ _ANCHOR_ENRICHMENT: dict[tuple[str, int], dict[str, str]] = {
         "writing-skills": "write a letter, write a notice, write an article, analytical paragraph, formal letter, informal letter",
         "literature-textbook": "First Flight, Footprints without Feet, extract based questions, poem, short story, chapter-based question from the textbook",
     },
+    ("Hindi", 10): {
+        "apthit-gadyansh": "apthit gadyansh kavyansh, unseen passage in hindi, padhkar prashno ke uttar dijiye, gadyansh par aadharit prashna",
+        "rachna-ke-aadhar-par-vakya-bhed": "rachna ke aadhar par vakya bhed, saral vakya, sanyukt vakya, mishra vakya, vakya rupantaran",
+        "vachya": "vachya, kartrivachya, karmavachya, bhavavachya, vachya parivartan",
+        "pad-parichay": "pad parichay, rekhankit pad ka parichay, sangya sarvanam visheshan kriya",
+        "alankar": "alankar, shlesh, utpreksha, atishayokti, manavikaran alankar",
+        "kshitij-gadya-khand": "kshitij bhag 2 gadya khand, netaji ka chashma, balgobin bhagat, lakhnavi andaz, ek kahani yeh bhi",
+        "kshitij-kavya-khand": "kshitij bhag 2 kavya khand, surdas ke pad, ram-lakshman-parashuram samvad, aatmakathya, utsah, sangatkar",
+        "kritika-bhag-2": "kritika bhag 2, mata ka aanchal, sana sana hath jodi, main kyon likhta hoon",
+        "anuchhed-lekhan": "anuchhed lekhan, vishay par anuchhed, sanket bindu ke aadhar par",
+        "patra-lekhan": "patra lekhan, aupcharik patra, anaupcharik patra, pradhanacharya ya sampadak ko patra",
+        "vigyapan-lekhan": "vigyapan lekhan, sandesh lekhan, vigyapan taiyar kijiye, shubhkaamna sandesh",
+        "email-lekhan": "email lekhan, swavratt lekhan, aupcharik e-mail, resume bio data in hindi",
+    },
 }
 
 

@@ -46,6 +46,8 @@ from .schemas import (
     ExtractRequest,
     GradeResponse,
     HolidayResponse,
+    IngestTocRequest,
+    IngestTocResponse,
     MarkLessonRequest,
     MyClassScheduleEntryResponse,
     MyProgressResponse,
@@ -324,6 +326,26 @@ def list_topics(chapter_id: str) -> list[TopicWithSubtopicsResponse]:
             subtopics=[_subtopic_response(s) for s in store.subtopics_for_topic(t.id)],
         ))
     return out
+
+
+@router.post("/books/{book_id}/toc/ingest", response_model=IngestTocResponse)
+def ingest_textbook_toc(book_id: str, req: IngestTocRequest,
+                        principal: User = Depends(require_principal)) -> IngestTocResponse:
+    """§5-9: Ingests raw Table of Contents text from an uploaded or custom textbook,
+    creating the real Unit and Chapter rows under this Book."""
+    store = _require()
+    _require_school_owns_book(book_id, principal)
+    try:
+        res = extraction_mod.extract_and_ingest_toc(store, book_id=book_id, toc_text=req.toc_text)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return IngestTocResponse(
+        book_id=res.book_id,
+        units_created=res.units_created,
+        chapters_created=res.chapters_created,
+        unit_ids=res.unit_ids,
+        chapter_ids=res.chapter_ids,
+    )
 
 
 @router.post("/chapters/{chapter_id}/extract", response_model=ExtractionRunResponse)
