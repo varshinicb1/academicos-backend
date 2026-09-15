@@ -7,6 +7,9 @@ Storage and graph are constructed once at startup from Config.
 from __future__ import annotations
 
 import logging
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
@@ -177,6 +180,48 @@ _DURABLE_TABLES = [
     "audit_log", "learner_events",
 ]
 
+# How long one /health/storage answer stays good. The 2026-09-15 stress
+# test showed why this exists: the uncached probe ran 10 sequential
+# Supabase selects per call (~0.5-1s holding a threadpool thread), managed
+# only ~4-6 rps on the free tier, and any burst of callers starved real
+# traffic of threads. 30s of staleness on a manual diagnostic endpoint is
+# the right trade -- but note it when verifying a fix: after provisioning
+# a missing table, allow one TTL before trusting a still-red answer.
+_STORAGE_PROBE_TTL_S = 30.0
+_probe_cache: dict[str, Any] = {"at": 0.0, "body": None}
+# Single-flight: exactly one refresh runs at a time; concurrent callers
+# get the last-known body instead of queueing behind up to 10 sequential
+# upstream timeouts each.
+_probe_lock = threading.Lock()
+
+
+def _probe_table(table: str) -> tuple[str, str]:
+    try:
+        SupabaseTable(table).select(limit=1)
+        return table, "ok"
+    except SupabaseUnavailable as exc:
+        return table, f"error: {exc}"
+
+
+def _probe_all_tables() -> dict[str, str]:
+    tables: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=len(_DURABLE_TABLES)) as pool:
+        for table, status in pool.map(_probe_table, _DURABLE_TABLES):
+            tables[table] = status
+    return tables
+
+
+def _refresh_storage_probe() -> dict:
+    tables = _probe_all_tables()
+    body = {
+        "supabase_configured": True,
+        "supabase_reachable": all(status == "ok" for status in tables.values()),
+        "tables": tables,
+        "durable_stores": _DURABLE_STORES,
+    }
+    _probe_cache.update(at=time.monotonic(), body=body)
+    return body
+
 
 @app.get("/health/storage")
 def health_storage() -> dict:
@@ -189,25 +234,35 @@ def health_storage() -> dict:
     single table (this route's original behavior) is exactly how a live
     deployment spent its whole life reporting "reachable" while the
     `users`/`sessions` tables were missing and every auth call 500'd --
-    the per-table detail below is the point: it names the broken one."""
+    the per-table detail below is the point: it names the broken one.
+
+    Answers are cached for _STORAGE_PROBE_TTL_S seconds and refreshes are
+    single-flighted (see above): this endpoint is 10x-amplified upstream
+    traffic and must never be able to saturate the worker pool itself."""
     cfg = Config.load()
-    tables: dict[str, str] = {}
-    if cfg.supabase_enabled:
-        for table in _DURABLE_TABLES:
-            try:
-                SupabaseTable(table).select(limit=1)
-                tables[table] = "ok"
-            except SupabaseUnavailable as exc:
-                tables[table] = f"error: {exc}"
-    reachable: Optional[bool] = None
-    if tables:
-        reachable = all(status == "ok" for status in tables.values())
-    return {
-        "supabase_configured": cfg.supabase_enabled,
-        "supabase_reachable": reachable,
-        "tables": tables,
-        "durable_stores": _DURABLE_STORES,
-    }
+    if not cfg.supabase_enabled:
+        return {
+            "supabase_configured": False,
+            "supabase_reachable": None,
+            "tables": {},
+            "durable_stores": _DURABLE_STORES,
+        }
+    cached = _probe_cache["body"]
+    if cached is not None and time.monotonic() - _probe_cache["at"] < _STORAGE_PROBE_TTL_S:
+        return cached
+    if _probe_lock.acquire(blocking=False):
+        try:
+            return _refresh_storage_probe()
+        finally:
+            _probe_lock.release()
+    # A refresh is already in flight: serve last-known state rather than
+    # queue behind it. Only when no probe has ever succeeded do we wait
+    # for the in-flight one instead.
+    cached = _probe_cache["body"]
+    if cached is not None:
+        return cached
+    with _probe_lock:
+        return _refresh_storage_probe()
 
 
 @app.get("/v1/registry/stats")

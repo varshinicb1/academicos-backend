@@ -32,17 +32,15 @@ scan-session photos/PDFs, just a different bucket):
     SUPABASE_KNOWLEDGE_URL/SUPABASE_KNOWLEDGE_ANON_KEY set, in which case
     this whole mechanism is a no-op and behavior is unchanged from before.
 
-Known gap this pass does NOT fix: like every other SQLite store in this
-codebase before EventStore's fix earlier in this pass, CurriculumStore's
-methods call `self.conn.execute(...)` without any lock protecting the
-shared `sqlite3.Connection` from concurrent access by two threads at once
--- a real latent risk under true multi-teacher concurrent writes, not
-introduced by this change but not fixed by it either. `_commit()` below
-takes `self._conn_lock` around its own checkpoint+read (so a snapshot
-can't race with itself), but the other 30+ pre-existing call sites in this
-file are unguarded, same as before this pass. Flagged here rather than
-silently left undocumented; hardening every call site is a larger,
-separate change.
+Fixed 2026-09-15 (was the "known gap" below): a Render stress test
+caught this live -- concurrent curriculum reads returned rows whose fields
+all read back as None (then 500'd in pydantic validation). Every statement
+now funnels through the _exec/_fetchone/_fetchall helpers, which serialize
+on an RLock and materialize rows to plain dicts inside it; _commit's own
+commit() is serialized too. The other SQLite stores in this codebase
+(UserStore, AssessmentStore, ...) still share one unlocked connection each
+-- same latent hazard, still open, still flagged rather than silently left
+undocumented.
 
 IDs are short opaque strings (`{prefix}_{uuid4 hex[:12]}`), matching
 users.py's `user_{...}` convention -- NOT the graph's descriptive
@@ -334,7 +332,10 @@ class CurriculumStore:
     def __init__(self, db_path: Path):
         self.db_path = db_path
         self._remote_storage = SupabaseStorage("curriculum-snapshots")
-        self._conn_lock = threading.Lock()
+        # RLock, not Lock: helpers below take it per-call, and _commit/
+        # _maybe_snapshot nest a raw connection use inside their own
+        # acquisition -- a plain Lock would deadlock those paths.
+        self._conn_lock = threading.RLock()
         self._last_snapshot_at = 0.0
 
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -343,9 +344,9 @@ class CurriculumStore:
 
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA busy_timeout=60000")
-        self.conn.execute("PRAGMA foreign_keys=ON")
+        self._exec("PRAGMA journal_mode=WAL")
+        self._exec("PRAGMA busy_timeout=60000")
+        self._exec("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
         self._migrate()
         self._commit()
@@ -356,9 +357,9 @@ class CurriculumStore:
         columns (added when zero real rows existed yet, so no migration was
         needed), school_1 already has real seeded holiday rows by the time
         `end_date` was added, so a real ALTER TABLE is required here."""
-        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(holidays)").fetchall()}
+        cols = {r["name"] for r in self._fetchall("PRAGMA table_info(holidays)")}
         if "end_date" not in cols:
-            self.conn.execute("ALTER TABLE holidays ADD COLUMN end_date TEXT")
+            self._exec("ALTER TABLE holidays ADD COLUMN end_date TEXT")
 
     def _restore_from_remote(self) -> None:
         """Called only when db_path doesn't exist locally yet and Supabase
@@ -378,8 +379,44 @@ class CurriculumStore:
         self.db_path.write_bytes(data)
         logger.info("Restored CurriculumStore from Supabase snapshot (%d bytes)", len(data))
 
+    # ------------------------------------------------------------------
+    # Serialized SQLite access. The store holds ONE shared connection with
+    # check_same_thread=False, and FastAPI serves every request on a
+    # threadpool thread -- two threads inside self.conn at once corrupt
+    # each other's cursors. The 2026-09-15 Render stress test caught this
+    # live: concurrent GET /curriculum/boards reads returned rows whose
+    # fields all read back as None (then 500'd in pydantic validation).
+    # Every statement below funnels through these three helpers so the
+    # materialized result -- never a live cursor -- is what escapes the
+    # lock. Callers keep their `dict(r)` wrappers; dict(dict) is a no-op
+    # copy, so those lines are untouched on purpose.
+    # ------------------------------------------------------------------
+
+    def _exec(self, sql: str, params: tuple = ()) -> None:
+        """Serialized write (INSERT/UPDATE/DELETE/DDL one-shot)."""
+        with self._conn_lock:
+            self.conn.execute(sql, params)
+
+    def _fetchone(self, sql: str, params: tuple = ()) -> Optional[dict]:
+        """Serialized single-row read, materialized to a plain dict INSIDE
+        the lock -- sqlite3.Row values can read back as NULL once another
+        thread interleaves an execute, exactly the corruption above."""
+        with self._conn_lock:
+            r = self.conn.execute(sql, params).fetchone()
+            return dict(r) if r is not None else None
+
+    def _fetchall(self, sql: str, params: tuple = ()) -> list[dict]:
+        """Serialized multi-row read, materialized to plain dicts INSIDE
+        the lock, for the same reason as _fetchone."""
+        with self._conn_lock:
+            return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
     def _commit(self) -> None:
-        self.conn.commit()
+        # The commit itself is a shared-connection use and must be
+        # serialized like every other one -- two threads committing at
+        # once is the same race as two threads executing at once.
+        with self._conn_lock:
+            self.conn.commit()
         self._maybe_snapshot()
 
     def _maybe_snapshot(self) -> None:
@@ -395,7 +432,7 @@ class CurriculumStore:
                 # -wal sidecar file -- checkpoint first so db_path itself is
                 # a complete, self-contained snapshot, not a stale main file
                 # missing whatever hasn't been checkpointed back into it yet.
-                self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self._exec("PRAGMA wal_checkpoint(TRUNCATE)")
                 data = self.db_path.read_bytes()
             except OSError:
                 logger.warning("Could not read CurriculumStore db file to snapshot", exc_info=True)
@@ -412,21 +449,21 @@ class CurriculumStore:
 
     def create_board(self, name: str, code: str) -> Board:
         b = Board(id=new_id("board"), name=name, code=code)
-        self.conn.execute("INSERT INTO boards (id, name, code) VALUES (?,?,?)",
+        self._exec("INSERT INTO boards (id, name, code) VALUES (?,?,?)",
                           (b.id, b.name, b.code))
         self._commit()
         return b
 
     def get_board(self, board_id: str) -> Optional[Board]:
-        r = self.conn.execute("SELECT * FROM boards WHERE id=?", (board_id,)).fetchone()
+        r = self._fetchone("SELECT * FROM boards WHERE id=?", (board_id,))
         return Board(**dict(r)) if r else None
 
     def get_board_by_code(self, code: str) -> Optional[Board]:
-        r = self.conn.execute("SELECT * FROM boards WHERE code=?", (code,)).fetchone()
+        r = self._fetchone("SELECT * FROM boards WHERE code=?", (code,))
         return Board(**dict(r)) if r else None
 
     def list_boards(self) -> list[Board]:
-        rows = self.conn.execute("SELECT * FROM boards").fetchall()
+        rows = self._fetchall("SELECT * FROM boards")
         return [Board(**dict(r)) for r in rows]
 
     # ---------------- academic years ----------------
@@ -435,7 +472,7 @@ class CurriculumStore:
                              end_date: str, status: str = "draft") -> AcademicYear:
         y = AcademicYear(id=new_id("year"), school_id=school_id, label=label,
                          start_date=start_date, end_date=end_date, status=status)
-        self.conn.execute(
+        self._exec(
             "INSERT INTO academic_years (id, school_id, label, start_date, end_date, status) "
             "VALUES (?,?,?,?,?,?)",
             (y.id, y.school_id, y.label, y.start_date, y.end_date, y.status))
@@ -443,17 +480,17 @@ class CurriculumStore:
         return y
 
     def get_academic_year(self, year_id: str) -> Optional[AcademicYear]:
-        r = self.conn.execute("SELECT * FROM academic_years WHERE id=?", (year_id,)).fetchone()
+        r = self._fetchone("SELECT * FROM academic_years WHERE id=?", (year_id,))
         return AcademicYear(**dict(r)) if r else None
 
     def academic_years_for_school(self, school_id: str) -> list[AcademicYear]:
-        rows = self.conn.execute(
-            "SELECT * FROM academic_years WHERE school_id=? ORDER BY start_date", (school_id,)).fetchall()
+        rows = self._fetchall(
+            "SELECT * FROM academic_years WHERE school_id=? ORDER BY start_date", (school_id,))
         return [AcademicYear(**dict(r)) for r in rows]
 
     def get_academic_year_by_label(self, school_id: str, label: str) -> Optional[AcademicYear]:
-        r = self.conn.execute(
-            "SELECT * FROM academic_years WHERE school_id=? AND label=?", (school_id, label)).fetchone()
+        r = self._fetchone(
+            "SELECT * FROM academic_years WHERE school_id=? AND label=?", (school_id, label))
         return AcademicYear(**dict(r)) if r else None
 
     # ---------------- grades ----------------
@@ -461,19 +498,19 @@ class CurriculumStore:
     def create_grade(self, *, academic_year_id: str, number: int,
                      section: Optional[str] = None) -> Grade:
         g = Grade(id=new_id("grade"), academic_year_id=academic_year_id, number=number, section=section)
-        self.conn.execute(
+        self._exec(
             "INSERT INTO grades (id, academic_year_id, number, section) VALUES (?,?,?,?)",
             (g.id, g.academic_year_id, g.number, g.section))
         self._commit()
         return g
 
     def get_grade(self, grade_id: str) -> Optional[Grade]:
-        r = self.conn.execute("SELECT * FROM grades WHERE id=?", (grade_id,)).fetchone()
+        r = self._fetchone("SELECT * FROM grades WHERE id=?", (grade_id,))
         return Grade(**dict(r)) if r else None
 
     def grades_for_year(self, academic_year_id: str) -> list[Grade]:
-        rows = self.conn.execute(
-            "SELECT * FROM grades WHERE academic_year_id=? ORDER BY number", (academic_year_id,)).fetchall()
+        rows = self._fetchall(
+            "SELECT * FROM grades WHERE academic_year_id=? ORDER BY number", (academic_year_id,))
         return [Grade(**dict(r)) for r in rows]
 
     def get_grade_by_number(self, academic_year_id: str, number: int,
@@ -481,31 +518,31 @@ class CurriculumStore:
         # SQLite's IS operator handles a bound NULL parameter correctly
         # (unlike =, which never matches NULL) -- one clause covers both
         # "no section" (section is None) and a real section value.
-        r = self.conn.execute(
+        r = self._fetchone(
             "SELECT * FROM grades WHERE academic_year_id=? AND number=? AND section IS ?",
-            (academic_year_id, number, section)).fetchone()
+            (academic_year_id, number, section))
         return Grade(**dict(r)) if r else None
 
     # ---------------- subjects ----------------
 
     def create_subject(self, *, grade_id: str, name: str, code: Optional[str] = None) -> Subject:
         s = Subject(id=new_id("subj"), grade_id=grade_id, name=name, code=code)
-        self.conn.execute("INSERT INTO subjects (id, grade_id, name, code) VALUES (?,?,?,?)",
+        self._exec("INSERT INTO subjects (id, grade_id, name, code) VALUES (?,?,?,?)",
                           (s.id, s.grade_id, s.name, s.code))
         self._commit()
         return s
 
     def get_subject(self, subject_id: str) -> Optional[Subject]:
-        r = self.conn.execute("SELECT * FROM subjects WHERE id=?", (subject_id,)).fetchone()
+        r = self._fetchone("SELECT * FROM subjects WHERE id=?", (subject_id,))
         return Subject(**dict(r)) if r else None
 
     def subjects_for_grade(self, grade_id: str) -> list[Subject]:
-        rows = self.conn.execute("SELECT * FROM subjects WHERE grade_id=? ORDER BY name", (grade_id,)).fetchall()
+        rows = self._fetchall("SELECT * FROM subjects WHERE grade_id=? ORDER BY name", (grade_id,))
         return [Subject(**dict(r)) for r in rows]
 
     def get_subject_by_name(self, grade_id: str, name: str) -> Optional[Subject]:
-        r = self.conn.execute(
-            "SELECT * FROM subjects WHERE grade_id=? AND name=?", (grade_id, name)).fetchone()
+        r = self._fetchone(
+            "SELECT * FROM subjects WHERE grade_id=? AND name=?", (grade_id, name))
         return Subject(**dict(r)) if r else None
 
     # ---------------- books ----------------
@@ -517,7 +554,7 @@ class CurriculumStore:
         from .models import Book
         b = Book(id=new_id("book"), subject_id=subject_id, board_id=board_id, title=title,
                 publisher=publisher, source_doc_ids=source_doc_ids or [], status=status)
-        self.conn.execute(
+        self._exec(
             "INSERT INTO books (id, subject_id, board_id, title, publisher, source_doc_ids, status) "
             "VALUES (?,?,?,?,?,?,?)",
             (b.id, b.subject_id, b.board_id, b.title, b.publisher,
@@ -527,7 +564,7 @@ class CurriculumStore:
 
     def get_book(self, book_id: str):
         from .models import Book
-        r = self.conn.execute("SELECT * FROM books WHERE id=?", (book_id,)).fetchone()
+        r = self._fetchone("SELECT * FROM books WHERE id=?", (book_id,))
         if not r:
             return None
         d = dict(r)
@@ -535,7 +572,7 @@ class CurriculumStore:
         return Book(**d)
 
     def books_for_subject(self, subject_id: str) -> list["Any"]:
-        rows = self.conn.execute("SELECT * FROM books WHERE subject_id=?", (subject_id,)).fetchall()
+        rows = self._fetchall("SELECT * FROM books WHERE subject_id=?", (subject_id,))
         out = []
         from .models import Book
         for r in rows:
@@ -546,8 +583,8 @@ class CurriculumStore:
 
     def get_book_by_title(self, subject_id: str, title: str) -> Optional["Any"]:
         from .models import Book
-        r = self.conn.execute(
-            "SELECT * FROM books WHERE subject_id=? AND title=?", (subject_id, title)).fetchone()
+        r = self._fetchone(
+            "SELECT * FROM books WHERE subject_id=? AND title=?", (subject_id, title))
         if not r:
             return None
         d = dict(r)
@@ -560,7 +597,7 @@ class CurriculumStore:
                     marks: Optional[int] = None, seq: int = 0) -> Unit:
         u = Unit(id=new_id("unit"), canonical_id=canonical_id, book_id=book_id,
                  unit_no=unit_no, name=name, marks=marks, seq=seq)
-        self.conn.execute(
+        self._exec(
             "INSERT INTO units (id, canonical_id, book_id, unit_no, name, marks, seq) "
             "VALUES (?,?,?,?,?,?,?)",
             (u.id, u.canonical_id, u.book_id, u.unit_no, u.name, u.marks, u.seq))
@@ -568,33 +605,33 @@ class CurriculumStore:
         return u
 
     def get_unit(self, unit_id: str) -> Optional[Unit]:
-        r = self.conn.execute("SELECT * FROM units WHERE id=?", (unit_id,)).fetchone()
+        r = self._fetchone("SELECT * FROM units WHERE id=?", (unit_id,))
         return Unit(**dict(r)) if r else None
 
     def get_unit_by_canonical_id(self, canonical_id: str) -> Optional[Unit]:
-        r = self.conn.execute("SELECT * FROM units WHERE canonical_id=?", (canonical_id,)).fetchone()
+        r = self._fetchone("SELECT * FROM units WHERE canonical_id=?", (canonical_id,))
         return Unit(**dict(r)) if r else None
 
     def units_for_book(self, book_id: str) -> list[Unit]:
-        rows = self.conn.execute("SELECT * FROM units WHERE book_id=? ORDER BY seq", (book_id,)).fetchall()
+        rows = self._fetchall("SELECT * FROM units WHERE book_id=? ORDER BY seq", (book_id,))
         return [Unit(**dict(r)) for r in rows]
 
     # ---------------- chapters ----------------
 
     def create_chapter(self, *, canonical_id: str, unit_id: str, name: str, seq: int = 0) -> Chapter:
         c = Chapter(id=new_id("chap"), canonical_id=canonical_id, unit_id=unit_id, name=name, seq=seq)
-        self.conn.execute(
+        self._exec(
             "INSERT INTO chapters (id, canonical_id, unit_id, name, seq) VALUES (?,?,?,?,?)",
             (c.id, c.canonical_id, c.unit_id, c.name, c.seq))
         self._commit()
         return c
 
     def get_chapter(self, chapter_id: str) -> Optional[Chapter]:
-        r = self.conn.execute("SELECT * FROM chapters WHERE id=?", (chapter_id,)).fetchone()
+        r = self._fetchone("SELECT * FROM chapters WHERE id=?", (chapter_id,))
         return Chapter(**dict(r)) if r else None
 
     def get_chapter_by_canonical_id(self, canonical_id: str) -> Optional[Chapter]:
-        r = self.conn.execute("SELECT * FROM chapters WHERE canonical_id=?", (canonical_id,)).fetchone()
+        r = self._fetchone("SELECT * FROM chapters WHERE canonical_id=?", (canonical_id,))
         return Chapter(**dict(r)) if r else None
 
     def school_id_for_book(self, book_id: str) -> Optional[str]:
@@ -603,18 +640,18 @@ class CurriculumStore:
         verify a caller's school actually owns the book/chapter they're
         trying to touch, the same school-scoping pattern this session
         already applied to pillar_routes.py's authorization fixes."""
-        r = self.conn.execute(
+        r = self._fetchone(
             "SELECT y.school_id FROM books b "
             "JOIN subjects s ON b.subject_id = s.id "
             "JOIN grades g ON s.grade_id = g.id "
             "JOIN academic_years y ON g.academic_year_id = y.id "
-            "WHERE b.id=?", (book_id,)).fetchone()
+            "WHERE b.id=?", (book_id,))
         return r["school_id"] if r else None
 
     def school_id_for_grade(self, grade_id: str) -> Optional[str]:
-        r = self.conn.execute(
+        r = self._fetchone(
             "SELECT y.school_id FROM grades g JOIN academic_years y ON g.academic_year_id = y.id "
-            "WHERE g.id=?", (grade_id,)).fetchone()
+            "WHERE g.id=?", (grade_id,))
         return r["school_id"] if r else None
 
     def grade_id_for_book(self, book_id: str) -> Optional[str]:
@@ -622,40 +659,40 @@ class CurriculumStore:
         by: every book taught to their real enrolled grade, not just one
         subject (unlike a teacher, who is scoped to specific books via
         TeacherAssignment)."""
-        r = self.conn.execute(
+        r = self._fetchone(
             "SELECT s.grade_id FROM books b JOIN subjects s ON b.subject_id = s.id WHERE b.id=?",
-            (book_id,)).fetchone()
+            (book_id,))
         return r["grade_id"] if r else None
 
     def book_ids_for_grade(self, grade_id: str) -> list[str]:
-        rows = self.conn.execute(
+        rows = self._fetchall(
             "SELECT b.id FROM books b JOIN subjects s ON b.subject_id = s.id WHERE s.grade_id=?",
-            (grade_id,)).fetchall()
+            (grade_id,))
         return [r["id"] for r in rows]
 
     def school_id_for_unit(self, unit_id: str) -> Optional[str]:
-        r = self.conn.execute(
+        r = self._fetchone(
             "SELECT y.school_id FROM units u "
             "JOIN books b ON u.book_id = b.id "
             "JOIN subjects s ON b.subject_id = s.id "
             "JOIN grades g ON s.grade_id = g.id "
             "JOIN academic_years y ON g.academic_year_id = y.id "
-            "WHERE u.id=?", (unit_id,)).fetchone()
+            "WHERE u.id=?", (unit_id,))
         return r["school_id"] if r else None
 
     def school_id_for_chapter(self, chapter_id: str) -> Optional[str]:
-        r = self.conn.execute(
+        r = self._fetchone(
             "SELECT y.school_id FROM chapters c "
             "JOIN units u ON c.unit_id = u.id "
             "JOIN books b ON u.book_id = b.id "
             "JOIN subjects s ON b.subject_id = s.id "
             "JOIN grades g ON s.grade_id = g.id "
             "JOIN academic_years y ON g.academic_year_id = y.id "
-            "WHERE c.id=?", (chapter_id,)).fetchone()
+            "WHERE c.id=?", (chapter_id,))
         return r["school_id"] if r else None
 
     def school_id_for_topic(self, topic_id: str) -> Optional[str]:
-        r = self.conn.execute(
+        r = self._fetchone(
             "SELECT y.school_id FROM topics t "
             "JOIN chapters c ON t.chapter_id = c.id "
             "JOIN units u ON c.unit_id = u.id "
@@ -663,11 +700,11 @@ class CurriculumStore:
             "JOIN subjects s ON b.subject_id = s.id "
             "JOIN grades g ON s.grade_id = g.id "
             "JOIN academic_years y ON g.academic_year_id = y.id "
-            "WHERE t.id=?", (topic_id,)).fetchone()
+            "WHERE t.id=?", (topic_id,))
         return r["school_id"] if r else None
 
     def school_id_for_subtopic(self, subtopic_id: str) -> Optional[str]:
-        r = self.conn.execute(
+        r = self._fetchone(
             "SELECT y.school_id FROM subtopics st "
             "JOIN topics t ON st.topic_id = t.id "
             "JOIN chapters c ON t.chapter_id = c.id "
@@ -676,7 +713,7 @@ class CurriculumStore:
             "JOIN subjects s ON b.subject_id = s.id "
             "JOIN grades g ON s.grade_id = g.id "
             "JOIN academic_years y ON g.academic_year_id = y.id "
-            "WHERE st.id=?", (subtopic_id,)).fetchone()
+            "WHERE st.id=?", (subtopic_id,))
         return r["school_id"] if r else None
 
     _SEQUENCE_TABLES = {"unit": "units", "chapter": "chapters", "topic": "topics", "subtopic": "subtopics"}
@@ -699,22 +736,24 @@ class CurriculumStore:
         table = self._SEQUENCE_TABLES.get(entity_type)
         if table is None:
             raise ValueError(f"unknown sequence entity_type: {entity_type!r}")
-        cur = self.conn.execute(f"UPDATE {table} SET seq=? WHERE id=?", (seq, entity_id))
-        if cur.rowcount == 0:
+        with self._conn_lock:
+            cur = self.conn.execute(f"UPDATE {table} SET seq=? WHERE id=?", (seq, entity_id))
+            rowcount = cur.rowcount
+        if rowcount == 0:
             raise ValueError(f"no {entity_type} with id {entity_id!r}")
         self._commit()
 
     def chapters_for_unit(self, unit_id: str) -> list[Chapter]:
-        rows = self.conn.execute("SELECT * FROM chapters WHERE unit_id=? ORDER BY seq", (unit_id,)).fetchall()
+        rows = self._fetchall("SELECT * FROM chapters WHERE unit_id=? ORDER BY seq", (unit_id,))
         return [Chapter(**dict(r)) for r in rows]
 
     def chapters_for_book(self, book_id: str) -> list[Chapter]:
         """Convenience join: every chapter across every unit of a book, in
         unit-then-chapter seq order -- what an admin's curriculum review
         screen (§29) actually wants to show."""
-        rows = self.conn.execute(
+        rows = self._fetchall(
             "SELECT c.* FROM chapters c JOIN units u ON c.unit_id = u.id "
-            "WHERE u.book_id=? ORDER BY u.seq, c.seq", (book_id,)).fetchall()
+            "WHERE u.book_id=? ORDER BY u.seq, c.seq", (book_id,))
         return [Chapter(**dict(r)) for r in rows]
 
     # ---------------- topics ----------------
@@ -729,7 +768,7 @@ class CurriculumStore:
                   source_reference=source_reference, approved_by=approved_by,
                   approved_at=approved_at, model_used=model_used,
                   generation_version=generation_version)
-        self.conn.execute(
+        self._exec(
             "INSERT INTO topics (id, canonical_id, chapter_id, name, seq, description, "
             "source_type, source_reference, approved_by, approved_at, model_used, "
             "generation_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -739,18 +778,18 @@ class CurriculumStore:
         return t
 
     def get_topic(self, topic_id: str) -> Optional[Topic]:
-        r = self.conn.execute("SELECT * FROM topics WHERE id=?", (topic_id,)).fetchone()
+        r = self._fetchone("SELECT * FROM topics WHERE id=?", (topic_id,))
         return Topic(**dict(r)) if r else None
 
     def topics_for_chapter(self, chapter_id: str) -> list[Topic]:
-        rows = self.conn.execute("SELECT * FROM topics WHERE chapter_id=? ORDER BY seq", (chapter_id,)).fetchall()
+        rows = self._fetchall("SELECT * FROM topics WHERE chapter_id=? ORDER BY seq", (chapter_id,))
         return [Topic(**dict(r)) for r in rows]
 
     def rename_topic(self, topic_id: str, new_name: str) -> None:
         """§ acceptance criteria: renaming a topic must not break question
         references -- canonical_id (what qmap.py/QuestionSubtopicLink key
         against) is untouched by this; only the display name changes."""
-        self.conn.execute("UPDATE topics SET name=? WHERE id=?", (new_name, topic_id))
+        self._exec("UPDATE topics SET name=? WHERE id=?", (new_name, topic_id))
         self._commit()
 
     # ---------------- subtopics ----------------
@@ -765,7 +804,7 @@ class CurriculumStore:
                      source_reference=source_reference, approved_by=approved_by,
                      approved_at=approved_at, model_used=model_used,
                      generation_version=generation_version)
-        self.conn.execute(
+        self._exec(
             "INSERT INTO subtopics (id, canonical_id, topic_id, name, seq, description, "
             "source_type, source_reference, approved_by, approved_at, model_used, "
             "generation_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -775,19 +814,19 @@ class CurriculumStore:
         return s
 
     def get_subtopic(self, subtopic_id: str) -> Optional[Subtopic]:
-        r = self.conn.execute("SELECT * FROM subtopics WHERE id=?", (subtopic_id,)).fetchone()
+        r = self._fetchone("SELECT * FROM subtopics WHERE id=?", (subtopic_id,))
         return Subtopic(**dict(r)) if r else None
 
     def get_subtopic_by_canonical_id(self, canonical_id: str) -> Optional[Subtopic]:
-        r = self.conn.execute("SELECT * FROM subtopics WHERE canonical_id=?", (canonical_id,)).fetchone()
+        r = self._fetchone("SELECT * FROM subtopics WHERE canonical_id=?", (canonical_id,))
         return Subtopic(**dict(r)) if r else None
 
     def subtopics_for_topic(self, topic_id: str) -> list[Subtopic]:
-        rows = self.conn.execute("SELECT * FROM subtopics WHERE topic_id=? ORDER BY seq", (topic_id,)).fetchall()
+        rows = self._fetchall("SELECT * FROM subtopics WHERE topic_id=? ORDER BY seq", (topic_id,))
         return [Subtopic(**dict(r)) for r in rows]
 
     def rename_subtopic(self, subtopic_id: str, new_name: str) -> None:
-        self.conn.execute("UPDATE subtopics SET name=? WHERE id=?", (new_name, subtopic_id))
+        self._exec("UPDATE subtopics SET name=? WHERE id=?", (new_name, subtopic_id))
         self._commit()
 
     class SubtopicHasLinkedQuestions(Exception):
@@ -804,8 +843,8 @@ class CurriculumStore:
                 "pass force=True to delete anyway (also deletes those links) "
                 "or re-tag the questions to a different subtopic first")
         if force:
-            self.conn.execute("DELETE FROM question_subtopic_links WHERE subtopic_id=?", (subtopic_id,))
-        self.conn.execute("DELETE FROM subtopics WHERE id=?", (subtopic_id,))
+            self._exec("DELETE FROM question_subtopic_links WHERE subtopic_id=?", (subtopic_id,))
+        self._exec("DELETE FROM subtopics WHERE id=?", (subtopic_id,))
         self._commit()
 
     # ---------------- question <-> subtopic links ----------------
@@ -816,7 +855,7 @@ class CurriculumStore:
                                     method=method, confidence=confidence)
         # A question can be re-tagged (new method/confidence) without
         # accumulating duplicate rows for the same (question, subtopic) pair.
-        self.conn.execute(
+        self._exec(
             "INSERT INTO question_subtopic_links (id, question_id, subtopic_id, method, confidence) "
             "VALUES (?,?,?,?,?) "
             "ON CONFLICT(question_id, subtopic_id) DO UPDATE SET method=excluded.method, "
@@ -826,13 +865,13 @@ class CurriculumStore:
         return link
 
     def subtopics_for_question(self, question_id: str) -> list[QuestionSubtopicLink]:
-        rows = self.conn.execute(
-            "SELECT * FROM question_subtopic_links WHERE question_id=?", (question_id,)).fetchall()
+        rows = self._fetchall(
+            "SELECT * FROM question_subtopic_links WHERE question_id=?", (question_id,))
         return [QuestionSubtopicLink(**dict(r)) for r in rows]
 
     def question_links_for_subtopic(self, subtopic_id: str) -> list[QuestionSubtopicLink]:
-        rows = self.conn.execute(
-            "SELECT * FROM question_subtopic_links WHERE subtopic_id=?", (subtopic_id,)).fetchall()
+        rows = self._fetchall(
+            "SELECT * FROM question_subtopic_links WHERE subtopic_id=?", (subtopic_id,))
         return [QuestionSubtopicLink(**dict(r)) for r in rows]
 
     def question_ids_for_subtopics(self, subtopic_ids: list[str]) -> list[str]:
@@ -842,9 +881,9 @@ class CurriculumStore:
         if not subtopic_ids:
             return []
         placeholders = ",".join("?" * len(subtopic_ids))
-        rows = self.conn.execute(
+        rows = self._fetchall(
             f"SELECT DISTINCT question_id FROM question_subtopic_links "
-            f"WHERE subtopic_id IN ({placeholders})", subtopic_ids).fetchall()
+            f"WHERE subtopic_id IN ({placeholders})", subtopic_ids)
         return [r["question_id"] for r in rows]
 
     # ---------------- curriculum extraction runs / proposals ----------------
@@ -857,7 +896,7 @@ class CurriculumStore:
             id=new_id("extrun"), school_id=school_id, book_id=book_id, chapter_id=chapter_id,
             source_hash=source_hash, model=model, prompt_version=prompt_version,
             created_at=datetime.now(timezone.utc).isoformat(), status="pending")
-        self.conn.execute(
+        self._exec(
             "INSERT INTO curriculum_extraction_runs (id, school_id, book_id, chapter_id, "
             "source_hash, model, prompt_version, created_at, status) VALUES (?,?,?,?,?,?,?,?,?)",
             (run.id, run.school_id, run.book_id, run.chapter_id, run.source_hash, run.model,
@@ -866,18 +905,18 @@ class CurriculumStore:
         return run
 
     def get_extraction_run(self, run_id: str) -> Optional[CurriculumExtractionRun]:
-        r = self.conn.execute(
-            "SELECT * FROM curriculum_extraction_runs WHERE id=?", (run_id,)).fetchone()
+        r = self._fetchone(
+            "SELECT * FROM curriculum_extraction_runs WHERE id=?", (run_id,))
         return CurriculumExtractionRun(**dict(r)) if r else None
 
     def extraction_runs_for_chapter(self, chapter_id: str) -> list[CurriculumExtractionRun]:
-        rows = self.conn.execute(
+        rows = self._fetchall(
             "SELECT * FROM curriculum_extraction_runs WHERE chapter_id=? ORDER BY created_at DESC",
-            (chapter_id,)).fetchall()
+            (chapter_id,))
         return [CurriculumExtractionRun(**dict(r)) for r in rows]
 
     def update_run_status(self, run_id: str, status: str) -> None:
-        self.conn.execute(
+        self._exec(
             "UPDATE curriculum_extraction_runs SET status=? WHERE id=?", (status, run_id))
         self._commit()
 
@@ -889,7 +928,7 @@ class CurriculumStore:
             id=new_id("extprop"), run_id=run_id, entity_type=entity_type,
             proposed_name=proposed_name, proposed_description=proposed_description,
             proposed_parent=proposed_parent, sequence=sequence, confidence=confidence)
-        self.conn.execute(
+        self._exec(
             "INSERT INTO curriculum_extraction_proposals (id, run_id, entity_type, proposed_name, "
             "proposed_description, proposed_parent, sequence, confidence, status) "
             "VALUES (?,?,?,?,?,?,?,?,?)",
@@ -899,14 +938,14 @@ class CurriculumStore:
         return p
 
     def proposals_for_run(self, run_id: str) -> list[CurriculumExtractionProposal]:
-        rows = self.conn.execute(
+        rows = self._fetchall(
             "SELECT * FROM curriculum_extraction_proposals WHERE run_id=? ORDER BY sequence",
-            (run_id,)).fetchall()
+            (run_id,))
         return [CurriculumExtractionProposal(**dict(r)) for r in rows]
 
     def get_proposal(self, proposal_id: str) -> Optional[CurriculumExtractionProposal]:
-        r = self.conn.execute(
-            "SELECT * FROM curriculum_extraction_proposals WHERE id=?", (proposal_id,)).fetchone()
+        r = self._fetchone(
+            "SELECT * FROM curriculum_extraction_proposals WHERE id=?", (proposal_id,))
         return CurriculumExtractionProposal(**dict(r)) if r else None
 
     def set_proposal_status(self, proposal_id: str, status: str, *,
@@ -915,13 +954,13 @@ class CurriculumStore:
         admin's replacement text when status='edited' -- the proposal keeps
         proposed_name as the original AI suggestion (traceability) and
         edited_name as what actually gets materialized."""
-        self.conn.execute(
+        self._exec(
             "UPDATE curriculum_extraction_proposals SET status=?, edited_name=? WHERE id=?",
             (status, edited_name, proposal_id))
         self._commit()
 
     def set_proposal_materialized_id(self, proposal_id: str, materialized_id: str) -> None:
-        self.conn.execute(
+        self._exec(
             "UPDATE curriculum_extraction_proposals SET materialized_id=? WHERE id=?",
             (materialized_id, proposal_id))
         self._commit()
@@ -932,7 +971,7 @@ class CurriculumStore:
                                     period_minutes: int) -> PeriodConfiguration:
         p = PeriodConfiguration(id=new_id("periodcfg"), school_id=school_id,
                                 academic_year_id=academic_year_id, period_minutes=period_minutes)
-        self.conn.execute(
+        self._exec(
             "INSERT INTO period_configurations (id, school_id, academic_year_id, period_minutes) "
             "VALUES (?,?,?,?)",
             (p.id, p.school_id, p.academic_year_id, p.period_minutes))
@@ -940,8 +979,8 @@ class CurriculumStore:
         return p
 
     def period_configuration_for_year(self, academic_year_id: str) -> Optional[PeriodConfiguration]:
-        r = self.conn.execute(
-            "SELECT * FROM period_configurations WHERE academic_year_id=?", (academic_year_id,)).fetchone()
+        r = self._fetchone(
+            "SELECT * FROM period_configurations WHERE academic_year_id=?", (academic_year_id,))
         return PeriodConfiguration(**dict(r)) if r else None
 
     def set_subject_period_allocation(self, *, school_id: str, academic_year_id: str,
@@ -950,11 +989,11 @@ class CurriculumStore:
         own docstring for why): a school setting Science to 6 periods/week
         this term and 7 next term should not need a distinct row per term,
         and re-POSTing must update, not IntegrityError."""
-        existing = self.conn.execute(
+        existing = self._fetchone(
             "SELECT id FROM subject_period_allocations WHERE academic_year_id=? AND subject=?",
-            (academic_year_id, subject)).fetchone()
+            (academic_year_id, subject))
         alloc_id = existing["id"] if existing else new_id("spa")
-        self.conn.execute(
+        self._exec(
             "INSERT INTO subject_period_allocations "
             "(id, school_id, academic_year_id, subject, periods_per_week) VALUES (?,?,?,?,?) "
             "ON CONFLICT(academic_year_id, subject) DO UPDATE SET periods_per_week=excluded.periods_per_week",
@@ -964,21 +1003,21 @@ class CurriculumStore:
                                        subject=subject, periods_per_week=periods_per_week)
 
     def subject_period_allocation(self, academic_year_id: str, subject: str) -> Optional[SubjectPeriodAllocation]:
-        r = self.conn.execute(
+        r = self._fetchone(
             "SELECT * FROM subject_period_allocations WHERE academic_year_id=? AND subject=?",
-            (academic_year_id, subject)).fetchone()
+            (academic_year_id, subject))
         return SubjectPeriodAllocation(**dict(r)) if r else None
 
     def subject_period_allocations_for_year(self, academic_year_id: str) -> list[SubjectPeriodAllocation]:
-        rows = self.conn.execute(
+        rows = self._fetchall(
             "SELECT * FROM subject_period_allocations WHERE academic_year_id=? ORDER BY subject",
-            (academic_year_id,)).fetchall()
+            (academic_year_id,))
         return [SubjectPeriodAllocation(**dict(r)) for r in rows]
 
     def subject_name_for_book(self, book_id: str) -> Optional[str]:
-        r = self.conn.execute(
+        r = self._fetchone(
             "SELECT s.name FROM books b JOIN subjects s ON b.subject_id = s.id WHERE b.id=?",
-            (book_id,)).fetchone()
+            (book_id,))
         return r["name"] if r else None
 
     def add_timetable_slot(self, *, school_id: str, academic_year_id: str, subject: str,
@@ -988,7 +1027,7 @@ class CurriculumStore:
         slot = SubjectTimetableSlot(id=new_id("slot"), school_id=school_id,
                                     academic_year_id=academic_year_id, subject=subject,
                                     day_of_week=day_of_week, period_number=period_number)
-        self.conn.execute(
+        self._exec(
             "INSERT INTO subject_timetable_slots "
             "(id, school_id, academic_year_id, subject, day_of_week, period_number) VALUES (?,?,?,?,?,?)",
             (slot.id, slot.school_id, slot.academic_year_id, slot.subject,
@@ -997,20 +1036,22 @@ class CurriculumStore:
         return slot
 
     def timetable_slots_for_subject(self, academic_year_id: str, subject: str) -> list[SubjectTimetableSlot]:
-        rows = self.conn.execute(
+        rows = self._fetchall(
             "SELECT * FROM subject_timetable_slots WHERE academic_year_id=? AND subject=? "
             "ORDER BY day_of_week, period_number",
-            (academic_year_id, subject)).fetchall()
+            (academic_year_id, subject))
         return [SubjectTimetableSlot(**dict(r)) for r in rows]
 
     def get_timetable_slot(self, slot_id: str) -> Optional[SubjectTimetableSlot]:
-        r = self.conn.execute(
-            "SELECT * FROM subject_timetable_slots WHERE id=?", (slot_id,)).fetchone()
+        r = self._fetchone(
+            "SELECT * FROM subject_timetable_slots WHERE id=?", (slot_id,))
         return SubjectTimetableSlot(**dict(r)) if r else None
 
     def remove_timetable_slot(self, slot_id: str) -> None:
-        cur = self.conn.execute("DELETE FROM subject_timetable_slots WHERE id=?", (slot_id,))
-        if cur.rowcount == 0:
+        with self._conn_lock:
+            cur = self.conn.execute("DELETE FROM subject_timetable_slots WHERE id=?", (slot_id,))
+            rowcount = cur.rowcount
+        if rowcount == 0:
             raise ValueError(f"no timetable slot with id {slot_id!r}")
         self._commit()
 
@@ -1022,7 +1063,7 @@ class CurriculumStore:
         c = Calendar(id=new_id("cal"), academic_year_id=academic_year_id,
                     weekly_off_days=weekly_off_days or ["sunday"],
                     alternate_saturday_rule=alternate_saturday_rule)
-        self.conn.execute(
+        self._exec(
             "INSERT INTO calendars (id, academic_year_id, weekly_off_days, alternate_saturday_rule) "
             "VALUES (?,?,?,?)",
             (c.id, c.academic_year_id, json.dumps(c.weekly_off_days), c.alternate_saturday_rule))
@@ -1030,8 +1071,8 @@ class CurriculumStore:
         return c
 
     def get_calendar_for_year(self, academic_year_id: str) -> Optional[Calendar]:
-        r = self.conn.execute(
-            "SELECT * FROM calendars WHERE academic_year_id=?", (academic_year_id,)).fetchone()
+        r = self._fetchone(
+            "SELECT * FROM calendars WHERE academic_year_id=?", (academic_year_id,))
         if not r:
             return None
         d = dict(r)
@@ -1044,15 +1085,15 @@ class CurriculumStore:
             raise ValueError(f"holiday end_date {end_date} is before its date {date}")
         h = Holiday(id=new_id("holiday"), calendar_id=calendar_id, date=date, label=label,
                    kind=kind, end_date=end_date)
-        self.conn.execute(
+        self._exec(
             "INSERT INTO holidays (id, calendar_id, date, label, kind, end_date) VALUES (?,?,?,?,?,?)",
             (h.id, h.calendar_id, h.date, h.label, h.kind, h.end_date))
         self._commit()
         return h
 
     def holidays_for_calendar(self, calendar_id: str) -> list[Holiday]:
-        rows = self.conn.execute(
-            "SELECT * FROM holidays WHERE calendar_id=? ORDER BY date", (calendar_id,)).fetchall()
+        rows = self._fetchall(
+            "SELECT * FROM holidays WHERE calendar_id=? ORDER BY date", (calendar_id,))
         return [Holiday(**dict(r)) for r in rows]
 
     # ---------------- teaching time estimates ----------------
@@ -1066,7 +1107,7 @@ class CurriculumStore:
             id=new_id("tte"), subtopic_id=subtopic_id, academic_year_id=academic_year_id,
             estimated_minutes=estimated_minutes, estimated_periods=estimated_periods,
             method=method, approved_by=approved_by)
-        self.conn.execute(
+        self._exec(
             "INSERT INTO teaching_time_estimates (id, subtopic_id, academic_year_id, "
             "estimated_minutes, estimated_periods, method, approved_by) VALUES (?,?,?,?,?,?,?)",
             (t.id, t.subtopic_id, t.academic_year_id, t.estimated_minutes,
@@ -1076,9 +1117,9 @@ class CurriculumStore:
 
     def teaching_time_estimate_for_subtopic(self, subtopic_id: str,
                                             academic_year_id: str) -> Optional[TeachingTimeEstimate]:
-        r = self.conn.execute(
+        r = self._fetchone(
             "SELECT * FROM teaching_time_estimates WHERE subtopic_id=? AND academic_year_id=?",
-            (subtopic_id, academic_year_id)).fetchone()
+            (subtopic_id, academic_year_id))
         return TeachingTimeEstimate(**dict(r)) if r else None
 
     # ---------------- scheduled lessons (§11-14) ----------------
@@ -1090,7 +1131,7 @@ class CurriculumStore:
             id=new_id("lesson"), school_id=school_id, academic_year_id=academic_year_id,
             book_id=book_id, subtopic_id=subtopic_id, date=date, status=status,
             created_at=datetime.now(timezone.utc).isoformat())
-        self.conn.execute(
+        self._exec(
             "INSERT INTO scheduled_lessons (id, school_id, academic_year_id, book_id, subtopic_id, "
             "date, status, created_at) VALUES (?,?,?,?,?,?,?,?)",
             (lesson.id, lesson.school_id, lesson.academic_year_id, lesson.book_id,
@@ -1099,7 +1140,7 @@ class CurriculumStore:
         return lesson
 
     def get_scheduled_lesson(self, lesson_id: str) -> Optional[ScheduledLesson]:
-        r = self.conn.execute("SELECT * FROM scheduled_lessons WHERE id=?", (lesson_id,)).fetchone()
+        r = self._fetchone("SELECT * FROM scheduled_lessons WHERE id=?", (lesson_id,))
         return ScheduledLesson(**dict(r)) if r else None
 
     def mark_lesson(self, lesson_id: str, *, status: str, note: Optional[str],
@@ -1113,7 +1154,7 @@ class CurriculumStore:
             raise ValueError(f"invalid status: {status!r} (must be one of {STATUS_VALUES})")
         from datetime import datetime, timezone
         completed_at = datetime.now(timezone.utc).isoformat()
-        self.conn.execute(
+        self._exec(
             "UPDATE scheduled_lessons SET status=?, note=?, completed_by=?, completed_at=? WHERE id=?",
             (status, note, completed_by, completed_at, lesson_id))
         self._commit()
@@ -1127,20 +1168,20 @@ class CurriculumStore:
         (old date, new date, reason, changed-by, timestamp) is the
         caller's job (scheduling.py), via the existing assessment audit
         log -- this store method only ever changes the one column."""
-        self.conn.execute("UPDATE scheduled_lessons SET date=? WHERE id=?", (new_date, lesson_id))
+        self._exec("UPDATE scheduled_lessons SET date=? WHERE id=?", (new_date, lesson_id))
         self._commit()
         return self.get_scheduled_lesson(lesson_id)
 
     def scheduled_lessons_for_book(self, academic_year_id: str, book_id: str) -> list[ScheduledLesson]:
-        rows = self.conn.execute(
+        rows = self._fetchall(
             "SELECT * FROM scheduled_lessons WHERE academic_year_id=? AND book_id=? ORDER BY date",
-            (academic_year_id, book_id)).fetchall()
+            (academic_year_id, book_id))
         return [ScheduledLesson(**dict(r)) for r in rows]
 
     def scheduled_lessons_for_subtopic(self, subtopic_id: str, academic_year_id: str) -> list[ScheduledLesson]:
-        rows = self.conn.execute(
+        rows = self._fetchall(
             "SELECT * FROM scheduled_lessons WHERE subtopic_id=? AND academic_year_id=? ORDER BY date",
-            (subtopic_id, academic_year_id)).fetchall()
+            (subtopic_id, academic_year_id))
         return [ScheduledLesson(**dict(r)) for r in rows]
 
     def scheduled_lessons_for_date_range(self, school_id: str, start_date: str,
@@ -1148,17 +1189,19 @@ class CurriculumStore:
         """The real access pattern a yearly/monthly/weekly/daily view (the
         next milestone) needs -- date-range scoped to one school, not one
         book, since a real day mixes lessons from every subject."""
-        rows = self.conn.execute(
+        rows = self._fetchall(
             "SELECT * FROM scheduled_lessons WHERE school_id=? AND date>=? AND date<=? ORDER BY date",
-            (school_id, start_date, end_date)).fetchall()
+            (school_id, start_date, end_date))
         return [ScheduledLesson(**dict(r)) for r in rows]
 
     def delete_scheduled_lessons_for_book(self, academic_year_id: str, book_id: str) -> int:
-        cur = self.conn.execute(
-            "DELETE FROM scheduled_lessons WHERE academic_year_id=? AND book_id=?",
-            (academic_year_id, book_id))
+        with self._conn_lock:
+            cur = self.conn.execute(
+                "DELETE FROM scheduled_lessons WHERE academic_year_id=? AND book_id=?",
+                (academic_year_id, book_id))
+            rowcount = cur.rowcount
         self._commit()
-        return cur.rowcount
+        return rowcount
 
     # ---------------- teacher assignments (§15 -- "what do I teach today") ----------------
 
@@ -1168,15 +1211,15 @@ class CurriculumStore:
         matching this module's established idempotency posture
         elsewhere (create_teacher_assignment is safe to call from an
         admin UI's "Save" button without a prior existence check)."""
-        existing = self.conn.execute(
+        existing = self._fetchone(
             "SELECT * FROM teacher_assignments WHERE teacher_id=? AND book_id=?",
-            (teacher_id, book_id)).fetchone()
+            (teacher_id, book_id))
         if existing:
             return TeacherAssignment(**dict(existing))
         from datetime import datetime, timezone
         a = TeacherAssignment(id=new_id("ta"), school_id=school_id, teacher_id=teacher_id,
                               book_id=book_id, created_at=datetime.now(timezone.utc).isoformat())
-        self.conn.execute(
+        self._exec(
             "INSERT INTO teacher_assignments (id, school_id, teacher_id, book_id, created_at) "
             "VALUES (?,?,?,?,?)",
             (a.id, a.school_id, a.teacher_id, a.book_id, a.created_at))
@@ -1184,13 +1227,13 @@ class CurriculumStore:
         return a
 
     def assignments_for_teacher(self, teacher_id: str) -> list[TeacherAssignment]:
-        rows = self.conn.execute(
+        rows = self._fetchall(
             "SELECT * FROM teacher_assignments WHERE teacher_id=? ORDER BY created_at",
-            (teacher_id,)).fetchall()
+            (teacher_id,))
         return [TeacherAssignment(**dict(r)) for r in rows]
 
     def unassign_teacher(self, *, teacher_id: str, book_id: str) -> None:
-        self.conn.execute("DELETE FROM teacher_assignments WHERE teacher_id=? AND book_id=?",
+        self._exec("DELETE FROM teacher_assignments WHERE teacher_id=? AND book_id=?",
                           (teacher_id, book_id))
         self._commit()
 
@@ -1201,18 +1244,18 @@ class CurriculumStore:
         a new grade) replaces the existing row rather than erroring or
         leaving two, since a real student is only ever in one class at a
         time."""
-        existing = self.conn.execute(
-            "SELECT * FROM student_enrollments WHERE student_id=?", (student_id,)).fetchone()
+        existing = self._fetchone(
+            "SELECT * FROM student_enrollments WHERE student_id=?", (student_id,))
         from datetime import datetime, timezone
         if existing:
-            self.conn.execute("UPDATE student_enrollments SET grade_id=?, school_id=? WHERE student_id=?",
+            self._exec("UPDATE student_enrollments SET grade_id=?, school_id=? WHERE student_id=?",
                               (grade_id, school_id, student_id))
             self._commit()
             return StudentEnrollment(id=existing["id"], school_id=school_id, student_id=student_id,
                                      grade_id=grade_id, created_at=existing["created_at"])
         e = StudentEnrollment(id=new_id("enroll"), school_id=school_id, student_id=student_id,
                               grade_id=grade_id, created_at=datetime.now(timezone.utc).isoformat())
-        self.conn.execute(
+        self._exec(
             "INSERT INTO student_enrollments (id, school_id, student_id, grade_id, created_at) "
             "VALUES (?,?,?,?,?)",
             (e.id, e.school_id, e.student_id, e.grade_id, e.created_at))
@@ -1220,8 +1263,8 @@ class CurriculumStore:
         return e
 
     def enrollment_for_student(self, student_id: str) -> Optional[StudentEnrollment]:
-        r = self.conn.execute(
-            "SELECT * FROM student_enrollments WHERE student_id=?", (student_id,)).fetchone()
+        r = self._fetchone(
+            "SELECT * FROM student_enrollments WHERE student_id=?", (student_id,))
         return StudentEnrollment(**dict(r)) if r else None
 
     # ---------------- management reporting & variance (§17, §32) ----------------
@@ -1234,7 +1277,7 @@ class CurriculumStore:
         if not as_of_date:
             as_of_date = datetime.now(timezone.utc).date().isoformat()
 
-        rows = self.conn.execute(
+        rows = self._fetchall(
             """
             SELECT l.id, l.date, l.status, l.subtopic_id,
                    st.name as subtopic_name, tp.id as topic_id, tp.name as topic_name,
@@ -1253,12 +1296,12 @@ class CurriculumStore:
             ORDER BY g.number, s.name, ch.name, l.date
             """,
             (school_id, academic_year_id),
-        ).fetchall()
+        )
 
-        assignment_rows = self.conn.execute(
+        assignment_rows = self._fetchall(
             "SELECT teacher_id, book_id FROM teacher_assignments WHERE school_id=?",
             (school_id,),
-        ).fetchall()
+        )
         teacher_for_book = {r["book_id"]: r["teacher_id"] for r in assignment_rows}
 
         subjects_map: dict[str, dict[str, Any]] = {}
@@ -1366,7 +1409,7 @@ class CurriculumStore:
             as_of_date = datetime.now(timezone.utc).date().isoformat()
         as_of = date.fromisoformat(as_of_date)
 
-        rows = self.conn.execute(
+        rows = self._fetchall(
             """
             SELECT l.id as lesson_id, l.date as scheduled_date, l.subtopic_id,
                    st.name as subtopic_name, tp.name as topic_name,
@@ -1383,12 +1426,12 @@ class CurriculumStore:
             ORDER BY l.date, g.number, s.name
             """,
             (school_id, academic_year_id, as_of_date),
-        ).fetchall()
+        )
 
-        assignment_rows = self.conn.execute(
+        assignment_rows = self._fetchall(
             "SELECT teacher_id, book_id FROM teacher_assignments WHERE school_id=?",
             (school_id,),
-        ).fetchall()
+        )
         teacher_for_book = {r["book_id"]: r["teacher_id"] for r in assignment_rows}
 
         delayed = []
