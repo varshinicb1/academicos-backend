@@ -1,0 +1,78 @@
+{
+  "subject": "Political Science",
+  "grade": 12,
+  "source": "CBSE Curriculum 2025-26, PoliticalScience_SrSec_2025-26.pdf, Class XII Course Structure",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Contemporary World Politics",
+      "marks": 40,
+      "chapters": [
+        {
+          "id": "end-of-bipolarity",
+          "name": "The End of Bipolarity"
+        },
+        {
+          "id": "contemporary-centres-power",
+          "name": "Contemporary Centres of Power"
+        },
+        {
+          "id": "contemporary-south-asia",
+          "name": "Contemporary South Asia"
+        },
+        {
+          "id": "international-organisations",
+          "name": "International Organisations"
+        },
+        {
+          "id": "security-contemporary-world",
+          "name": "Security in the Contemporary World"
+        },
+        {
+          "id": "environment-natural-resources",
+          "name": "Environment and Natural Resources"
+        },
+        {
+          "id": "globalisation-political",
+          "name": "Globalisation"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Politics in India Since Independence",
+      "marks": 40,
+      "chapters": [
+        {
+          "id": "challenges-nation-building",
+          "name": "Challenges of Nation-Building"
+        },
+        {
+          "id": "era-one-party-dominance",
+          "name": "Era of One-Party Dominance and Planned Development"
+        },
+        {
+          "id": "indias-external-relations",
+          "name": "India's External Relations"
+        },
+        {
+          "id": "challenges-restoration-congress",
+          "name": "Challenges to and Restoration of the Congress System"
+        },
+        {
+          "id": "crisis-democratic-order",
+          "name": "The Crisis of Democratic Order"
+        },
+        {
+          "id": "regional-aspirations",
+          "name": "Regional Aspirations"
+        },
+        {
+          "id": "recent-developments-indian-politics",
+          "name": "Recent Developments in Indian Politics"
+        }
+      ]
+    }
+  ]
+}

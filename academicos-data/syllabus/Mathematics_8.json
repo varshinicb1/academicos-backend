@@ -1,0 +1,88 @@
+{
+  "subject": "Mathematics",
+  "grade": 8,
+  "source": "NCERT Class 8 Mathematics, Ganita Prakash / NCERT Curriculum",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Number System and Arithmetic",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "rational-numbers",
+          "name": "Rational Numbers"
+        },
+        {
+          "id": "squares-and-square-roots",
+          "name": "Squares and Square Roots"
+        },
+        {
+          "id": "cubes-and-cube-roots",
+          "name": "Cubes and Cube Roots"
+        },
+        {
+          "id": "comparing-quantities",
+          "name": "Comparing Quantities"
+        },
+        {
+          "id": "exponents-and-powers",
+          "name": "Exponents and Powers"
+        },
+        {
+          "id": "direct-and-inverse-proportions",
+          "name": "Direct and Inverse Proportions"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Algebra",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "linear-equations-one-variable",
+          "name": "Linear Equations in One Variable"
+        },
+        {
+          "id": "algebraic-expressions-identities",
+          "name": "Algebraic Expressions and Identities"
+        },
+        {
+          "id": "factorisation",
+          "name": "Factorisation"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Geometry and Mensuration",
+      "marks": 20,
+      "chapters": [
+        {
+          "id": "understanding-quadrilaterals",
+          "name": "Understanding Quadrilaterals"
+        },
+        {
+          "id": "mensuration-8",
+          "name": "Mensuration"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "Statistics and Graphs",
+      "marks": 10,
+      "chapters": [
+        {
+          "id": "data-handling",
+          "name": "Data Handling"
+        },
+        {
+          "id": "introduction-to-graphs",
+          "name": "Introduction to Graphs"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "subject": "Hindi",
+  "grade": 8,
+  "source": "NCERT Class 8 Hindi (Vasant Bhag 3)",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Apthit Bodh",
+      "marks": 15,
+      "chapters": [
+        {
+          "id": "apthit-gadyansh-kavyansh",
+          "name": "Apthit Gadyansh va Kavyansh"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Vyakaran",
+      "marks": 20,
+      "chapters": [
+        {
+          "id": "vyakaran-8",
+          "name": "Sangya, Sarvanam, Visheshan, Kriya, Karak, Samas, Sandhi"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Pathyapustak Vasant",
+      "marks": 30,
+      "chapters": [
+        {
+          "id": "vasant-bhag-3",
+          "name": "Vasant Bhag 3 (Kavita evam Kahani)"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "Rachnatmak Lekhan",
+      "marks": 15,
+      "chapters": [
+        {
+          "id": "rachnatmak-lekhan",
+          "name": "Patra Lekhan, Nibandh Lekhan, Samvad Lekhan"
+        }
+      ]
+    }
+  ]
+}

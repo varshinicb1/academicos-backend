@@ -1,0 +1,52 @@
+{
+  "subject": "Hindi",
+  "grade": 6,
+  "source": "NCERT Class 6 Hindi, Malhar (NCF-SE)",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Apthit Bodh",
+      "marks": 15,
+      "chapters": [
+        {
+          "id": "apthit-gadyansh-kavyansh",
+          "name": "Apthit Gadyansh va Kavyansh"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Vyakaran",
+      "marks": 20,
+      "chapters": [
+        {
+          "id": "vyakaran-6",
+          "name": "Varnamala, Sangya, Sarvanam, Kriya, Ling, Vachan"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Pathyapustak Malhar",
+      "marks": 30,
+      "chapters": [
+        {
+          "id": "malhar-textbook",
+          "name": "Malhar (Kavita evam Kahani)"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "Rachnatmak Lekhan",
+      "marks": 15,
+      "chapters": [
+        {
+          "id": "rachnatmak-lekhan",
+          "name": "Chitra Varnan, Anuchhed Lekhan, Samvad Lekhan"
+        }
+      ]
+    }
+  ]
+}

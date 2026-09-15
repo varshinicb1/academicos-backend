@@ -54,24 +54,31 @@ def _canonical_prefix(book_id: str) -> str:
     return book_id
 
 
-def seed_cbse_class_10(store: CurriculumStore, *, school_id: str,
-                       academic_year_label: str, start_date: str, end_date: str) -> SeedResult:
+def seed_cbse_grade(store: CurriculumStore, *, school_id: str,
+                    academic_year_label: str, start_date: str, end_date: str,
+                    grade_number: int) -> SeedResult:
     board = store.get_board_by_code(CBSE_BOARD_CODE) or store.create_board(name="CBSE", code=CBSE_BOARD_CODE)
 
     year = (store.get_academic_year_by_label(school_id, academic_year_label)
            or store.create_academic_year(school_id=school_id, label=academic_year_label,
                                           start_date=start_date, end_date=end_date))
 
-    grade = (store.get_grade_by_number(year.id, GRADE_10)
-            or store.create_grade(academic_year_id=year.id, number=GRADE_10))
+    grade = (store.get_grade_by_number(year.id, grade_number)
+            or store.create_grade(academic_year_id=year.id, number=grade_number))
 
     subjects_seeded = 0
     units_seeded = 0
     chapters_seeded = 0
     subjects_skipped: list[str] = []
 
-    for subject_name in _FILENAME_BY_SUBJECT:
-        doc = load_syllabus(subject_name, GRADE_10)
+    # Get all subjects for this grade from syllabus files
+    from ..syllabus.cbse_syllabus import get_available_subjects_for_grade
+    available_subjects = get_available_subjects_for_grade(grade_number)
+    if not available_subjects and grade_number == 10:
+        available_subjects = list(_FILENAME_BY_SUBJECT.keys())
+
+    for subject_name in available_subjects:
+        doc = load_syllabus(subject_name, grade_number)
         if doc is None:
             subjects_skipped.append(subject_name)
             continue
@@ -79,7 +86,7 @@ def seed_cbse_class_10(store: CurriculumStore, *, school_id: str,
         subject = (store.get_subject_by_name(grade.id, subject_name)
                   or store.create_subject(grade_id=grade.id, name=subject_name))
 
-        book_title = f"CBSE Class X {subject_name} — official curriculum ({doc.source})"
+        book_title = f"CBSE Class {grade_number} {subject_name} — official curriculum ({doc.source})"
         book = (store.get_book_by_title(subject.id, book_title)
                or store.create_book(subject_id=subject.id, board_id=board.id, title=book_title,
                                      status="ready"))
@@ -94,13 +101,6 @@ def seed_cbse_class_10(store: CurriculumStore, *, school_id: str,
                                          unit_no=u.unit_no, name=u.name, marks=u.marks, seq=unit_seq)
                 units_seeded += 1
 
-            # Real CBSE units with an explicit chapter list (e.g. Science);
-            # units with none (e.g. Mathematics, English) stand in for
-            # their own single chapter -- same fallback
-            # SyllabusDocument.all_chapters() already documents and uses,
-            # replicated here so a Unit with no sub-chapters still gets a
-            # real, schedulable Chapter row instead of being unreachable
-            # from the curriculum hierarchy.
             chapter_specs = (
                 [(c.id, c.name) for c in u.chapters] if u.chapters
                 else [(_slug(u.name), u.name)]
@@ -117,3 +117,22 @@ def seed_cbse_class_10(store: CurriculumStore, *, school_id: str,
         subjects_seeded=subjects_seeded, units_seeded=units_seeded,
         chapters_seeded=chapters_seeded, subjects_skipped=subjects_skipped,
     )
+
+
+def seed_cbse_class_10(store: CurriculumStore, *, school_id: str,
+                       academic_year_label: str, start_date: str, end_date: str) -> SeedResult:
+    return seed_cbse_grade(store, school_id=school_id, academic_year_label=academic_year_label,
+                           start_date=start_date, end_date=end_date, grade_number=GRADE_10)
+
+
+def seed_cbse_all_grades(store: CurriculumStore, *, school_id: str,
+                         academic_year_label: str, start_date: str, end_date: str,
+                         grades: list[int] | None = None) -> list[SeedResult]:
+    """Seeds CBSE/NCERT curriculum for all main subjects across grades (default 6-12)."""
+    target_grades = grades or [6, 7, 8, 9, 10, 11, 12]
+    return [
+        seed_cbse_grade(store, school_id=school_id, academic_year_label=academic_year_label,
+                        start_date=start_date, end_date=end_date, grade_number=g)
+        for g in target_grades
+    ]
+

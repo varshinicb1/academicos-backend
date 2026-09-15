@@ -1,0 +1,98 @@
+{
+  "subject": "Mathematics",
+  "grade": 9,
+  "source": "CBSE Curriculum 2025-26, Maths_Sec_2025-26.pdf, Class IX Course Structure",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Number Systems",
+      "marks": 10,
+      "chapters": [
+        {
+          "id": "number-systems-9",
+          "name": "Number Systems"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Algebra",
+      "marks": 20,
+      "chapters": [
+        {
+          "id": "polynomials-9",
+          "name": "Polynomials"
+        },
+        {
+          "id": "linear-equations-two-variables",
+          "name": "Linear Equations in Two Variables"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Coordinate Geometry",
+      "marks": 4,
+      "chapters": [
+        {
+          "id": "coordinate-geometry-9",
+          "name": "Coordinate Geometry"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "Geometry",
+      "marks": 27,
+      "chapters": [
+        {
+          "id": "intro-euclid-geometry",
+          "name": "Introduction to Euclid's Geometry"
+        },
+        {
+          "id": "lines-and-angles",
+          "name": "Lines and Angles"
+        },
+        {
+          "id": "triangles-9",
+          "name": "Triangles"
+        },
+        {
+          "id": "quadrilaterals",
+          "name": "Quadrilaterals"
+        },
+        {
+          "id": "circles-9",
+          "name": "Circles"
+        }
+      ]
+    },
+    {
+      "unit_no": "V",
+      "name": "Mensuration",
+      "marks": 13,
+      "chapters": [
+        {
+          "id": "herons-formula",
+          "name": "Heron's Formula"
+        },
+        {
+          "id": "surface-areas-and-volumes-9",
+          "name": "Surface Areas and Volumes"
+        }
+      ]
+    },
+    {
+      "unit_no": "VI",
+      "name": "Statistics",
+      "marks": 6,
+      "chapters": [
+        {
+          "id": "statistics-9",
+          "name": "Statistics"
+        }
+      ]
+    }
+  ]
+}

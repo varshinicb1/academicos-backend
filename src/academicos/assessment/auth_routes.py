@@ -17,6 +17,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 
+from ..api.rate_limit import rate_limit_login, rate_limit_register
 from ..config import Config
 from .schemas import Camel
 from .users import EmailAlreadyRegistered, InvalidCredentials, User, UserStore, get_user_store
@@ -74,7 +75,7 @@ def _to_response(user: User) -> UserResponse:
                          email=user.email, role=user.role)
 
 
-@router.post("/register", response_model=AuthResponse)
+@router.post("/register", response_model=AuthResponse, dependencies=[Depends(rate_limit_register)])
 def register(req: RegisterRequest) -> AuthResponse:
     if not req.password or len(req.password) < 8:
         raise HTTPException(400, "password must be at least 8 characters")
@@ -91,7 +92,7 @@ def register(req: RegisterRequest) -> AuthResponse:
     return AuthResponse(user=_to_response(user), token=token)
 
 
-@router.post("/login", response_model=AuthResponse)
+@router.post("/login", response_model=AuthResponse, dependencies=[Depends(rate_limit_login)])
 def login(req: LoginRequest) -> AuthResponse:
     store = _require()
     try:

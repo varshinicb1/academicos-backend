@@ -1,0 +1,82 @@
+{
+  "subject": "Geography",
+  "grade": 12,
+  "source": "CBSE Curriculum 2025-26, Geography_SrSec_2025-26.pdf, Class XII Course Structure",
+  "total_marks": 70,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Fundamentals of Human Geography",
+      "marks": 35,
+      "chapters": [
+        {
+          "id": "human-geography-nature-scope",
+          "name": "Human Geography: Nature and Scope"
+        },
+        {
+          "id": "world-population-distribution-density",
+          "name": "The World Population: Distribution, Density and Growth"
+        },
+        {
+          "id": "human-development",
+          "name": "Human Development"
+        },
+        {
+          "id": "primary-activities",
+          "name": "Primary Activities"
+        },
+        {
+          "id": "secondary-activities",
+          "name": "Secondary Activities"
+        },
+        {
+          "id": "tertiary-quaternary-activities",
+          "name": "Tertiary and Quaternary Activities"
+        },
+        {
+          "id": "transport-communication",
+          "name": "Transport and Communication"
+        },
+        {
+          "id": "international-trade-geography",
+          "name": "International Trade"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "India: People and Economy",
+      "marks": 35,
+      "chapters": [
+        {
+          "id": "population-distribution-density-growth",
+          "name": "Population: Distribution, Density, Growth and Composition"
+        },
+        {
+          "id": "human-settlements",
+          "name": "Human Settlements"
+        },
+        {
+          "id": "land-resources-agriculture",
+          "name": "Land Resources and Agriculture"
+        },
+        {
+          "id": "water-resources-india",
+          "name": "Water Resources"
+        },
+        {
+          "id": "mineral-energy-resources-india",
+          "name": "Mineral and Energy Resources"
+        },
+        {
+          "id": "planning-sustainable-development",
+          "name": "Planning and Sustainable Development in Indian Context"
+        },
+        {
+          "id": "geographical-perspective-issues",
+          "name": "Geographical Perspective on Selected Issues and Problems"
+        }
+      ]
+    }
+  ]
+}

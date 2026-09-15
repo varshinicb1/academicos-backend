@@ -18,6 +18,7 @@ here needs to survive a restart.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS papers (
 class PaperStore:
     def __init__(self, db_path: Path):
         self._remote = SupabaseTable("papers")
+        self._conn_lock = threading.Lock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
@@ -52,19 +54,21 @@ class PaperStore:
                            "template": template.model_dump(mode="json") if template else None},
             }, on_conflict="id")
             return
-        self.conn.execute(
-            """INSERT INTO papers (id, paper_json, template_json) VALUES (?, ?, ?)
-               ON CONFLICT(id) DO UPDATE SET
-                 paper_json=excluded.paper_json, template_json=excluded.template_json""",
-            (paper.id, paper.model_dump_json(), template.model_dump_json() if template else None),
-        )
-        self.conn.commit()
+        with self._conn_lock:
+            self.conn.execute(
+                """INSERT INTO papers (id, paper_json, template_json) VALUES (?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     paper_json=excluded.paper_json, template_json=excluded.template_json""",
+                (paper.id, paper.model_dump_json(), template.model_dump_json() if template else None),
+            )
+            self.conn.commit()
 
     def get(self, paper_id: str) -> Optional[GeneratedPaper]:
         if self._remote.enabled:
             rows = self._remote.select(id=paper_id)
             return GeneratedPaper.model_validate(rows[0]["payload"]["paper"]) if rows else None
-        row = self.conn.execute("SELECT paper_json FROM papers WHERE id=?", (paper_id,)).fetchone()
+        with self._conn_lock:
+            row = self.conn.execute("SELECT paper_json FROM papers WHERE id=?", (paper_id,)).fetchone()
         return GeneratedPaper.model_validate_json(row["paper_json"]) if row else None
 
     def get_template(self, paper_id: str) -> Optional[SchoolTemplate]:
@@ -73,7 +77,8 @@ class PaperStore:
             if not rows or rows[0]["payload"].get("template") is None:
                 return None
             return SchoolTemplate.model_validate(rows[0]["payload"]["template"])
-        row = self.conn.execute("SELECT template_json FROM papers WHERE id=?", (paper_id,)).fetchone()
+        with self._conn_lock:
+            row = self.conn.execute("SELECT template_json FROM papers WHERE id=?", (paper_id,)).fetchone()
         if row is None or row["template_json"] is None:
             return None
         return SchoolTemplate.model_validate_json(row["template_json"])

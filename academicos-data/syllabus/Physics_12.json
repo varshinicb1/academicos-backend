@@ -1,0 +1,127 @@
+{
+  "subject": "Physics",
+  "grade": 12,
+  "source": "CBSE Curriculum 2025-26, Physics_SrSec_2025-26.pdf, Class XII Course Structure",
+  "total_marks": 70,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Electrostatics",
+      "marks": 8,
+      "chapters": [
+        {
+          "id": "electric-charges-fields",
+          "name": "Electric Charges and Fields"
+        },
+        {
+          "id": "electrostatic-potential-capacitance",
+          "name": "Electrostatic Potential and Capacitance"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Current Electricity",
+      "marks": 8,
+      "chapters": [
+        {
+          "id": "current-electricity",
+          "name": "Current Electricity"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Magnetic Effects of Current and Magnetism",
+      "marks": 9,
+      "chapters": [
+        {
+          "id": "moving-charges-magnetism",
+          "name": "Moving Charges and Magnetism"
+        },
+        {
+          "id": "magnetism-matter",
+          "name": "Magnetism and Matter"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "Electromagnetic Induction and Alternating Currents",
+      "marks": 8,
+      "chapters": [
+        {
+          "id": "electromagnetic-induction",
+          "name": "Electromagnetic Induction"
+        },
+        {
+          "id": "alternating-current",
+          "name": "Alternating Current"
+        }
+      ]
+    },
+    {
+      "unit_no": "V",
+      "name": "Electromagnetic Waves",
+      "marks": 3,
+      "chapters": [
+        {
+          "id": "electromagnetic-waves",
+          "name": "Electromagnetic Waves"
+        }
+      ]
+    },
+    {
+      "unit_no": "VI",
+      "name": "Optics",
+      "marks": 15,
+      "chapters": [
+        {
+          "id": "ray-optics",
+          "name": "Ray Optics and Optical Instruments"
+        },
+        {
+          "id": "wave-optics",
+          "name": "Wave Optics"
+        }
+      ]
+    },
+    {
+      "unit_no": "VII",
+      "name": "Dual Nature of Radiation and Matter",
+      "marks": 6,
+      "chapters": [
+        {
+          "id": "dual-nature-radiation",
+          "name": "Dual Nature of Radiation and Matter"
+        }
+      ]
+    },
+    {
+      "unit_no": "VIII",
+      "name": "Atoms and Nuclei",
+      "marks": 6,
+      "chapters": [
+        {
+          "id": "atoms",
+          "name": "Atoms"
+        },
+        {
+          "id": "nuclei",
+          "name": "Nuclei"
+        }
+      ]
+    },
+    {
+      "unit_no": "IX",
+      "name": "Electronic Devices",
+      "marks": 7,
+      "chapters": [
+        {
+          "id": "semiconductor-electronics",
+          "name": "Semiconductor Electronics: Materials, Devices and Simple Circuits"
+        }
+      ]
+    }
+  ]
+}

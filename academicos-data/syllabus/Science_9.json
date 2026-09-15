@@ -1,0 +1,84 @@
+{
+  "subject": "Science",
+  "grade": 9,
+  "source": "CBSE Curriculum 2025-26, Science_Sec_2025-26.pdf, Class IX Course Structure",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Matter - Its Nature and Behaviour",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "matter-in-our-surroundings",
+          "name": "Matter in Our Surroundings"
+        },
+        {
+          "id": "is-matter-around-us-pure",
+          "name": "Is Matter Around Us Pure"
+        },
+        {
+          "id": "atoms-and-molecules",
+          "name": "Atoms and Molecules"
+        },
+        {
+          "id": "structure-of-the-atom",
+          "name": "Structure of the Atom"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Organization in the Living World",
+      "marks": 22,
+      "chapters": [
+        {
+          "id": "fundamental-unit-of-life",
+          "name": "The Fundamental Unit of Life"
+        },
+        {
+          "id": "tissues",
+          "name": "Tissues"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Motion, Force and Work",
+      "marks": 27,
+      "chapters": [
+        {
+          "id": "motion",
+          "name": "Motion"
+        },
+        {
+          "id": "force-and-laws-of-motion",
+          "name": "Force and Laws of Motion"
+        },
+        {
+          "id": "gravitation-9",
+          "name": "Gravitation"
+        },
+        {
+          "id": "work-and-energy",
+          "name": "Work and Energy"
+        },
+        {
+          "id": "sound",
+          "name": "Sound"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "Food; Food Production",
+      "marks": 6,
+      "chapters": [
+        {
+          "id": "improvement-in-food-resources",
+          "name": "Improvement in Food Resources"
+        }
+      ]
+    }
+  ]
+}

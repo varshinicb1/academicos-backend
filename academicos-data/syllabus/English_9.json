@@ -1,0 +1,49 @@
+{
+  "subject": "English",
+  "grade": 9,
+  "source": "CBSE Curriculum 2025-26, English_Lang_Lit_Sec_2025-26.pdf, Class IX Course Structure",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Reading Skills",
+      "marks": 20,
+      "chapters": [
+        {
+          "id": "reading-comprehension",
+          "name": "Reading Comprehension"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Writing Skills and Grammar",
+      "marks": 20,
+      "chapters": [
+        {
+          "id": "grammar",
+          "name": "Grammar (Tenses, Modals, Subject-Verb Concord, Reported Speech)"
+        },
+        {
+          "id": "writing-skills",
+          "name": "Descriptive Paragraph and Diary Entry / Story Writing"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Language Through Literature",
+      "marks": 40,
+      "chapters": [
+        {
+          "id": "beehive-textbook",
+          "name": "Beehive (Prose and Poetry)"
+        },
+        {
+          "id": "moments-supplementary",
+          "name": "Moments (Supplementary Reader)"
+        }
+      ]
+    }
+  ]
+}

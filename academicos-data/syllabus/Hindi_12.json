@@ -1,0 +1,49 @@
+{
+  "subject": "Hindi",
+  "grade": 12,
+  "source": "CBSE Curriculum 2025-26, Hindi_Core_SrSec_2025-26.pdf, Class XII Course Structure",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Apthit Bodh",
+      "marks": 15,
+      "chapters": [
+        {
+          "id": "apthit-gadyansh-kavyansh",
+          "name": "Apthit Gadyansh va Kavyansh"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Abhivyakti aur Madhyam",
+      "marks": 15,
+      "chapters": [
+        {
+          "id": "abhivyakti-aur-madhyam",
+          "name": "Abhivyakti aur Madhyam"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Aroh va Vitan",
+      "marks": 50,
+      "chapters": [
+        {
+          "id": "aroh-kavya-khand",
+          "name": "Aroh (Kavya Khand)"
+        },
+        {
+          "id": "aroh-gadya-khand",
+          "name": "Aroh (Gadya Khand)"
+        },
+        {
+          "id": "vitan",
+          "name": "Vitan"
+        }
+      ]
+    }
+  ]
+}

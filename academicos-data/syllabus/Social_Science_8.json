@@ -1,0 +1,113 @@
+{
+  "subject": "Social Science",
+  "grade": 8,
+  "source": "NCERT Class 8 Social Science (Our Pasts III, Resources & Dev, Social & Pol Life III)",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "History: Our Pasts - III",
+      "marks": 30,
+      "chapters": [
+        {
+          "id": "how-when-and-where",
+          "name": "How, When and Where"
+        },
+        {
+          "id": "from-trade-to-territory",
+          "name": "From Trade to Territory: Company Establishes Power"
+        },
+        {
+          "id": "ruling-the-countryside",
+          "name": "Ruling the Countryside"
+        },
+        {
+          "id": "tribals-dikus-golden-age",
+          "name": "Tribals, Dikus and the Vision of a Golden Age"
+        },
+        {
+          "id": "when-people-rebel-1857",
+          "name": "When People Rebel: 1857 and After"
+        },
+        {
+          "id": "civilising-the-native",
+          "name": "Civilising the Native, Educating the Nation"
+        },
+        {
+          "id": "women-caste-and-reform",
+          "name": "Women, Caste and Reform"
+        },
+        {
+          "id": "making-of-national-movement",
+          "name": "The Making of the National Movement: 1870s-1947"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Geography: Resources and Development",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "resources",
+          "name": "Resources"
+        },
+        {
+          "id": "land-soil-water-natural-vegetation",
+          "name": "Land, Soil, Water, Natural Vegetation and Wildlife"
+        },
+        {
+          "id": "agriculture-8",
+          "name": "Agriculture"
+        },
+        {
+          "id": "industries",
+          "name": "Industries"
+        },
+        {
+          "id": "human-resources",
+          "name": "Human Resources"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Civics: Social and Political Life - III",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "the-indian-constitution",
+          "name": "The Indian Constitution"
+        },
+        {
+          "id": "understanding-secularism",
+          "name": "Understanding Secularism"
+        },
+        {
+          "id": "parliament-and-making-of-laws",
+          "name": "Parliament and the Making of Laws"
+        },
+        {
+          "id": "judiciary",
+          "name": "Judiciary"
+        },
+        {
+          "id": "understanding-marginalisation",
+          "name": "Understanding Marginalisation"
+        },
+        {
+          "id": "confronting-marginalisation",
+          "name": "Confronting Marginalisation"
+        },
+        {
+          "id": "public-facilities",
+          "name": "Public Facilities"
+        },
+        {
+          "id": "law-and-social-justice",
+          "name": "Law and Social Justice"
+        }
+      ]
+    }
+  ]
+}

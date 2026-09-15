@@ -1,0 +1,121 @@
+{
+  "subject": "Social Science",
+  "grade": 7,
+  "source": "NCERT Class 7 Social Science (Our Pasts II, Our Environment, Social & Pol Life II)",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "History: Our Pasts - II",
+      "marks": 30,
+      "chapters": [
+        {
+          "id": "tracing-changes-thousand-years",
+          "name": "Tracing Changes through a Thousand Years"
+        },
+        {
+          "id": "kings-and-kingdoms",
+          "name": "Kings and Kingdoms"
+        },
+        {
+          "id": "delhi-12th-to-15th-century",
+          "name": "Delhi: 12th to 15th Century"
+        },
+        {
+          "id": "the-mughals-16th-to-17th-century",
+          "name": "The Mughals (16th to 17th Century)"
+        },
+        {
+          "id": "tribes-nomads-settled-communities",
+          "name": "Tribes, Nomads and Settled Communities"
+        },
+        {
+          "id": "devotional-paths-to-divine",
+          "name": "Devotional Paths to the Divine"
+        },
+        {
+          "id": "making-of-regional-cultures",
+          "name": "The Making of Regional Cultures"
+        },
+        {
+          "id": "eighteenth-century-political-formations",
+          "name": "Eighteenth-Century Political Formations"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Geography: Our Environment",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "environment",
+          "name": "Environment"
+        },
+        {
+          "id": "inside-our-earth",
+          "name": "Inside Our Earth"
+        },
+        {
+          "id": "our-changing-earth",
+          "name": "Our Changing Earth"
+        },
+        {
+          "id": "air",
+          "name": "Air"
+        },
+        {
+          "id": "water",
+          "name": "Water"
+        },
+        {
+          "id": "human-environment-interactions",
+          "name": "Human-Environment Interactions: Tropical and Subtropical Regions"
+        },
+        {
+          "id": "life-in-deserts",
+          "name": "Life in the Deserts"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Civics: Social and Political Life - II",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "on-equality",
+          "name": "On Equality"
+        },
+        {
+          "id": "role-of-government-in-health",
+          "name": "Role of the Government in Health"
+        },
+        {
+          "id": "how-state-government-works",
+          "name": "How the State Government Works"
+        },
+        {
+          "id": "growing-up-as-boys-and-girls",
+          "name": "Growing up as Boys and Girls"
+        },
+        {
+          "id": "women-change-the-world",
+          "name": "Women Change the World"
+        },
+        {
+          "id": "understanding-media",
+          "name": "Understanding Media"
+        },
+        {
+          "id": "markets-around-us",
+          "name": "Markets Around Us"
+        },
+        {
+          "id": "a-shirt-in-the-market",
+          "name": "A Shirt in the Market"
+        }
+      ]
+    }
+  ]
+}

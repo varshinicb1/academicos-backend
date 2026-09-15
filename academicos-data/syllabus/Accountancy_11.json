@@ -1,0 +1,57 @@
+{
+  "subject": "Accountancy",
+  "grade": 11,
+  "source": "CBSE Curriculum 2025-26, Accountancy_SrSec_2025-26.pdf, Class XI Course Structure",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Theoretical Framework",
+      "marks": 12,
+      "chapters": [
+        {
+          "id": "intro-accounting",
+          "name": "Introduction to Accounting"
+        },
+        {
+          "id": "theory-base-accounting",
+          "name": "Theory Base of Accounting"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Accounting Process",
+      "marks": 44,
+      "chapters": [
+        {
+          "id": "recording-transactions",
+          "name": "Recording of Business Transactions (Journal & Ledger)"
+        },
+        {
+          "id": "bank-reconciliation-statement",
+          "name": "Bank Reconciliation Statement"
+        },
+        {
+          "id": "depreciation-provisions-reserves",
+          "name": "Depreciation, Provisions and Reserves"
+        },
+        {
+          "id": "trial-balance-rectification",
+          "name": "Trial Balance and Rectification of Errors"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Financial Statements of Sole Proprietorship",
+      "marks": 24,
+      "chapters": [
+        {
+          "id": "financial-statements-sole-proprietor",
+          "name": "Financial Statements of Sole Proprietorship"
+        }
+      ]
+    }
+  ]
+}

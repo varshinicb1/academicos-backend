@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -66,6 +67,7 @@ def _item_to_dict(i) -> dict:
 class ScanSessionStore:
     def __init__(self, db_path: Path):
         self._remote = SupabaseTable("scan_sessions")
+        self._conn_lock = threading.Lock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
@@ -94,12 +96,13 @@ class ScanSessionStore:
             self._remote.upsert({"id": session.id, "assessment_id": session.assessment_id,
                                  "payload": d}, on_conflict="id")
             return
-        self.conn.execute(
-            """INSERT INTO scan_sessions (id, session_json) VALUES (?, ?)
-               ON CONFLICT(id) DO UPDATE SET session_json=excluded.session_json""",
-            (session.id, json.dumps(d)),
-        )
-        self.conn.commit()
+        with self._conn_lock:
+            self.conn.execute(
+                """INSERT INTO scan_sessions (id, session_json) VALUES (?, ?)
+                   ON CONFLICT(id) DO UPDATE SET session_json=excluded.session_json""",
+                (session.id, json.dumps(d)),
+            )
+            self.conn.commit()
 
     def _decode(self, d: dict):
         from .mobile_scan import CapturedPage, ReviewItem, ScanSession  # avoid import cycle
@@ -134,7 +137,8 @@ class ScanSessionStore:
         if self._remote.enabled:
             rows = self._remote.select(id=session_id)
             return self._decode(rows[0]["payload"]) if rows else None
-        row = self.conn.execute(
-            "SELECT session_json FROM scan_sessions WHERE id=?", (session_id,)
-        ).fetchone()
+        with self._conn_lock:
+            row = self.conn.execute(
+                "SELECT session_json FROM scan_sessions WHERE id=?", (session_id,)
+            ).fetchone()
         return self._decode(json.loads(row["session_json"])) if row else None

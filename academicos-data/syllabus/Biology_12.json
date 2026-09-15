@@ -1,0 +1,95 @@
+{
+  "subject": "Biology",
+  "grade": 12,
+  "source": "CBSE Curriculum 2025-26, Biology_SrSec_2025-26.pdf, Class XII Course Structure",
+  "total_marks": 70,
+  "units": [
+    {
+      "unit_no": "VI",
+      "name": "Reproduction",
+      "marks": 16,
+      "chapters": [
+        {
+          "id": "sexual-reproduction-flowering-plants",
+          "name": "Sexual Reproduction in Flowering Plants"
+        },
+        {
+          "id": "human-reproduction",
+          "name": "Human Reproduction"
+        },
+        {
+          "id": "reproductive-health",
+          "name": "Reproductive Health"
+        }
+      ]
+    },
+    {
+      "unit_no": "VII",
+      "name": "Genetics and Evolution",
+      "marks": 20,
+      "chapters": [
+        {
+          "id": "principles-inheritance-variation",
+          "name": "Principles of Inheritance and Variation"
+        },
+        {
+          "id": "molecular-basis-inheritance",
+          "name": "Molecular Basis of Inheritance"
+        },
+        {
+          "id": "evolution",
+          "name": "Evolution"
+        }
+      ]
+    },
+    {
+      "unit_no": "VIII",
+      "name": "Biology and Human Welfare",
+      "marks": 12,
+      "chapters": [
+        {
+          "id": "human-health-disease",
+          "name": "Human Health and Disease"
+        },
+        {
+          "id": "microbes-human-welfare",
+          "name": "Microbes in Human Welfare"
+        }
+      ]
+    },
+    {
+      "unit_no": "IX",
+      "name": "Biotechnology and its Applications",
+      "marks": 12,
+      "chapters": [
+        {
+          "id": "biotechnology-principles-processes",
+          "name": "Biotechnology: Principles and Processes"
+        },
+        {
+          "id": "biotechnology-applications",
+          "name": "Biotechnology and its Applications"
+        }
+      ]
+    },
+    {
+      "unit_no": "X",
+      "name": "Ecology and Environment",
+      "marks": 10,
+      "chapters": [
+        {
+          "id": "organisms-populations",
+          "name": "Organisms and Populations"
+        },
+        {
+          "id": "ecosystem",
+          "name": "Ecosystem"
+        },
+        {
+          "id": "biodiversity-conservation",
+          "name": "Biodiversity and its Conservation"
+        }
+      ]
+    }
+  ]
+}

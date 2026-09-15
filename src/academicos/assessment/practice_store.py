@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -37,6 +38,7 @@ CREATE TABLE IF NOT EXISTS practice_sets (
 class PracticeStore:
     def __init__(self, db_path: Path):
         self._remote = SupabaseTable("practice_sets")
+        self._conn_lock = threading.Lock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
@@ -62,12 +64,13 @@ class PracticeStore:
         if self._remote.enabled:
             self._remote.upsert({"id": pset.id, "payload": d}, on_conflict="id")
             return
-        self.conn.execute(
-            """INSERT INTO practice_sets (id, practice_json) VALUES (?, ?)
-               ON CONFLICT(id) DO UPDATE SET practice_json=excluded.practice_json""",
-            (pset.id, json.dumps(d)),
-        )
-        self.conn.commit()
+        with self._conn_lock:
+            self.conn.execute(
+                """INSERT INTO practice_sets (id, practice_json) VALUES (?, ?)
+                   ON CONFLICT(id) DO UPDATE SET practice_json=excluded.practice_json""",
+                (pset.id, json.dumps(d)),
+            )
+            self.conn.commit()
 
     def _decode(self, d: dict) -> PracticeSet:
         items = [PracticeItem(question=QuestionSchema.model_validate(i["question"]),
@@ -83,9 +86,10 @@ class PracticeStore:
         if self._remote.enabled:
             rows = self._remote.select(id=set_id)
             return self._decode(rows[0]["payload"]) if rows else None
-        row = self.conn.execute(
-            "SELECT practice_json FROM practice_sets WHERE id=?", (set_id,)
-        ).fetchone()
+        with self._conn_lock:
+            row = self.conn.execute(
+                "SELECT practice_json FROM practice_sets WHERE id=?", (set_id,)
+            ).fetchone()
         if row is None:
             return None
         return self._decode(json.loads(row["practice_json"]))

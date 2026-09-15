@@ -1,0 +1,118 @@
+{
+  "subject": "Chemistry",
+  "grade": 12,
+  "source": "CBSE Curriculum 2025-26, Chemistry_SrSec_2025-26.pdf, Class XII Course Structure",
+  "total_marks": 70,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Solutions",
+      "marks": 7,
+      "chapters": [
+        {
+          "id": "solutions",
+          "name": "Solutions"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Electrochemistry",
+      "marks": 9,
+      "chapters": [
+        {
+          "id": "electrochemistry",
+          "name": "Electrochemistry"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Chemical Kinetics",
+      "marks": 7,
+      "chapters": [
+        {
+          "id": "chemical-kinetics",
+          "name": "Chemical Kinetics"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "d-and f-Block Elements",
+      "marks": 7,
+      "chapters": [
+        {
+          "id": "d-and-f-block-elements",
+          "name": "d-and f-Block Elements"
+        }
+      ]
+    },
+    {
+      "unit_no": "V",
+      "name": "Coordination Compounds",
+      "marks": 7,
+      "chapters": [
+        {
+          "id": "coordination-compounds",
+          "name": "Coordination Compounds"
+        }
+      ]
+    },
+    {
+      "unit_no": "VI",
+      "name": "Haloalkanes and Haloarenes",
+      "marks": 6,
+      "chapters": [
+        {
+          "id": "haloalkanes-and-haloarenes",
+          "name": "Haloalkanes and Haloarenes"
+        }
+      ]
+    },
+    {
+      "unit_no": "VII",
+      "name": "Alcohols, Phenols and Ethers",
+      "marks": 6,
+      "chapters": [
+        {
+          "id": "alcohols-phenols-ethers",
+          "name": "Alcohols, Phenols and Ethers"
+        }
+      ]
+    },
+    {
+      "unit_no": "VIII",
+      "name": "Aldehydes, Ketones and Carboxylic Acids",
+      "marks": 8,
+      "chapters": [
+        {
+          "id": "aldehydes-ketones-carboxylic-acids",
+          "name": "Aldehydes, Ketones and Carboxylic Acids"
+        }
+      ]
+    },
+    {
+      "unit_no": "IX",
+      "name": "Amines",
+      "marks": 6,
+      "chapters": [
+        {
+          "id": "amines",
+          "name": "Amines"
+        }
+      ]
+    },
+    {
+      "unit_no": "X",
+      "name": "Biomolecules",
+      "marks": 7,
+      "chapters": [
+        {
+          "id": "biomolecules",
+          "name": "Biomolecules"
+        }
+      ]
+    }
+  ]
+}

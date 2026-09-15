@@ -1,0 +1,88 @@
+{
+  "subject": "Mathematics",
+  "grade": 7,
+  "source": "NCERT Class 7 Mathematics, Ganita Prakash / NCERT Curriculum",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Number System and Operations",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "integers",
+          "name": "Integers"
+        },
+        {
+          "id": "fractions-and-decimals",
+          "name": "Fractions and Decimals"
+        },
+        {
+          "id": "rational-numbers-7",
+          "name": "Rational Numbers"
+        },
+        {
+          "id": "exponents-and-powers-7",
+          "name": "Exponents and Powers"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Algebra and Equations",
+      "marks": 20,
+      "chapters": [
+        {
+          "id": "simple-equations",
+          "name": "Simple Equations"
+        },
+        {
+          "id": "algebraic-expressions-7",
+          "name": "Algebraic Expressions"
+        },
+        {
+          "id": "comparing-quantities-7",
+          "name": "Comparing Quantities"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Geometry and Measurement",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "lines-and-angles-7",
+          "name": "Lines and Angles"
+        },
+        {
+          "id": "the-triangle-and-its-properties",
+          "name": "The Triangle and its Properties"
+        },
+        {
+          "id": "perimeter-and-area",
+          "name": "Perimeter and Area"
+        },
+        {
+          "id": "symmetry",
+          "name": "Symmetry"
+        },
+        {
+          "id": "visualising-solid-shapes",
+          "name": "Visualising Solid Shapes"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "Data Handling",
+      "marks": 10,
+      "chapters": [
+        {
+          "id": "data-handling-7",
+          "name": "Data Handling"
+        }
+      ]
+    }
+  ]
+}

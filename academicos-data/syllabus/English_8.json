@@ -1,0 +1,49 @@
+{
+  "subject": "English",
+  "grade": 8,
+  "source": "NCERT Class 8 English (Honeydew and It So Happened)",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Reading Comprehension",
+      "marks": 20,
+      "chapters": [
+        {
+          "id": "reading-comprehension",
+          "name": "Reading Comprehension"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Writing and Grammar",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "grammar",
+          "name": "Grammar (Tenses, Active-Passive, Direct-Indirect, Conjunctions)"
+        },
+        {
+          "id": "writing-skills",
+          "name": "Formal and Informal Letters, Notice, Paragraph Writing"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Literature",
+      "marks": 35,
+      "chapters": [
+        {
+          "id": "honeydew-textbook",
+          "name": "Honeydew (Textbook in English)"
+        },
+        {
+          "id": "it-so-happened",
+          "name": "It So Happened (Supplementary Reader)"
+        }
+      ]
+    }
+  ]
+}

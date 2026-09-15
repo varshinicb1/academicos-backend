@@ -1,0 +1,92 @@
+{
+  "subject": "Science",
+  "grade": 8,
+  "source": "NCERT Class 8 Science, Curiosity / NCERT Curriculum",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Food and Living Organisms",
+      "marks": 20,
+      "chapters": [
+        {
+          "id": "crop-production-management",
+          "name": "Crop Production and Management"
+        },
+        {
+          "id": "microorganisms-friend-foe",
+          "name": "Microorganisms: Friend and Foe"
+        },
+        {
+          "id": "conservation-plants-animals",
+          "name": "Conservation of Plants and Animals"
+        },
+        {
+          "id": "reproduction-in-animals",
+          "name": "Reproduction in Animals"
+        },
+        {
+          "id": "reaching-age-of-adolescence",
+          "name": "Reaching the Age of Adolescence"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Materials and Chemistry",
+      "marks": 18,
+      "chapters": [
+        {
+          "id": "coal-and-petroleum",
+          "name": "Coal and Petroleum"
+        },
+        {
+          "id": "combustion-and-flame",
+          "name": "Combustion and Flame"
+        },
+        {
+          "id": "chemical-effects-electric-current",
+          "name": "Chemical Effects of Electric Current"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Physical Phenomena",
+      "marks": 27,
+      "chapters": [
+        {
+          "id": "force-and-pressure",
+          "name": "Force and Pressure"
+        },
+        {
+          "id": "friction",
+          "name": "Friction"
+        },
+        {
+          "id": "sound-8",
+          "name": "Sound"
+        },
+        {
+          "id": "some-natural-phenomena",
+          "name": "Some Natural Phenomena"
+        },
+        {
+          "id": "light-8",
+          "name": "Light"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "Natural Resources and Environment",
+      "marks": 15,
+      "chapters": [
+        {
+          "id": "pollution-air-water",
+          "name": "Pollution of Air and Water"
+        }
+      ]
+    }
+  ]
+}

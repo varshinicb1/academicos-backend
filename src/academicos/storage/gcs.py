@@ -38,7 +38,12 @@ class GcsStore(ObjectStore):
         return self.bucket.blob(self._key(key)).exists()
 
     def size(self, key: str) -> int:
-        return self.bucket.blob(self._key(key)).size
+        if hasattr(self.bucket, "get_blob"):
+            blob = self.bucket.get_blob(self._key(key))
+            if blob is not None:
+                return blob.size or 0
+        blob = self.bucket.blob(self._key(key))
+        return getattr(blob, "size", 0) or 0
 
     def keys(self, prefix: str = "") -> list[str]:
         out = []

@@ -1,0 +1,62 @@
+{
+  "subject": "Business Studies",
+  "grade": 11,
+  "source": "CBSE Curriculum 2025-26, BusinessStudies_SrSec_2025-26.pdf, Class XI Course Structure",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Foundations of Business",
+      "marks": 40,
+      "chapters": [
+        {
+          "id": "nature-purpose-business",
+          "name": "Evolution and Fundamentals of Business"
+        },
+        {
+          "id": "forms-business-organisations",
+          "name": "Forms of Business Organisations"
+        },
+        {
+          "id": "public-private-global-enterprises",
+          "name": "Public, Private and Global Enterprises"
+        },
+        {
+          "id": "business-services",
+          "name": "Business Services"
+        },
+        {
+          "id": "emerging-modes-business",
+          "name": "Emerging Modes of Business"
+        },
+        {
+          "id": "social-responsibility-ethics",
+          "name": "Social Responsibilities of Business and Business Ethics"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Finance and Trade",
+      "marks": 40,
+      "chapters": [
+        {
+          "id": "sources-business-finance",
+          "name": "Sources of Business Finance"
+        },
+        {
+          "id": "small-business-enterprises",
+          "name": "Small Business and Enterprises"
+        },
+        {
+          "id": "internal-trade",
+          "name": "Internal Trade"
+        },
+        {
+          "id": "international-trade-business",
+          "name": "International Business"
+        }
+      ]
+    }
+  ]
+}

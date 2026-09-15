@@ -96,6 +96,22 @@ class Config:
         # self-registration can ever be granted the principal role.
         self.principal_bootstrap_key = env("PRINCIPAL_BOOTSTRAP_KEY", t.get("principal_bootstrap_key", ""))
 
+        # CORS origins: comma-separated list of allowed origins or '*'.
+        # Defaults to local dev ports and trusted deployment origins.
+        cors_raw = env("CORS_ORIGINS", t.get("cors_origins", "")).strip()
+        if cors_raw:
+            self.cors_origins = [o.strip() for o in cors_raw.split(",") if o.strip()]
+        else:
+            self.cors_origins = [
+                "http://localhost:3000",
+                "http://localhost:8000",
+                "http://localhost:8080",
+                "http://127.0.0.1:3000",
+                "http://127.0.0.1:8000",
+                "http://127.0.0.1:8080",
+                "https://sarvamai.github.io",
+            ]
+
         # Supabase (hosted Postgres), used by the operational stores under
         # assessment/ (and now storage/event_store.py, curriculum/store.py)
         # as a durability backstop -- Render's disk is ephemeral, so anything

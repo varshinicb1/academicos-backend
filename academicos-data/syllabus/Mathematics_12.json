@@ -1,0 +1,102 @@
+{
+  "subject": "Mathematics",
+  "grade": 12,
+  "source": "CBSE Curriculum 2025-26, Maths_SrSec_2025-26.pdf, Class XII Course Structure",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Relations and Functions",
+      "marks": 8,
+      "chapters": [
+        {
+          "id": "relations-and-functions",
+          "name": "Relations and Functions"
+        },
+        {
+          "id": "inverse-trigonometric-functions",
+          "name": "Inverse Trigonometric Functions"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Algebra",
+      "marks": 10,
+      "chapters": [
+        {
+          "id": "matrices",
+          "name": "Matrices"
+        },
+        {
+          "id": "determinants",
+          "name": "Determinants"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Calculus",
+      "marks": 35,
+      "chapters": [
+        {
+          "id": "continuity-and-differentiability",
+          "name": "Continuity and Differentiability"
+        },
+        {
+          "id": "applications-of-derivatives",
+          "name": "Applications of Derivatives"
+        },
+        {
+          "id": "integrals",
+          "name": "Integrals"
+        },
+        {
+          "id": "applications-of-integrals",
+          "name": "Applications of the Integrals"
+        },
+        {
+          "id": "differential-equations",
+          "name": "Differential Equations"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "Vectors and Three-Dimensional Geometry",
+      "marks": 14,
+      "chapters": [
+        {
+          "id": "vectors",
+          "name": "Vectors"
+        },
+        {
+          "id": "three-dimensional-geometry",
+          "name": "Three-Dimensional Geometry"
+        }
+      ]
+    },
+    {
+      "unit_no": "V",
+      "name": "Linear Programming",
+      "marks": 5,
+      "chapters": [
+        {
+          "id": "linear-programming",
+          "name": "Linear Programming"
+        }
+      ]
+    },
+    {
+      "unit_no": "VI",
+      "name": "Probability",
+      "marks": 8,
+      "chapters": [
+        {
+          "id": "probability",
+          "name": "Probability"
+        }
+      ]
+    }
+  ]
+}

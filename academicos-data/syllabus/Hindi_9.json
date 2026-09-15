@@ -1,0 +1,84 @@
+{
+  "subject": "Hindi",
+  "grade": 9,
+  "source": "CBSE Curriculum 2025-26, Hindi_Course_A_Sec_2025-26.pdf, Class IX Course Structure",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Apthit Bodh",
+      "marks": 14,
+      "chapters": [
+        {
+          "id": "apthit-gadyansh",
+          "name": "Apthit Gadyansh va Kavyansh"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Vyakaran",
+      "marks": 16,
+      "chapters": [
+        {
+          "id": "upsarg-pratyay",
+          "name": "Upsarg va Pratyay"
+        },
+        {
+          "id": "samas",
+          "name": "Samas"
+        },
+        {
+          "id": "arth-ke-aadhar-par-vakya",
+          "name": "Arth ke Aadhar par Vakya Bhed"
+        },
+        {
+          "id": "alankar-9",
+          "name": "Alankar"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Pathyapustak (Kshitij va Kritika)",
+      "marks": 30,
+      "chapters": [
+        {
+          "id": "kshitij-bhag-1-gadya",
+          "name": "Kshitij Bhag 1 (Gadya Khand)"
+        },
+        {
+          "id": "kshitij-bhag-1-kavya",
+          "name": "Kshitij Bhag 1 (Kavya Khand)"
+        },
+        {
+          "id": "kritika-bhag-1",
+          "name": "Kritika Bhag 1"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "Rachnatmak Lekhan",
+      "marks": 20,
+      "chapters": [
+        {
+          "id": "anuchhed-lekhan",
+          "name": "Anuchhed Lekhan"
+        },
+        {
+          "id": "patra-lekhan",
+          "name": "Patra Lekhan"
+        },
+        {
+          "id": "laghukatha-samvad-lekhan",
+          "name": "Laghukatha va Samvad Lekhan"
+        },
+        {
+          "id": "email-suchna-lekhan",
+          "name": "Email va Suchna Lekhan"
+        }
+      ]
+    }
+  ]
+}

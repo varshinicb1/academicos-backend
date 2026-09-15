@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
@@ -51,6 +52,7 @@ def _evaluation_from_dict(d: dict) -> Evaluation:
 class GradedStore:
     def __init__(self, db_path: Path):
         self._remote = SupabaseTable("graded_evaluations")
+        self._conn_lock = threading.Lock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
@@ -70,13 +72,14 @@ class GradedStore:
             }, on_conflict="assessment_id,student_id")
             return
         blob = json.dumps(self._encode(graded))
-        self.conn.execute(
-            """INSERT INTO graded (assessment_id, student_id, graded_json) VALUES (?, ?, ?)
-               ON CONFLICT(assessment_id, student_id) DO UPDATE SET
-                 graded_json=excluded.graded_json""",
-            (assessment_id, student_id, blob),
-        )
-        self.conn.commit()
+        with self._conn_lock:
+            self.conn.execute(
+                """INSERT INTO graded (assessment_id, student_id, graded_json) VALUES (?, ?, ?)
+                   ON CONFLICT(assessment_id, student_id) DO UPDATE SET
+                     graded_json=excluded.graded_json""",
+                (assessment_id, student_id, blob),
+            )
+            self.conn.commit()
 
     def _decode(self, blob) -> Graded:
         pairs = blob if isinstance(blob, list) else json.loads(blob)
@@ -86,32 +89,36 @@ class GradedStore:
         if self._remote.enabled:
             rows = self._remote.select(assessment_id=assessment_id, student_id=student_id)
             return self._decode(rows[0]["payload"]) if rows else None
-        row = self.conn.execute(
-            "SELECT graded_json FROM graded WHERE assessment_id=? AND student_id=?",
-            (assessment_id, student_id),
-        ).fetchone()
+        with self._conn_lock:
+            row = self.conn.execute(
+                "SELECT graded_json FROM graded WHERE assessment_id=? AND student_id=?",
+                (assessment_id, student_id),
+            ).fetchone()
         return self._decode(row["graded_json"]) if row else None
 
     def for_assessment(self, assessment_id: str) -> dict[str, Graded]:
         if self._remote.enabled:
             rows = self._remote.select(assessment_id=assessment_id)
             return {r["student_id"]: self._decode(r["payload"]) for r in rows}
-        rows = self.conn.execute(
-            "SELECT student_id, graded_json FROM graded WHERE assessment_id=?",
-            (assessment_id,),
-        ).fetchall()
+        with self._conn_lock:
+            rows = self.conn.execute(
+                "SELECT student_id, graded_json FROM graded WHERE assessment_id=?",
+                (assessment_id,),
+            ).fetchall()
         return {row["student_id"]: self._decode(row["graded_json"]) for row in rows}
 
     def all_student_ids(self) -> list[str]:
         if self._remote.enabled:
             rows = self._remote.select()
             return sorted({r["student_id"] for r in rows})
-        rows = self.conn.execute("SELECT DISTINCT student_id FROM graded").fetchall()
+        with self._conn_lock:
+            rows = self.conn.execute("SELECT DISTINCT student_id FROM graded").fetchall()
         return [row["student_id"] for row in rows]
 
     def assessment_count(self) -> int:
         if self._remote.enabled:
             rows = self._remote.select()
             return len({r["assessment_id"] for r in rows})
-        row = self.conn.execute("SELECT COUNT(DISTINCT assessment_id) AS n FROM graded").fetchone()
+        with self._conn_lock:
+            row = self.conn.execute("SELECT COUNT(DISTINCT assessment_id) AS n FROM graded").fetchone()
         return row["n"]

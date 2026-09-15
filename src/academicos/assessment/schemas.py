@@ -76,6 +76,10 @@ class SectionBlueprint(Camel):
     internal_choice_count: int = 0
 
 
+StudentLevelTier = Literal["foundation", "standard", "advanced"]
+ExamType = Literal["class_test", "weekly_test", "monthly_test", "mid_term", "pre_board", "board"]
+
+
 class Blueprint(Camel):
     total_marks: int
     duration_minutes: int
@@ -84,6 +88,9 @@ class Blueprint(Camel):
     chapter_weights: ChapterWeights
     competency_weights: CompetencyWeights
     sections: list[SectionBlueprint] = Field(default_factory=list)
+    tier: str = "standard"
+    competency_percentage: float = 0.50
+    exam_type: Optional[str] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -95,6 +102,9 @@ class BlueprintRequest(Camel):
     chapter_weights: ChapterWeights
     competency_weights: CompetencyWeights
     sections: list[SectionBlueprint] = Field(default_factory=list)
+    tier: str = "standard"
+    competency_percentage: float = 0.50
+    exam_type: Optional[str] = None
     school_template: Optional[dict[str, Any]] = None
 
 
@@ -236,6 +246,8 @@ class PaperGenerationRequest(Camel):
     selected_questions: list[QuestionSchema]
     template: SchoolTemplate
     formatting_options: Optional[dict[str, Any]] = None
+    set_count: int = 1
+    tier: Optional[str] = None
 
 
 class GeneratedQuestionSchema(Camel):
@@ -248,6 +260,8 @@ class GeneratedQuestionSchema(Camel):
     bloom_level: str
     difficulty: str
     internal_choice_text: Optional[str] = None
+    internal_choice_question_id: Optional[str] = None
+    is_competency: bool = False
 
 
 class GeneratedSectionSchema(Camel):
@@ -267,6 +281,9 @@ class PaperMetadataSchema(Camel):
     generated_at: datetime
     generated_by: str = "AssessmentOS"
     version: str = "1.0"
+    set_label: Optional[str] = None
+    tier: Optional[str] = None
+    exam_type: Optional[str] = None
 
 
 class GeneratedPaper(Camel):
@@ -277,6 +294,30 @@ class GeneratedPaper(Camel):
     formatted_content_latex: str = ""
     answer_key: dict[str, Any] = Field(default_factory=dict)
     metadata: PaperMetadataSchema
+    set_label: Optional[str] = None
+    sets: list[GeneratedPaper] = Field(default_factory=list)
+
+
+class QuickPaperRequest(Camel):
+    subject: str
+    grade: int = 10
+    chapter_ids: list[str] = Field(default_factory=list)
+    title: Optional[str] = None
+    total_marks: int = 80
+    duration_minutes: Optional[int] = None
+    tier: str = "standard"  # "foundation" | "standard" | "advanced"
+    exam_type: Optional[str] = None  # "class_test", "weekly_test", "board"
+    set_count: int = 1
+    template_id: Optional[str] = None
+
+
+class GenerateFromIdsRequest(Camel):
+    assessment_id: Optional[str] = None
+    title: str = "Custom Question Paper"
+    subject: str
+    grade: int = 10
+    question_ids: list[str]
+    template_id: Optional[str] = None
 
 
 # ---- Assessment ----

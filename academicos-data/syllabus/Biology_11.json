@@ -1,0 +1,119 @@
+{
+  "subject": "Biology",
+  "grade": 11,
+  "source": "CBSE Curriculum 2025-26, Biology_SrSec_2025-26.pdf, Class XI Course Structure",
+  "total_marks": 70,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Diversity of Living Organisms",
+      "marks": 15,
+      "chapters": [
+        {
+          "id": "the-living-world",
+          "name": "The Living World"
+        },
+        {
+          "id": "biological-classification",
+          "name": "Biological Classification"
+        },
+        {
+          "id": "plant-kingdom",
+          "name": "Plant Kingdom"
+        },
+        {
+          "id": "animal-kingdom",
+          "name": "Animal Kingdom"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Structural Organisation in Animals and Plants",
+      "marks": 10,
+      "chapters": [
+        {
+          "id": "morphology-flowering-plants",
+          "name": "Morphology of Flowering Plants"
+        },
+        {
+          "id": "anatomy-flowering-plants",
+          "name": "Anatomy of Flowering Plants"
+        },
+        {
+          "id": "structural-organisation-animals",
+          "name": "Structural Organisation in Animals"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Cell: Structure and Function",
+      "marks": 15,
+      "chapters": [
+        {
+          "id": "cell-unit-of-life",
+          "name": "Cell: The Unit of Life"
+        },
+        {
+          "id": "biomolecules-bio",
+          "name": "Biomolecules"
+        },
+        {
+          "id": "cell-cycle-division",
+          "name": "Cell Cycle and Cell Division"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "Plant Physiology",
+      "marks": 12,
+      "chapters": [
+        {
+          "id": "photosynthesis-higher-plants",
+          "name": "Photosynthesis in Higher Plants"
+        },
+        {
+          "id": "respiration-in-plants",
+          "name": "Respiration in Plants"
+        },
+        {
+          "id": "plant-growth-development",
+          "name": "Plant Growth and Development"
+        }
+      ]
+    },
+    {
+      "unit_no": "V",
+      "name": "Human Physiology",
+      "marks": 18,
+      "chapters": [
+        {
+          "id": "breathing-exchange-gases",
+          "name": "Breathing and Exchange of Gases"
+        },
+        {
+          "id": "body-fluids-circulation",
+          "name": "Body Fluids and Circulation"
+        },
+        {
+          "id": "excretory-products-elimination",
+          "name": "Excretory Products and their Elimination"
+        },
+        {
+          "id": "locomotion-and-movement",
+          "name": "Locomotion and Movement"
+        },
+        {
+          "id": "neural-control-coordination",
+          "name": "Neural Control and Coordination"
+        },
+        {
+          "id": "chemical-coordination-integration",
+          "name": "Chemical Coordination and Integration"
+        }
+      ]
+    }
+  ]
+}

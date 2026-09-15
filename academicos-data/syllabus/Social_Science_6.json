@@ -1,0 +1,77 @@
+{
+  "subject": "Social Science",
+  "grade": 6,
+  "source": "NCERT Class 6 Social Science, Exploring Society: India and Beyond (NCF-SE)",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Theme A: India and the World: Land and the People",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "locating-places-on-the-earth",
+          "name": "Locating Places on the Earth"
+        },
+        {
+          "id": "oceans-and-continents",
+          "name": "Oceans and Continents"
+        },
+        {
+          "id": "landforms-and-life",
+          "name": "Landforms and Life"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Theme B: Tapestry of the Past",
+      "marks": 30,
+      "chapters": [
+        {
+          "id": "timeline-and-sources-of-history",
+          "name": "Timeline and Sources of History"
+        },
+        {
+          "id": "india-that-is-bharat",
+          "name": "India, That is Bharat"
+        },
+        {
+          "id": "the-beginnings-of-indian-civilisation",
+          "name": "The Beginnings of Indian Civilisation"
+        },
+        {
+          "id": "indias-cultural-roots",
+          "name": "India's Cultural Roots"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Theme C: Our Cultural Heritage and Knowledge Traditions",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "unity-in-diversity-or-many-in-one",
+          "name": "Unity in Diversity, or 'Many in the One'"
+        },
+        {
+          "id": "family-and-community",
+          "name": "Family and Community"
+        },
+        {
+          "id": "grassroots-democracy-part-1-governance-in-villages",
+          "name": "Grassroots Democracy - Part 1: Governance in Villages"
+        },
+        {
+          "id": "grassroots-democracy-part-2-governance-in-towns",
+          "name": "Grassroots Democracy - Part 2: Governance in Towns"
+        },
+        {
+          "id": "economic-activities-around-us",
+          "name": "Economic Activities Around Us"
+        }
+      ]
+    }
+  ]
+}

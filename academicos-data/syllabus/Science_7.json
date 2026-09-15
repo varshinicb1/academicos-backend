@@ -1,0 +1,88 @@
+{
+  "subject": "Science",
+  "grade": 7,
+  "source": "NCERT Class 7 Science, Curiosity / NCERT Curriculum",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Living Organisms and Life Processes",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "nutrition-in-plants",
+          "name": "Nutrition in Plants"
+        },
+        {
+          "id": "nutrition-in-animals",
+          "name": "Nutrition in Animals"
+        },
+        {
+          "id": "respiration-in-organisms",
+          "name": "Respiration in Organisms"
+        },
+        {
+          "id": "transportation-animals-plants",
+          "name": "Transportation in Animals and Plants"
+        },
+        {
+          "id": "reproduction-in-plants",
+          "name": "Reproduction in Plants"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Materials and Matter",
+      "marks": 20,
+      "chapters": [
+        {
+          "id": "heat",
+          "name": "Heat"
+        },
+        {
+          "id": "acids-bases-salts-7",
+          "name": "Acids, Bases and Salts"
+        },
+        {
+          "id": "physical-and-chemical-changes",
+          "name": "Physical and Chemical Changes"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Motion, Forces and Energy",
+      "marks": 20,
+      "chapters": [
+        {
+          "id": "motion-and-time",
+          "name": "Motion and Time"
+        },
+        {
+          "id": "electric-current-effects",
+          "name": "Electric Current and its Effects"
+        },
+        {
+          "id": "light-7",
+          "name": "Light"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "Natural Resources and Environment",
+      "marks": 15,
+      "chapters": [
+        {
+          "id": "forests-our-lifeline",
+          "name": "Forests: Our Lifeline"
+        },
+        {
+          "id": "wastewater-story",
+          "name": "Wastewater Story"
+        }
+      ]
+    }
+  ]
+}

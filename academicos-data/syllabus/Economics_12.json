@@ -1,0 +1,96 @@
+{
+  "subject": "Economics",
+  "grade": 12,
+  "source": "CBSE Curriculum 2025-26, Economics_SrSec_2025-26.pdf, Class XII Course Structure",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "National Income and Related Aggregates",
+      "marks": 10,
+      "chapters": [
+        {
+          "id": "national-income-aggregates",
+          "name": "National Income and Related Aggregates"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Money and Banking",
+      "marks": 6,
+      "chapters": [
+        {
+          "id": "money-and-banking",
+          "name": "Money and Banking"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Determination of Income and Employment",
+      "marks": 12,
+      "chapters": [
+        {
+          "id": "determination-income-employment",
+          "name": "Determination of Income and Employment"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "Government Budget and the Economy",
+      "marks": 6,
+      "chapters": [
+        {
+          "id": "government-budget-economy",
+          "name": "Government Budget and the Economy"
+        }
+      ]
+    },
+    {
+      "unit_no": "V",
+      "name": "Balance of Payments",
+      "marks": 6,
+      "chapters": [
+        {
+          "id": "balance-of-payments",
+          "name": "Balance of Payments"
+        }
+      ]
+    },
+    {
+      "unit_no": "VI",
+      "name": "Development Experience (1947-90) & Economic Reforms",
+      "marks": 12,
+      "chapters": [
+        {
+          "id": "development-experience-1947-90",
+          "name": "Development Experience (1947-90) and Economic Reforms since 1991"
+        }
+      ]
+    },
+    {
+      "unit_no": "VII",
+      "name": "Current Challenges Facing Indian Economy",
+      "marks": 20,
+      "chapters": [
+        {
+          "id": "current-challenges-indian-economy",
+          "name": "Current Challenges Facing Indian Economy"
+        }
+      ]
+    },
+    {
+      "unit_no": "VIII",
+      "name": "Development Experience of India: Comparative",
+      "marks": 8,
+      "chapters": [
+        {
+          "id": "development-experience-comparative",
+          "name": "Development Experience of India – A Comparison with Neighbours"
+        }
+      ]
+    }
+  ]
+}

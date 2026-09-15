@@ -74,15 +74,27 @@ _FILENAME_BY_SUBJECT = {
 }
 
 
+def _resolve_syllabus_file(subject: str, grade: int) -> Path | None:
+    slug = subject.strip().replace(" ", "_")
+    candidates = [
+        f"{slug}_{grade}.json",
+        f"{subject}_{grade}.json",
+    ]
+    if grade == 10:
+        legacy = _FILENAME_BY_SUBJECT.get(subject)
+        if legacy:
+            candidates.append(legacy)
+    for c in candidates:
+        p = _DATA_DIR / c
+        if p.exists():
+            return p
+    return None
+
+
 @lru_cache(maxsize=None)
 def load_syllabus(subject: str, grade: int) -> SyllabusDocument | None:
-    if grade != 10:
-        return None  # only Class X is populated for now
-    fname = _FILENAME_BY_SUBJECT.get(subject)
-    if fname is None:
-        return None
-    path = _DATA_DIR / fname
-    if not path.exists():
+    path = _resolve_syllabus_file(subject, grade)
+    if path is None or not path.exists():
         return None
     data = json.loads(path.read_text(encoding="utf-8"))
     units = tuple(
@@ -96,3 +108,24 @@ def load_syllabus(subject: str, grade: int) -> SyllabusDocument | None:
         subject=data["subject"], grade=data["grade"], total_marks=data["total_marks"],
         source=data["source"], units=units,
     )
+
+
+def list_available_syllabi() -> list[tuple[str, int]]:
+    """Returns sorted list of (subject, grade) tuples available on disk."""
+    out: list[tuple[str, int]] = []
+    if not _DATA_DIR.exists():
+        return out
+    for f in _DATA_DIR.glob("*.json"):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            if "subject" in data and "grade" in data:
+                out.append((data["subject"], int(data["grade"])))
+        except Exception:
+            continue
+    return sorted(set(out), key=lambda x: (x[1], x[0]))
+
+
+def get_available_subjects_for_grade(grade: int) -> list[str]:
+    """Returns available subject names for the requested grade."""
+    return sorted([s for s, g in list_available_syllabi() if g == grade])
+

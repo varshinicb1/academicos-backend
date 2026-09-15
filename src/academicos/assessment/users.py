@@ -37,15 +37,21 @@ users table that doesn't survive a restart means every teacher account
 from __future__ import annotations
 
 import hashlib
+import logging
 import secrets
 import sqlite3
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+import requests
+
 from .supabase_kv import SupabaseTable
+
+logger = logging.getLogger(__name__)
 
 _PBKDF2_ROUNDS = 200_000
 _SESSION_LIFETIME = timedelta(days=30)
@@ -101,6 +107,7 @@ class UserStore:
         self._remote = SupabaseTable("users")
         self._remote_sessions = SupabaseTable("sessions")
         self._principal_key = principal_bootstrap_key
+        self._conn_lock = threading.Lock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
@@ -135,13 +142,14 @@ class UserStore:
         if self._remote.enabled:
             self._remote.upsert(row, on_conflict="id")
         else:
-            self.conn.execute(
-                """INSERT INTO users (id, school_id, name, email, password_hash, password_salt,
-                                       role, created_at) VALUES (?,?,?,?,?,?,?,?)""",
-                (user_id, school_id, name, email, row["password_hash"], row["password_salt"],
-                 role, created_at),
-            )
-            self.conn.commit()
+            with self._conn_lock:
+                self.conn.execute(
+                    """INSERT INTO users (id, school_id, name, email, password_hash, password_salt,
+                                           role, created_at) VALUES (?,?,?,?,?,?,?,?)""",
+                    (user_id, school_id, name, email, row["password_hash"], row["password_salt"],
+                     role, created_at),
+                )
+                self.conn.commit()
         return User(id=user_id, school_id=school_id, name=name, email=email, role=role,
                     created_at=created_at)
 
@@ -166,11 +174,12 @@ class UserStore:
         if self._remote_sessions.enabled:
             self._remote_sessions.upsert(row, on_conflict="token")
         else:
-            self.conn.execute(
-                "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?,?,?,?)",
-                (token, user_id, row["created_at"], expires_at),
-            )
-            self.conn.commit()
+            with self._conn_lock:
+                self.conn.execute(
+                    "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?,?,?,?)",
+                    (token, user_id, row["created_at"], expires_at),
+                )
+                self.conn.commit()
         return token
 
     def user_for_session(self, token: str) -> Optional[User]:
@@ -178,9 +187,10 @@ class UserStore:
             rows = self._remote_sessions.select(token=token)
             session_row = rows[0] if rows else None
         else:
-            r = self.conn.execute(
-                "SELECT * FROM sessions WHERE token=?", (token,)).fetchone()
-            session_row = dict(r) if r else None
+            with self._conn_lock:
+                r = self.conn.execute(
+                    "SELECT * FROM sessions WHERE token=?", (token,)).fetchone()
+                session_row = dict(r) if r else None
         if session_row is None:
             return None
         if datetime.fromisoformat(session_row["expires_at"]) < datetime.now(timezone.utc):
@@ -192,8 +202,9 @@ class UserStore:
         if self._remote_sessions.enabled:
             self._remote_sessions.delete(token=token)
         else:
-            self.conn.execute("DELETE FROM sessions WHERE token=?", (token,))
-            self.conn.commit()
+            with self._conn_lock:
+                self.conn.execute("DELETE FROM sessions WHERE token=?", (token,))
+                self.conn.commit()
 
     # ---------------- lookups ----------------
 
@@ -201,7 +212,8 @@ class UserStore:
         if self._remote.enabled:
             rows = self._remote.select(id=user_id)
             return _row_to_user(rows[0]) if rows else None
-        r = self.conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        with self._conn_lock:
+            r = self.conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
         return _row_to_user(dict(r)) if r else None
 
     def get_by_email(self, email: str) -> Optional[User]:
@@ -216,20 +228,22 @@ class UserStore:
         if self._remote.enabled:
             rows = self._remote.select(school_id=school_id, **({"role": role} if role else {}))
             return [_row_to_user(r) for r in rows]
-        if role:
-            rows = self.conn.execute(
-                "SELECT * FROM users WHERE school_id=? AND role=? ORDER BY name",
-                (school_id, role)).fetchall()
-        else:
-            rows = self.conn.execute(
-                "SELECT * FROM users WHERE school_id=? ORDER BY name", (school_id,)).fetchall()
+        with self._conn_lock:
+            if role:
+                rows = self.conn.execute(
+                    "SELECT * FROM users WHERE school_id=? AND role=? ORDER BY name",
+                    (school_id, role)).fetchall()
+            else:
+                rows = self.conn.execute(
+                    "SELECT * FROM users WHERE school_id=? ORDER BY name", (school_id,)).fetchall()
         return [_row_to_user(dict(r)) for r in rows]
 
     def _raw_by_email(self, email: str) -> Optional[dict]:
         if self._remote.enabled:
             rows = self._remote.select(email=email)
             return rows[0] if rows else None
-        r = self.conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+        with self._conn_lock:
+            r = self.conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
         return dict(r) if r else None
 
     def _valid_principal_key(self, supplied: Optional[str]) -> bool:

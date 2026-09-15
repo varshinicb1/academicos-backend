@@ -1,0 +1,107 @@
+{
+  "subject": "Chemistry",
+  "grade": 11,
+  "source": "CBSE Curriculum 2025-26, Chemistry_SrSec_2025-26.pdf, Class XI Course Structure",
+  "total_marks": 70,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Some Basic Concepts of Chemistry",
+      "marks": 7,
+      "chapters": [
+        {
+          "id": "basic-concepts-chemistry",
+          "name": "Some Basic Concepts of Chemistry"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Structure of Atom",
+      "marks": 9,
+      "chapters": [
+        {
+          "id": "structure-of-atom",
+          "name": "Structure of Atom"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Classification of Elements and Periodicity",
+      "marks": 6,
+      "chapters": [
+        {
+          "id": "classification-elements-periodicity",
+          "name": "Classification of Elements and Periodicity in Properties"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "Chemical Bonding and Molecular Structure",
+      "marks": 7,
+      "chapters": [
+        {
+          "id": "chemical-bonding-molecular-structure",
+          "name": "Chemical Bonding and Molecular Structure"
+        }
+      ]
+    },
+    {
+      "unit_no": "V",
+      "name": "Chemical Thermodynamics",
+      "marks": 9,
+      "chapters": [
+        {
+          "id": "chemical-thermodynamics",
+          "name": "Chemical Thermodynamics"
+        }
+      ]
+    },
+    {
+      "unit_no": "VI",
+      "name": "Equilibrium",
+      "marks": 7,
+      "chapters": [
+        {
+          "id": "equilibrium",
+          "name": "Equilibrium"
+        }
+      ]
+    },
+    {
+      "unit_no": "VII",
+      "name": "Redox Reactions",
+      "marks": 4,
+      "chapters": [
+        {
+          "id": "redox-reactions",
+          "name": "Redox Reactions"
+        }
+      ]
+    },
+    {
+      "unit_no": "VIII",
+      "name": "Organic Chemistry: Some Basic Principles and Techniques",
+      "marks": 11,
+      "chapters": [
+        {
+          "id": "organic-chemistry-principles",
+          "name": "Organic Chemistry: Some Basic Principles and Techniques"
+        }
+      ]
+    },
+    {
+      "unit_no": "IX",
+      "name": "Hydrocarbons",
+      "marks": 10,
+      "chapters": [
+        {
+          "id": "hydrocarbons",
+          "name": "Hydrocarbons"
+        }
+      ]
+    }
+  ]
+}

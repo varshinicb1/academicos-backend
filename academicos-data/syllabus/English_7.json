@@ -1,0 +1,49 @@
+{
+  "subject": "English",
+  "grade": 7,
+  "source": "NCERT Class 7 English (Honeycomb and An Alien Hand)",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Reading Comprehension",
+      "marks": 20,
+      "chapters": [
+        {
+          "id": "reading-comprehension",
+          "name": "Reading Comprehension"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Writing and Grammar",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "grammar",
+          "name": "Grammar (Nouns, Pronouns, Adjectives, Adverbs, Prepositions)"
+        },
+        {
+          "id": "writing-skills",
+          "name": "Paragraph Writing, Informal Letters, Story Writing"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Literature",
+      "marks": 35,
+      "chapters": [
+        {
+          "id": "honeycomb-textbook",
+          "name": "Honeycomb (Textbook in English)"
+        },
+        {
+          "id": "an-alien-hand",
+          "name": "An Alien Hand (Supplementary Reader)"
+        }
+      ]
+    }
+  ]
+}

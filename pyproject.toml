@@ -29,3 +29,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 academicos = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

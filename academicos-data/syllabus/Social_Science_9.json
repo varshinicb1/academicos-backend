@@ -1,0 +1,116 @@
+{
+  "subject": "Social Science",
+  "grade": 9,
+  "source": "CBSE Curriculum 2025-26, Social_Science_Sec_2025-26.pdf, Class IX Course Structure",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "India and the Contemporary World - I (History)",
+      "marks": 20,
+      "chapters": [
+        {
+          "id": "french-revolution",
+          "name": "The French Revolution"
+        },
+        {
+          "id": "socialism-europe-russian-revolution",
+          "name": "Socialism in Europe and the Russian Revolution"
+        },
+        {
+          "id": "nazism-rise-of-hitler",
+          "name": "Nazism and the Rise of Hitler"
+        },
+        {
+          "id": "forest-society-colonialism",
+          "name": "Forest Society and Colonialism"
+        },
+        {
+          "id": "pastoralists-modern-world",
+          "name": "Pastoralists in the Modern World"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Contemporary India - I (Geography)",
+      "marks": 20,
+      "chapters": [
+        {
+          "id": "india-size-and-location",
+          "name": "India - Size and Location"
+        },
+        {
+          "id": "physical-features-of-india",
+          "name": "Physical Features of India"
+        },
+        {
+          "id": "drainage",
+          "name": "Drainage"
+        },
+        {
+          "id": "climate",
+          "name": "Climate"
+        },
+        {
+          "id": "natural-vegetation-wildlife",
+          "name": "Natural Vegetation and Wildlife"
+        },
+        {
+          "id": "population",
+          "name": "Population"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Democratic Politics - I (Political Science)",
+      "marks": 20,
+      "chapters": [
+        {
+          "id": "what-is-democracy-why",
+          "name": "What is Democracy? Why Democracy?"
+        },
+        {
+          "id": "constitutional-design",
+          "name": "Constitutional Design"
+        },
+        {
+          "id": "electoral-politics",
+          "name": "Electoral Politics"
+        },
+        {
+          "id": "working-of-institutions",
+          "name": "Working of Institutions"
+        },
+        {
+          "id": "democratic-rights",
+          "name": "Democratic Rights"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "Economics",
+      "marks": 20,
+      "chapters": [
+        {
+          "id": "story-village-palampur",
+          "name": "The Story of Village Palampur"
+        },
+        {
+          "id": "people-as-resource",
+          "name": "People as Resource"
+        },
+        {
+          "id": "poverty-as-a-challenge",
+          "name": "Poverty as a Challenge"
+        },
+        {
+          "id": "food-security-in-india",
+          "name": "Food Security in India"
+        }
+      ]
+    }
+  ]
+}

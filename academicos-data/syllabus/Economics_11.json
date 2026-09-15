@@ -1,0 +1,50 @@
+{
+  "subject": "Economics",
+  "grade": 11,
+  "source": "CBSE Curriculum 2025-26, Economics_SrSec_2025-26.pdf, Class XI Course Structure",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Statistics for Economics",
+      "marks": 40,
+      "chapters": [
+        {
+          "id": "intro-statistics-economics",
+          "name": "Introduction to Statistics"
+        },
+        {
+          "id": "collection-organisation-presentation-data",
+          "name": "Collection, Organisation and Presentation of Data"
+        },
+        {
+          "id": "statistical-tools-interpretation",
+          "name": "Statistical Tools and Interpretation"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Introductory Microeconomics",
+      "marks": 40,
+      "chapters": [
+        {
+          "id": "intro-microeconomics",
+          "name": "Introduction to Microeconomics"
+        },
+        {
+          "id": "consumer-equilibrium-demand",
+          "name": "Consumer's Equilibrium and Demand"
+        },
+        {
+          "id": "producer-behaviour-supply",
+          "name": "Producer Behaviour and Supply"
+        },
+        {
+          "id": "forms-market-price-determination",
+          "name": "Forms of Market and Price Determination"
+        }
+      ]
+    }
+  ]
+}

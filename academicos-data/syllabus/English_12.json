@@ -1,0 +1,61 @@
+{
+  "subject": "English",
+  "grade": 12,
+  "source": "CBSE Curriculum 2025-26, English_core_SrSec_2025-26.pdf, Class XII Course Structure",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Reading Skills",
+      "marks": 22,
+      "chapters": [
+        {
+          "id": "reading-comprehension",
+          "name": "Reading Comprehension Through Unseen Passages"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Creative Writing Skills",
+      "marks": 18,
+      "chapters": [
+        {
+          "id": "notice-writing",
+          "name": "Notice Writing"
+        },
+        {
+          "id": "invitation-and-reply",
+          "name": "Formal and Informal Invitations and Replies"
+        },
+        {
+          "id": "letter-writing",
+          "name": "Letters: Application for Job and Letter to Editor"
+        },
+        {
+          "id": "article-report-writing",
+          "name": "Article and Report Writing"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Literature Textbooks",
+      "marks": 40,
+      "chapters": [
+        {
+          "id": "flamingo-prose",
+          "name": "Flamingo (Prose)"
+        },
+        {
+          "id": "flamingo-poetry",
+          "name": "Flamingo (Poetry)"
+        },
+        {
+          "id": "vistas-supplementary",
+          "name": "Vistas (Supplementary Reader)"
+        }
+      ]
+    }
+  ]
+}

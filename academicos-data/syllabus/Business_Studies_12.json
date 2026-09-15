@@ -1,0 +1,140 @@
+{
+  "subject": "Business Studies",
+  "grade": 12,
+  "source": "CBSE Curriculum 2025-26, BusinessStudies_SrSec_2025-26.pdf, Class XII Course Structure",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Nature and Significance of Management",
+      "marks": 6,
+      "chapters": [
+        {
+          "id": "nature-significance-management",
+          "name": "Nature and Significance of Management"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Principles of Management",
+      "marks": 6,
+      "chapters": [
+        {
+          "id": "principles-of-management",
+          "name": "Principles of Management"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Business Environment",
+      "marks": 4,
+      "chapters": [
+        {
+          "id": "business-environment",
+          "name": "Business Environment"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "Planning",
+      "marks": 6,
+      "chapters": [
+        {
+          "id": "planning",
+          "name": "Planning"
+        }
+      ]
+    },
+    {
+      "unit_no": "V",
+      "name": "Organising",
+      "marks": 8,
+      "chapters": [
+        {
+          "id": "organising",
+          "name": "Organising"
+        }
+      ]
+    },
+    {
+      "unit_no": "VI",
+      "name": "Staffing",
+      "marks": 8,
+      "chapters": [
+        {
+          "id": "staffing",
+          "name": "Staffing"
+        }
+      ]
+    },
+    {
+      "unit_no": "VII",
+      "name": "Directing",
+      "marks": 8,
+      "chapters": [
+        {
+          "id": "directing",
+          "name": "Directing"
+        }
+      ]
+    },
+    {
+      "unit_no": "VIII",
+      "name": "Controlling",
+      "marks": 4,
+      "chapters": [
+        {
+          "id": "controlling",
+          "name": "Controlling"
+        }
+      ]
+    },
+    {
+      "unit_no": "IX",
+      "name": "Financial Management",
+      "marks": 9,
+      "chapters": [
+        {
+          "id": "financial-management",
+          "name": "Financial Management"
+        }
+      ]
+    },
+    {
+      "unit_no": "X",
+      "name": "Financial Markets",
+      "marks": 6,
+      "chapters": [
+        {
+          "id": "financial-markets",
+          "name": "Financial Markets"
+        }
+      ]
+    },
+    {
+      "unit_no": "XI",
+      "name": "Marketing Management",
+      "marks": 10,
+      "chapters": [
+        {
+          "id": "marketing-management",
+          "name": "Marketing Management"
+        }
+      ]
+    },
+    {
+      "unit_no": "XII",
+      "name": "Consumer Protection",
+      "marks": 5,
+      "chapters": [
+        {
+          "id": "consumer-protection",
+          "name": "Consumer Protection"
+        }
+      ]
+    }
+  ]
+}

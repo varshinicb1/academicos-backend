@@ -1,0 +1,49 @@
+{
+  "subject": "English",
+  "grade": 11,
+  "source": "CBSE Curriculum 2025-26, English_core_SrSec_2025-26.pdf, Class XI Course Structure",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Reading Skills",
+      "marks": 26,
+      "chapters": [
+        {
+          "id": "reading-comprehension",
+          "name": "Reading Comprehension and Note Making"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Grammar and Creative Writing",
+      "marks": 23,
+      "chapters": [
+        {
+          "id": "grammar",
+          "name": "Grammar (Tenses, Clauses, Re-ordering of Sentences)"
+        },
+        {
+          "id": "creative-writing",
+          "name": "Notice, Poster, Speech and Debate Writing"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Literature",
+      "marks": 31,
+      "chapters": [
+        {
+          "id": "hornbill",
+          "name": "Hornbill (Prose and Poetry)"
+        },
+        {
+          "id": "snapshots",
+          "name": "Snapshots (Supplementary Reader)"
+        }
+      ]
+    }
+  ]
+}

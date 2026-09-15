@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from ..config import Config
 from ..ingest.checksum import file_checksum
@@ -29,7 +29,9 @@ from ..models.enums import DocType
 from ..storage.base import LocalStore
 from ..storage.registry import SourceRegistry
 from .audit_log import get_audit_log
+from .auth_routes import get_current_user_optional
 from .schemas import Camel
+from .users import User
 
 router = APIRouter(prefix="/api/v1")
 
@@ -102,7 +104,11 @@ async def ingest_school_document(
     copyright_confirmed: bool = Form(..., alias="copyrightConfirmed"),
     title: str = Form("", alias="title"),
     file: UploadFile = File(...),
+    current: Optional[User] = Depends(get_current_user_optional),
 ) -> DocumentIngestResponse:
+    if current is not None:
+        school_id = current.school_id
+        uploader_id = current.id
     cfg, registry, store = _require()
     audit = get_audit_log(cfg.data_root)
 

@@ -1,0 +1,77 @@
+{
+  "subject": "Science",
+  "grade": 6,
+  "source": "NCERT Class 6 Science, Curiosity (NCF-SE)",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "The World of the Living",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "the-wonderful-world-of-science",
+          "name": "The Wonderful World of Science"
+        },
+        {
+          "id": "diversity-in-the-living-world",
+          "name": "Diversity in the Living World"
+        },
+        {
+          "id": "mindful-eating",
+          "name": "Mindful Eating: A Path to a Healthy Body"
+        },
+        {
+          "id": "exploring-magnets",
+          "name": "Exploring Magnets"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Matter and Materials",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "measurement-of-length-and-motion",
+          "name": "Measurement of Length and Motion"
+        },
+        {
+          "id": "materials-around-us",
+          "name": "Materials Around Us"
+        },
+        {
+          "id": "temperature-and-its-measurement",
+          "name": "Temperature and its Measurement"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Energy and Environment",
+      "marks": 30,
+      "chapters": [
+        {
+          "id": "a-journey-through-states-of-water",
+          "name": "A Journey through States of Water"
+        },
+        {
+          "id": "methods-of-separation-in-everyday-life",
+          "name": "Methods of Separation in Everyday Life"
+        },
+        {
+          "id": "living-creatures-exploring-their-characteristics",
+          "name": "Living Creatures: Exploring their Characteristics"
+        },
+        {
+          "id": "natures-treasures",
+          "name": "Nature's Treasures"
+        },
+        {
+          "id": "beyond-earth",
+          "name": "Beyond Earth"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "subject": "Mathematics",
+  "grade": 6,
+  "source": "NCERT Class 6 Mathematics, Ganita Prakash (NCF-SE)",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Number Sense and Patterns",
+      "marks": 30,
+      "chapters": [
+        {
+          "id": "knowing-our-numbers",
+          "name": "Patterns in Mathematics"
+        },
+        {
+          "id": "whole-numbers",
+          "name": "Lines and Angles"
+        },
+        {
+          "id": "playing-with-numbers",
+          "name": "Number Play"
+        },
+        {
+          "id": "integers-6",
+          "name": "Data Handling and Presentation"
+        },
+        {
+          "id": "fractions-6",
+          "name": "Prime Time"
+        },
+        {
+          "id": "decimals-6",
+          "name": "Perimeter and Area"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Shapes and Space",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "basic-geometrical-ideas",
+          "name": "Fractions"
+        },
+        {
+          "id": "understanding-elementary-shapes",
+          "name": "Playing with Constructions"
+        },
+        {
+          "id": "symmetry-6",
+          "name": "Symmetry"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Algebra and Measurement",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "algebra-6",
+          "name": "The Other Side of Zero"
+        },
+        {
+          "id": "ratio-and-proportion",
+          "name": "Ratio and Proportion"
+        }
+      ]
+    }
+  ]
+}

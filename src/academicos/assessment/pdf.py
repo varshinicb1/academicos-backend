@@ -194,10 +194,14 @@ def _header(paper: GeneratedPaper, template: Optional[SchoolTemplate],
     brand = colors.HexColor(template.brand_color) if template and template.brand_color else colors.black
     story: list = []
 
+    exam_title = escape(m.assessment_title)
+    if paper.set_label:
+        exam_title += f" &nbsp;&nbsp;|&nbsp;&nbsp; <b>SET {escape(paper.set_label)}</b>"
+
     logo_path = Path(template.logo_url) if template and template.logo_url else None
     title_block = [
         Paragraph(escape(school_name), styles.school),
-        Paragraph(escape(m.assessment_title), styles.exam),
+        Paragraph(exam_title, styles.exam),
         Paragraph(f"Subject: {escape(m.subject)} &nbsp;&nbsp;|&nbsp;&nbsp; Class: {m.grade}",
                   styles.meta),
     ]
@@ -220,10 +224,14 @@ def _header(paper: GeneratedPaper, template: Optional[SchoolTemplate],
     story.append(_roll_no_grid(styles))
     story.append(Spacer(1, 6))
 
+    marks_str = f"<b>Maximum Marks: {m.total_marks}</b>"
+    if paper.set_label:
+        marks_str += f" &nbsp;&nbsp; [<b>SET {escape(paper.set_label)}</b>]"
+
     rule = Table(
         [[Paragraph(f"<b>Time Allowed: {m.duration_minutes // 60} hours "
                     f"{m.duration_minutes % 60:02d} minutes</b>", styles.question),
-          Paragraph(f"<b>Maximum Marks: {m.total_marks}</b>", styles.marks)]],
+          Paragraph(marks_str, styles.marks)]],
         colWidths=[content_width * 0.6, content_width * 0.4],
     )
     rule.setStyle(TableStyle([
@@ -375,7 +383,7 @@ def export_pdf(paper: GeneratedPaper, output_dir: Path,
 
 def export_answer_key_pdf(paper: GeneratedPaper, output_dir: Path,
                           template: Optional[SchoolTemplate] = None) -> Path:
-    """Companion marking sheet: question number, marks, expected answer."""
+    """Companion marking sheet: question number, marks, expected answer / value points."""
     _register_unicode_font()
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / f"{paper.id}_answer_key.pdf"
@@ -383,22 +391,29 @@ def export_answer_key_pdf(paper: GeneratedPaper, output_dir: Path,
 
     doc = SimpleDocTemplate(str(out_path), pagesize=A4, topMargin=16 * mm,
                             bottomMargin=18 * mm, leftMargin=18 * mm, rightMargin=18 * mm)
+    set_suffix = f" — SET {paper.set_label}" if paper.set_label else ""
     story: list = [
-        Paragraph(escape(paper.metadata.assessment_title), styles.school),
-        Paragraph("MARKING SCHEME / ANSWER KEY", styles.exam),
+        Paragraph(escape(paper.metadata.assessment_title) + set_suffix, styles.school),
+        Paragraph("MARKING SCHEME / VALUE POINTS", styles.exam),
         Spacer(1, 8),
         HRFlowable(width="100%", thickness=1, color=colors.black, spaceAfter=8),
     ]
     rows = [[Paragraph("<b>Q.No.</b>", styles.option),
              Paragraph("<b>Marks</b>", styles.option),
-             Paragraph("<b>Expected answer / marking points</b>", styles.option)]]
+             Paragraph("<b>Expected answer / Value points</b>", styles.option)]]
     for section in paper.sections:
         for gq in section.questions:
             answer = paper.answer_key.get(str(gq.display_number), "")
+            ans_formatted = escape(str(answer)).replace("\n", "<br/>") if answer else "<i>(pending teacher entry)</i>"
+            if gq.internal_choice_text:
+                or_answer = paper.answer_key.get(f"{gq.display_number}_OR", "")
+                if or_answer:
+                    or_formatted = escape(str(or_answer)).replace("\n", "<br/>")
+                    ans_formatted += f"<br/><br/><b>[OR CHOICE]:</b><br/>{or_formatted}"
             rows.append([
                 Paragraph(str(gq.display_number), styles.option),
                 Paragraph(str(gq.marks), styles.option),
-                Paragraph(escape(str(answer)) or "<i>(pending teacher entry)</i>", styles.option),
+                Paragraph(ans_formatted, styles.option),
             ])
     table = Table(rows, colWidths=[14 * mm, 14 * mm, None], repeatRows=1)
     table.setStyle(TableStyle([

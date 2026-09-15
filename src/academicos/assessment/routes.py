@@ -22,26 +22,37 @@ from .authz import require_own_school, require_school_owns_assessment, require_s
 from .auth_routes import get_current_user, require_principal
 from .users import User, get_user_store
 from .mapping import grade_to_int, to_question_schema
-from .paper import generate_paper as build_generated_paper
+from .paper import generate_paper as build_generated_paper, generate_paper_sets
 from .pool import get_pool
 from .schemas import (
     Assessment,
     AssessmentStatus,
+    BloomDistribution,
     Blueprint,
     BlueprintRequest,
+    ChapterWeights,
+    CompetencyWeights,
     CreateAssessmentRequest,
+    DifficultyDistribution,
+    GenerateFromIdsRequest,
     GeneratedPaper,
     PaperGenerationRequest,
     QuestionOptimizationRequest,
     QuestionOptimizationResult,
     QuestionSchema,
     QuestionSearchParams,
+    QuickPaperRequest,
     SchoolTemplate,
     SectionBlueprint,
 )
 from .paper_store import PaperStore
 from .store import AssessmentStore
-from .templates import default_sections
+from .templates import (
+    TIER_BLOOM,
+    TIER_DIFFICULTY,
+    default_sections,
+    get_sections_for_exam_type,
+)
 
 router = APIRouter(prefix="/api/v1")
 
@@ -252,7 +263,8 @@ def generate_paper_endpoint(
     subject = assessment.subject if assessment else (request.selected_questions[0].subject if request.selected_questions else "Science")
     grade = assessment.grade if assessment else (request.selected_questions[0].grade if request.selected_questions else 10)
 
-    paper = build_generated_paper(
+    set_count = getattr(request, "set_count", 1) or 1
+    paper = generate_paper_sets(
         paper_id=f"paper_{uuid.uuid4().hex[:12]}",
         assessment_id=request.assessment_id,
         assessment_title=title,
@@ -260,8 +272,12 @@ def generate_paper_endpoint(
         grade=grade,
         blueprint=request.blueprint,
         selected_questions=request.selected_questions,
+        set_count=set_count,
     )
     _require_papers().save(paper, request.template)
+    if paper.sets:
+        for s in paper.sets:
+            _require_papers().save(s, request.template)
 
     if assessment:
         assessment.generated_paper_id = paper.id
@@ -269,6 +285,225 @@ def generate_paper_endpoint(
         assessment.status = "paperGenerated"
         assessment.updated_at = _now()
         store.save(assessment)
+    return paper
+
+
+@router.post("/papers/quick-generate", response_model=GeneratedPaper)
+def quick_generate_paper(request: QuickPaperRequest, current: User = Depends(get_current_user)) -> GeneratedPaper:
+    """Rapid generation of complete, sectioned papers (Examzo-style 1-click generation)."""
+    cfg, store = _require()
+    subject = request.subject
+    grade = request.grade
+    grade_roman = _int_grade_to_roman(grade)
+    pool = get_pool(cfg, subject=subject, grade=grade_roman)
+    total_marks = request.total_marks
+    tier = request.tier or "standard"
+
+    duration = request.duration_minutes
+    if not duration:
+        duration = 60 if total_marks <= 25 else (120 if total_marks <= 50 else 180)
+
+    diff_preset = TIER_DIFFICULTY.get(tier, TIER_DIFFICULTY["standard"])
+    bloom_preset = TIER_BLOOM.get(tier, TIER_BLOOM["standard"])
+
+    if request.exam_type:
+        sections = get_sections_for_exam_type(request.exam_type, total_marks)
+    else:
+        sections = default_sections(total_marks)
+
+    bp = Blueprint(
+        total_marks=total_marks,
+        duration_minutes=duration,
+        difficulty=diff_preset,
+        bloom=bloom_preset,
+        chapter_weights=ChapterWeights(),
+        competency_weights=CompetencyWeights(),
+        sections=sections,
+        tier=tier,
+        competency_percentage=0.50,
+        exam_type=request.exam_type,
+    )
+
+    target_chapters = request.chapter_ids or []
+    chapter_candidates = []
+    if target_chapters:
+        p_cands = pool.filter(subject=subject, grade=grade_roman, chapter_ids=target_chapters)
+        chapter_candidates = [to_question_schema(c) for c in p_cands]
+
+    all_pool_questions = [to_question_schema(c) for c in pool.questions]
+    candidates = chapter_candidates if chapter_candidates else all_pool_questions
+    fallback = all_pool_questions if chapter_candidates else None
+
+    opt_result = selection.optimize(candidates, bp, fallback_candidates=fallback)
+    if not opt_result.selected_questions:
+        raise HTTPException(
+            400,
+            f"Unable to find sufficient questions for {subject} Grade {grade} in the question bank. "
+            "Please broaden chapters or check subject/grade.",
+        )
+
+    asm_id = f"asm_quick_{uuid.uuid4().hex[:8]}"
+    title = request.title or f"{subject} Class {grade} {request.exam_type or 'Assessment'}"
+    paper_id = f"paper_{uuid.uuid4().hex[:12]}"
+    paper = generate_paper_sets(
+        paper_id=paper_id,
+        assessment_id=asm_id,
+        assessment_title=title,
+        subject=subject,
+        grade=grade,
+        blueprint=bp,
+        selected_questions=opt_result.selected_questions,
+        set_count=max(1, request.set_count),
+    )
+
+    template = None
+    if request.template_id:
+        from .school_templates import TemplateStore
+        t_store = TemplateStore(cfg.data_root / "templates" / "templates.sqlite")
+        template = t_store.get(request.template_id)
+
+    _require_papers().save(paper, template)
+    if paper.sets:
+        for s in paper.sets:
+            _require_papers().save(s, template)
+
+    assessment = Assessment(
+        id=asm_id,
+        school_id=current.school_id,
+        teacher_id=current.id,
+        title=title,
+        subject=subject,
+        grade=grade,
+        chapter_ids=target_chapters,
+        blueprint=bp,
+        status="paperGenerated",
+        created_at=_now(),
+        updated_at=_now(),
+        generated_paper_id=paper.id,
+        selected_question_ids=[q.id for q in opt_result.selected_questions],
+    )
+    store.save(assessment)
+
+    get_audit_log(cfg.data_root).append(
+        "quick_paper_generated", assessment_id=asm_id,
+        details={
+            "paperId": paper.id,
+            "setCount": request.set_count,
+            "tier": tier,
+            "userId": current.id,
+            "schoolId": current.school_id,
+        },
+    )
+
+    return paper
+
+
+@router.post("/papers/generate-from-ids", response_model=GeneratedPaper)
+def generate_from_ids(request: GenerateFromIdsRequest, current: User = Depends(get_current_user)) -> GeneratedPaper:
+    """Instantly compile selected question IDs into a structured sectioned paper (Examzo-style ID compilation)."""
+    cfg, store = _require()
+    if not request.question_ids:
+        raise HTTPException(400, "question_ids list cannot be empty")
+
+    grade_roman = _int_grade_to_roman(request.grade)
+    pool = get_pool(cfg, subject=request.subject, grade=grade_roman)
+    all_pool_questions = [to_question_schema(c) for c in pool.questions]
+    by_id = {q.id: q for q in all_pool_questions}
+    found_questions: list[QuestionSchema] = [by_id[qid] for qid in request.question_ids if qid in by_id]
+
+    if not found_questions:
+        raise HTTPException(404, "None of the specified question_ids were found in the question bank")
+
+    by_marks: dict[int, list[QuestionSchema]] = {}
+    for q in found_questions:
+        by_marks.setdefault(q.marks, []).append(q)
+
+    sections: list[SectionBlueprint] = []
+    labels = ["A", "B", "C", "D", "E", "F", "G"]
+    for idx, (marks, q_list) in enumerate(sorted(by_marks.items())):
+        lbl = labels[idx] if idx < len(labels) else f"S{idx+1}"
+        sections.append(SectionBlueprint(
+            id=f"sec_{lbl.lower()}",
+            label=lbl,
+            name=f"{marks}-Mark Questions",
+            marks_per_question=marks,
+            question_count=len(q_list),
+            total_marks=marks * len(q_list),
+            has_internal_choice=False,
+            internal_choice_count=0,
+        ))
+
+    total_marks = sum(q.marks for q in found_questions)
+    duration = max(30, int(total_marks * 1.8))
+    diff_preset = TIER_DIFFICULTY["standard"]
+    bloom_preset = TIER_BLOOM["standard"]
+
+    bp = Blueprint(
+        total_marks=total_marks,
+        duration_minutes=duration,
+        difficulty=diff_preset,
+        bloom=bloom_preset,
+        chapter_weights=ChapterWeights(),
+        competency_weights=CompetencyWeights(),
+        sections=sections,
+    )
+
+    asm_id = request.assessment_id or f"asm_curated_{uuid.uuid4().hex[:8]}"
+    title = request.title or "Curated Question Paper"
+    paper_id = f"paper_{uuid.uuid4().hex[:12]}"
+
+    paper = build_generated_paper(
+        paper_id=paper_id,
+        assessment_id=asm_id,
+        assessment_title=title,
+        subject=request.subject,
+        grade=request.grade,
+        blueprint=bp,
+        selected_questions=found_questions,
+    )
+
+    template = None
+    if request.template_id:
+        from .school_templates import TemplateStore
+        t_store = TemplateStore(cfg.data_root / "templates" / "templates.sqlite")
+        template = t_store.get(request.template_id)
+
+    _require_papers().save(paper, template)
+
+    existing_asm = store.get(asm_id)
+    if existing_asm:
+        existing_asm.generated_paper_id = paper.id
+        existing_asm.selected_question_ids = [q.id for q in found_questions]
+        existing_asm.status = "paperGenerated"
+        existing_asm.updated_at = _now()
+        store.save(existing_asm)
+    else:
+        new_asm = Assessment(
+            id=asm_id,
+            school_id=current.school_id,
+            teacher_id=current.id,
+            title=title,
+            subject=request.subject,
+            grade=request.grade,
+            chapter_ids=list({cid for q in found_questions for cid in q.chapter_ids}),
+            blueprint=bp,
+            status="paperGenerated",
+            created_at=_now(),
+            updated_at=_now(),
+            generated_paper_id=paper.id,
+            selected_question_ids=[q.id for q in found_questions],
+        )
+        store.save(new_asm)
+
+    get_audit_log(cfg.data_root).append(
+        "id_curated_paper_generated", assessment_id=asm_id,
+        details={
+            "paperId": paper.id,
+            "questionCount": len(found_questions),
+            "userId": current.id,
+            "schoolId": current.school_id,
+        },
+    )
     return paper
 
 
@@ -282,8 +517,8 @@ def get_paper(paper_id: str, current: User = Depends(get_current_user)) -> Gener
 def export_paper(paper_id: str, fmt: str, current: User = Depends(get_current_user)) -> dict:
     cfg, store = _require()
     paper = require_school_owns_paper(_require_papers(), store, paper_id, current)
-    if fmt != "pdf":
-        raise HTTPException(400, "only pdf export is supported currently")
+    if fmt not in ("pdf", "answer-key", "answer_key", "answerKey"):
+        raise HTTPException(400, "only pdf and answer-key exports are supported currently")
     out_dir = cfg.artifacts_dir / "papers"
     template = _require_papers().get_template(paper_id)
     if template is None:
@@ -297,6 +532,13 @@ def export_paper(paper_id: str, fmt: str, current: User = Depends(get_current_us
     # _page_furniture docstring and docs/compliance.md's paper-release-
     # locking checklist item.
     watermark_id = f"exp_{uuid.uuid4().hex[:10]}"
+    if fmt in ("answer-key", "answer_key", "answerKey"):
+        path = pdf_export.export_answer_key_pdf(paper, out_dir, template=template)
+        get_audit_log(cfg.data_root).append(
+            "answer_key_exported", assessment_id=paper.assessment_id,
+            details={"paperId": paper_id, "format": fmt, "file": path.name, "watermarkId": watermark_id},
+        )
+        return {"url": f"/api/v1/papers/{paper_id}/file?format=answer-key", "watermarkId": watermark_id}
     path = pdf_export.export_pdf(paper, out_dir, template=template, watermark_id=watermark_id)
     get_audit_log(cfg.data_root).append(
         "paper_exported", assessment_id=paper.assessment_id,
@@ -306,13 +548,14 @@ def export_paper(paper_id: str, fmt: str, current: User = Depends(get_current_us
 
 
 @router.get("/papers/{paper_id}/file")
-def get_paper_file(paper_id: str, current: User = Depends(get_current_user)):
+def get_paper_file(paper_id: str, format: str = "pdf", current: User = Depends(get_current_user)):
     cfg, store = _require()
     require_school_owns_paper(_require_papers(), store, paper_id, current)
-    path = cfg.artifacts_dir / "papers" / f"{paper_id}.pdf"
+    suffix = "_answer_key.pdf" if format in ("answer-key", "answer_key") else ".pdf"
+    path = cfg.artifacts_dir / "papers" / f"{paper_id}{suffix}"
     if not path.exists():
         raise HTTPException(404, "pdf not generated yet")
-    return FileResponse(str(path), media_type="application/pdf", filename=f"{paper_id}.pdf")
+    return FileResponse(str(path), media_type="application/pdf", filename=f"{paper_id}{suffix}")
 
 
 # ---- Assessments ----

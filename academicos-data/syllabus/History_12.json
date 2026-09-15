@@ -1,0 +1,88 @@
+{
+  "subject": "History",
+  "grade": 12,
+  "source": "CBSE Curriculum 2025-26, History_SrSec_2025-26.pdf, Class XII Course Structure",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Themes in Indian History Part I",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "bricks-beads-bones",
+          "name": "Bricks, Beads and Bones (Harappan Civilisation)"
+        },
+        {
+          "id": "kings-farmers-towns",
+          "name": "Kings, Farmers and Towns (Early States and Economies)"
+        },
+        {
+          "id": "kinship-caste-class",
+          "name": "Kinship, Caste and Class (Early Societies)"
+        },
+        {
+          "id": "thinkers-beliefs-buildings",
+          "name": "Thinkers, Beliefs and Buildings (Cultural Developments)"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Themes in Indian History Part II",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "eyes-of-travellers",
+          "name": "Through the Eyes of Travellers"
+        },
+        {
+          "id": "bhakti-sufi-traditions",
+          "name": "Bhakti-Sufi Traditions"
+        },
+        {
+          "id": "an-imperial-capital-vijayanagara",
+          "name": "An Imperial Capital: Vijayanagara"
+        },
+        {
+          "id": "peasants-zamindars-state",
+          "name": "Peasants, Zamindars and the State"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Themes in Indian History Part III",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "colonialism-countryside",
+          "name": "Colonialism and the Countryside"
+        },
+        {
+          "id": "rebels-and-raj",
+          "name": "Rebels and the Raj"
+        },
+        {
+          "id": "mahatma-gandhi-nationalist-movement",
+          "name": "Mahatma Gandhi and the Nationalist Movement"
+        },
+        {
+          "id": "framing-constitution",
+          "name": "Framing the Constitution"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "Map Work",
+      "marks": 5,
+      "chapters": [
+        {
+          "id": "map-work-history",
+          "name": "Map Work"
+        }
+      ]
+    }
+  ]
+}

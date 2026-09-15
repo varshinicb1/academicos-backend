@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -54,6 +55,7 @@ CREATE INDEX IF NOT EXISTS idx_assessments_school ON assessments(school_id);
 class AssessmentStore:
     def __init__(self, db_path: Path):
         self._remote = SupabaseTable("assessments")
+        self._conn_lock = threading.Lock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
@@ -76,35 +78,36 @@ class AssessmentStore:
                     "Supabase unreachable, falling back to local SQLite for assessment %s", a.id,
                     exc_info=True,
                 )
-        self.conn.execute(
-            """INSERT INTO assessments (id, school_id, teacher_id, title, subject, grade,
-                 chapter_ids, blueprint, status, created_at, updated_at, scheduled_at,
-                 completed_at, template_id, metadata, selected_question_ids,
-                 generated_paper_id, total_students, evaluated_count)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(id) DO UPDATE SET
-                 title=excluded.title, subject=excluded.subject, grade=excluded.grade,
-                 chapter_ids=excluded.chapter_ids, blueprint=excluded.blueprint,
-                 status=excluded.status, updated_at=excluded.updated_at,
-                 school_id=excluded.school_id, teacher_id=excluded.teacher_id,
-                 created_at=excluded.created_at,
-                 scheduled_at=excluded.scheduled_at, completed_at=excluded.completed_at,
-                 template_id=excluded.template_id, metadata=excluded.metadata,
-                 selected_question_ids=excluded.selected_question_ids,
-                 generated_paper_id=excluded.generated_paper_id,
-                 total_students=excluded.total_students, evaluated_count=excluded.evaluated_count
-            """,
-            (
-                a.id, a.school_id, a.teacher_id, a.title, a.subject, a.grade,
-                json.dumps(a.chapter_ids), a.blueprint.model_dump_json(), a.status,
-                a.created_at.isoformat(), a.updated_at.isoformat(),
-                a.scheduled_at.isoformat() if a.scheduled_at else None,
-                a.completed_at.isoformat() if a.completed_at else None,
-                a.template_id, json.dumps(a.metadata), json.dumps(a.selected_question_ids),
-                a.generated_paper_id, a.total_students, a.evaluated_count,
-            ),
-        )
-        self.conn.commit()
+        with self._conn_lock:
+            self.conn.execute(
+                """INSERT INTO assessments (id, school_id, teacher_id, title, subject, grade,
+                     chapter_ids, blueprint, status, created_at, updated_at, scheduled_at,
+                     completed_at, template_id, metadata, selected_question_ids,
+                     generated_paper_id, total_students, evaluated_count)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     title=excluded.title, subject=excluded.subject, grade=excluded.grade,
+                     chapter_ids=excluded.chapter_ids, blueprint=excluded.blueprint,
+                     status=excluded.status, updated_at=excluded.updated_at,
+                     school_id=excluded.school_id, teacher_id=excluded.teacher_id,
+                     created_at=excluded.created_at,
+                     scheduled_at=excluded.scheduled_at, completed_at=excluded.completed_at,
+                     template_id=excluded.template_id, metadata=excluded.metadata,
+                     selected_question_ids=excluded.selected_question_ids,
+                     generated_paper_id=excluded.generated_paper_id,
+                     total_students=excluded.total_students, evaluated_count=excluded.evaluated_count
+                """,
+                (
+                    a.id, a.school_id, a.teacher_id, a.title, a.subject, a.grade,
+                    json.dumps(a.chapter_ids), a.blueprint.model_dump_json(), a.status,
+                    a.created_at.isoformat(), a.updated_at.isoformat(),
+                    a.scheduled_at.isoformat() if a.scheduled_at else None,
+                    a.completed_at.isoformat() if a.completed_at else None,
+                    a.template_id, json.dumps(a.metadata), json.dumps(a.selected_question_ids),
+                    a.generated_paper_id, a.total_students, a.evaluated_count,
+                ),
+            )
+            self.conn.commit()
 
     def get(self, assessment_id: str) -> Optional[Assessment]:
         if self._remote.enabled:
@@ -113,7 +116,8 @@ class AssessmentStore:
                 return Assessment.model_validate(rows[0]["payload"]) if rows else None
             except requests.exceptions.RequestException:
                 logger.warning("Supabase unreachable, falling back to local SQLite for get(%s)", assessment_id, exc_info=True)
-        row = self.conn.execute("SELECT * FROM assessments WHERE id=?", (assessment_id,)).fetchone()
+        with self._conn_lock:
+            row = self.conn.execute("SELECT * FROM assessments WHERE id=?", (assessment_id,)).fetchone()
         return _row_to_assessment(row) if row else None
 
     def list_by_teacher(self, teacher_id: str) -> list[Assessment]:
@@ -123,9 +127,10 @@ class AssessmentStore:
                 return [Assessment.model_validate(r["payload"]) for r in rows]
             except requests.exceptions.RequestException:
                 logger.warning("Supabase unreachable, falling back to local SQLite for list_by_teacher(%s)", teacher_id, exc_info=True)
-        rows = self.conn.execute(
-            "SELECT * FROM assessments WHERE teacher_id=? ORDER BY created_at DESC", (teacher_id,)
-        ).fetchall()
+        with self._conn_lock:
+            rows = self.conn.execute(
+                "SELECT * FROM assessments WHERE teacher_id=? ORDER BY created_at DESC", (teacher_id,)
+            ).fetchall()
         return [_row_to_assessment(r) for r in rows]
 
     def list_by_school(self, school_id: str) -> list[Assessment]:
@@ -135,9 +140,10 @@ class AssessmentStore:
                 return [Assessment.model_validate(r["payload"]) for r in rows]
             except requests.exceptions.RequestException:
                 logger.warning("Supabase unreachable, falling back to local SQLite for list_by_school(%s)", school_id, exc_info=True)
-        rows = self.conn.execute(
-            "SELECT * FROM assessments WHERE school_id=? ORDER BY created_at DESC", (school_id,)
-        ).fetchall()
+        with self._conn_lock:
+            rows = self.conn.execute(
+                "SELECT * FROM assessments WHERE school_id=? ORDER BY created_at DESC", (school_id,)
+            ).fetchall()
         return [_row_to_assessment(r) for r in rows]
 
     def delete(self, assessment_id: str) -> None:
@@ -147,8 +153,9 @@ class AssessmentStore:
                 return
             except requests.exceptions.RequestException:
                 logger.warning("Supabase unreachable, falling back to local SQLite for delete(%s)", assessment_id, exc_info=True)
-        self.conn.execute("DELETE FROM assessments WHERE id=?", (assessment_id,))
-        self.conn.commit()
+        with self._conn_lock:
+            self.conn.execute("DELETE FROM assessments WHERE id=?", (assessment_id,))
+            self.conn.commit()
 
 
 def _row_to_assessment(row: sqlite3.Row) -> Assessment:

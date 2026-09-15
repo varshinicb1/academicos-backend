@@ -1,0 +1,45 @@
+{
+  "subject": "English",
+  "grade": 6,
+  "source": "NCERT Class 6 English, Poorvi (NCF-SE)",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Reading Comprehension",
+      "marks": 20,
+      "chapters": [
+        {
+          "id": "reading-comprehension",
+          "name": "Reading Comprehension"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Writing and Grammar",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "grammar",
+          "name": "Grammar (Nouns, Verbs, Articles, Simple Sentences)"
+        },
+        {
+          "id": "writing-skills",
+          "name": "Paragraph Writing, Message Writing, Picture Description"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Poorvi Textbook",
+      "marks": 35,
+      "chapters": [
+        {
+          "id": "poorvi-textbook",
+          "name": "Poorvi (Units: Fables and Folk Tales, Friendship, Nurturing Nature, Sports and Games, Culture and Tradition)"
+        }
+      ]
+    }
+  ]
+}

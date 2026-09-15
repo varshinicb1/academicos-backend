@@ -20,10 +20,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ..agents.orchestrator import DoubtSolver, ExaminerScorer, PaperAnalyst
-from ..assessment import auth_routes, ingest_routes, mobile_routes, mobile_scan, pillar_routes
+from ..assessment import auth_routes, consent_routes, ingest_routes, mobile_routes, mobile_scan, pillar_routes
 from ..assessment import routes as assessment_routes
 from ..assessment.supabase_kv import SupabaseTable, SupabaseUnavailable
-from ..config import Config
+from ..config import Config, get_config
 from ..curriculum import routes as curriculum_routes
 from ..graph.store import GraphStore
 from ..retrieval.hybrid import HybridRetriever
@@ -36,14 +36,28 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AcademicOS", version="0.1.0",
               description="CBSE/NCERT Academic Brain — evidence-grounded retrieval + reasoning")
-app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
-)
+
+_cfg = get_config()
+_cors_origins = getattr(_cfg, "cors_origins", ["*"])
+if "*" in _cors_origins:
+    app.add_middleware(
+        CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$|^https://.*\.onrender\.com$|^https://.*\.web\.app$|^https://.*\.firebaseapp\.com$|^https://.*\.github\.io$",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 app.include_router(assessment_routes.router)
 app.include_router(pillar_routes.router)
 app.include_router(mobile_routes.router)
 app.include_router(ingest_routes.router)
 app.include_router(auth_routes.router)
+app.include_router(consent_routes.router)
 app.include_router(curriculum_routes.router)
 
 
@@ -136,6 +150,7 @@ def init_runtime(config: Optional[Config] = None) -> None:
     pillar_routes.init(cfg)
     ingest_routes.init(cfg)
     auth_routes.init(cfg)
+    consent_routes.init(cfg.data_root)
     curriculum_routes.init(cfg)
     mobile_scan.configure_workdir(cfg.data_root / "scan-sessions")
     if cfg.llm_api_key:

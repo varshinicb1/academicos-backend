@@ -1,0 +1,99 @@
+{
+  "subject": "Mathematics",
+  "grade": 11,
+  "source": "CBSE Curriculum 2025-26, Maths_SrSec_2025-26.pdf, Class XI Course Structure",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Sets and Functions",
+      "marks": 23,
+      "chapters": [
+        {
+          "id": "sets",
+          "name": "Sets"
+        },
+        {
+          "id": "relations-functions-11",
+          "name": "Relations and Functions"
+        },
+        {
+          "id": "trigonometric-functions",
+          "name": "Trigonometric Functions"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Algebra",
+      "marks": 25,
+      "chapters": [
+        {
+          "id": "complex-numbers-quadratic",
+          "name": "Complex Numbers and Quadratic Equations"
+        },
+        {
+          "id": "linear-inequalities",
+          "name": "Linear Inequalities"
+        },
+        {
+          "id": "permutations-combinations",
+          "name": "Permutations and Combinations"
+        },
+        {
+          "id": "binomial-theorem",
+          "name": "Binomial Theorem"
+        },
+        {
+          "id": "sequences-and-series",
+          "name": "Sequences and Series"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Coordinate Geometry",
+      "marks": 12,
+      "chapters": [
+        {
+          "id": "straight-lines",
+          "name": "Straight Lines"
+        },
+        {
+          "id": "conic-sections",
+          "name": "Conic Sections"
+        },
+        {
+          "id": "intro-3d-geometry",
+          "name": "Introduction to Three-Dimensional Geometry"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "Calculus",
+      "marks": 8,
+      "chapters": [
+        {
+          "id": "limits-and-derivatives",
+          "name": "Limits and Derivatives"
+        }
+      ]
+    },
+    {
+      "unit_no": "V",
+      "name": "Statistics and Probability",
+      "marks": 12,
+      "chapters": [
+        {
+          "id": "statistics-11",
+          "name": "Statistics"
+        },
+        {
+          "id": "probability-11",
+          "name": "Probability"
+        }
+      ]
+    }
+  ]
+}

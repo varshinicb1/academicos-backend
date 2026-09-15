@@ -1,0 +1,80 @@
+{
+  "subject": "Accountancy",
+  "grade": 12,
+  "source": "CBSE Curriculum 2025-26, Accountancy_SrSec_2025-26.pdf, Class XII Course Structure",
+  "total_marks": 80,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Accounting for Partnership Firms",
+      "marks": 36,
+      "chapters": [
+        {
+          "id": "partnership-fundamentals",
+          "name": "Accounting for Partnership: Basic Concepts"
+        },
+        {
+          "id": "change-in-profit-sharing-ratio",
+          "name": "Reconstitution of Partnership: Change in PSR"
+        },
+        {
+          "id": "admission-of-partner",
+          "name": "Admission of a Partner"
+        },
+        {
+          "id": "retirement-death-of-partner",
+          "name": "Retirement and Death of a Partner"
+        },
+        {
+          "id": "dissolution-of-partnership-firm",
+          "name": "Dissolution of a Partnership Firm"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Accounting for Companies",
+      "marks": 24,
+      "chapters": [
+        {
+          "id": "accounting-for-share-capital",
+          "name": "Accounting for Share Capital"
+        },
+        {
+          "id": "accounting-for-debentures",
+          "name": "Issue and Redemption of Debentures"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Analysis of Financial Statements",
+      "marks": 12,
+      "chapters": [
+        {
+          "id": "financial-statements-of-company",
+          "name": "Financial Statements of a Company"
+        },
+        {
+          "id": "financial-statement-analysis",
+          "name": "Tools of Financial Statement Analysis"
+        },
+        {
+          "id": "accounting-ratios",
+          "name": "Accounting Ratios"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "Cash Flow Statement",
+      "marks": 8,
+      "chapters": [
+        {
+          "id": "cash-flow-statement",
+          "name": "Cash Flow Statement"
+        }
+      ]
+    }
+  ]
+}

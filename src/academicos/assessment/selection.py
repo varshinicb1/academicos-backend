@@ -30,7 +30,29 @@ from .schemas import Blueprint, QuestionOptimizationResult, QuestionSchema, Sect
 from .templates import default_sections
 
 
-def _score(q: QuestionSchema, chapter_weights: dict[str, float], used_chapters: Counter) -> float:
+def is_competency_question(q: QuestionSchema) -> bool:
+    """Identify Competency-Based Questions (CBQs) per CBSE / EI criteria."""
+    if q.type in ("case_study", "assertion_reason", "competency_based"):
+        return True
+    if q.bloom_level in ("apply", "analyze", "evaluate", "create"):
+        return True
+    if q.metadata.get("is_competency") or q.metadata.get("cbq"):
+        return True
+    stem_lower = q.stem.lower()
+    if "assertion" in stem_lower and "reason" in stem_lower:
+        return True
+    if "read the following" in stem_lower or "based on the passage" in stem_lower or "case study" in stem_lower:
+        return True
+    return False
+
+
+def _score(
+    q: QuestionSchema,
+    chapter_weights: dict[str, float],
+    used_chapters: Counter,
+    tier: str = "standard",
+    need_competency_boost: bool = False,
+) -> float:
     score = q.quality_score
     if chapter_weights:
         for cid in q.chapter_ids:
@@ -38,6 +60,31 @@ def _score(q: QuestionSchema, chapter_weights: dict[str, float], used_chapters: 
     # mild penalty for repeating a chapter already picked, to spread coverage
     for cid in q.chapter_ids:
         score -= 0.05 * used_chapters.get(cid, 0)
+
+    # Student Level Tier adjustments (Differentiated assessment: Foundation vs Standard vs Advanced)
+    t = (tier or "standard").lower()
+    if t == "foundation":
+        if q.difficulty == "easy":
+            score += 0.35
+        elif q.difficulty == "hard":
+            score -= 0.35
+        if q.bloom_level in ("remember", "understand"):
+            score += 0.20
+    elif t == "advanced":
+        if q.difficulty == "hard":
+            score += 0.40
+        elif q.difficulty == "easy":
+            score -= 0.30
+        if q.bloom_level in ("analyze", "evaluate", "create"):
+            score += 0.30
+    elif t == "standard":
+        if q.difficulty == "medium":
+            score += 0.15
+
+    # CBSE Competency-Based Question (CBQ) target boost
+    if need_competency_boost and is_competency_question(q):
+        score += 0.30
+
     return score
 
 
@@ -55,16 +102,25 @@ def optimize(candidates: list[QuestionSchema], blueprint: Blueprint,
             fallback_candidates: list[QuestionSchema] | None = None) -> QuestionOptimizationResult:
     sections = blueprint.sections or default_sections(blueprint.total_marks)
     chapter_weights = blueprint.chapter_weights.weights
+    tier = getattr(blueprint, "tier", "standard") or "standard"
+    competency_target = getattr(blueprint, "competency_percentage", 0.50)
+    if competency_target is None:
+        competency_target = 0.50
 
     remaining = list(candidates)
     selected_ids_seen: set[str] = {q.id for q in candidates}
     fallback_remaining = [q for q in (fallback_candidates or []) if q.id not in selected_ids_seen]
     selected: list[QuestionSchema] = []
+    paired_choice_ids: set[str] = set()
     used_chapters: Counter = Counter()
     warnings: list[str] = []
     gaps: list[str] = []
 
     for section in sections:
+        # Determine if competency boost is needed to hit the target quota (CBSE >= 50%)
+        current_cbq = sum(1 for q in selected if is_competency_question(q))
+        need_cbq = (current_cbq / len(selected) < competency_target) if selected else True
+
         pool = [q for q in remaining if _fits_section(q, section)]
         shortfall = section.question_count - len(pool)
         if shortfall > 0:
@@ -75,14 +131,20 @@ def optimize(candidates: list[QuestionSchema], blueprint: Blueprint,
             )
             extra = [q for q in fallback_remaining if _fits_section(q, section)]
             if extra:
-                extra.sort(key=lambda q: _score(q, chapter_weights, used_chapters), reverse=True)
+                extra.sort(
+                    key=lambda q: _score(q, chapter_weights, used_chapters, tier, need_cbq),
+                    reverse=True,
+                )
                 borrowed = extra[:shortfall]
                 pool = pool + borrowed
                 gaps.append(
                     f"Section {section.label}: filled {len(borrowed)} of the shortfall from "
                     f"outside the selected chapters so the section isn't left blank."
                 )
-        pool.sort(key=lambda q: _score(q, chapter_weights, used_chapters), reverse=True)
+        pool.sort(
+            key=lambda q: _score(q, chapter_weights, used_chapters, tier, need_cbq),
+            reverse=True,
+        )
         take = pool[: section.question_count]
         for q in take:
             selected.append(q)
@@ -93,17 +155,53 @@ def optimize(candidates: list[QuestionSchema], blueprint: Blueprint,
             for cid in q.chapter_ids:
                 used_chapters[cid] += 1
 
+        # PARAKH Internal Choice Pairing ("OR")
+        # Internal choice must be offered between questions of the same format and chapter
+        if section.has_internal_choice and take:
+            choice_quota = section.internal_choice_count if section.internal_choice_count > 0 else max(1, len(take) // 3)
+            # Select target questions to receive an "OR" alternative
+            eligible_for_or = take[-choice_quota:]
+            for primary_q in eligible_for_or:
+                # Find best alternative from same chapter and section fit
+                alt_pool = [
+                    cand for cand in (remaining + fallback_remaining)
+                    if _fits_section(cand, section) and cand.id != primary_q.id and cand.id not in paired_choice_ids
+                ]
+                if alt_pool:
+                    # Intra-chapter choice prioritization (PARAKH guideline)
+                    primary_chaps = set(primary_q.chapter_ids)
+                    alt_pool.sort(
+                        key=lambda cand: (
+                            1 if primary_chaps and any(c in primary_chaps for c in cand.chapter_ids) else 0,
+                            _score(cand, chapter_weights, used_chapters, tier, need_cbq),
+                        ),
+                        reverse=True,
+                    )
+                    alt_q = alt_pool[0]
+                    primary_q.metadata["internal_choice_id"] = alt_q.id
+                    primary_q.metadata["internal_choice_stem"] = alt_q.stem
+                    primary_q.metadata["internal_choice_scheme"] = alt_q.answer_scheme.model_answer
+                    primary_q.metadata["internal_choice_question"] = alt_q.model_dump(by_alias=False)
+                    paired_choice_ids.add(alt_q.id)
+                    if alt_q in remaining:
+                        remaining.remove(alt_q)
+                    elif alt_q in fallback_remaining:
+                        fallback_remaining.remove(alt_q)
+
     selected_ids = {q.id for q in selected}
-    rejected = [q for q in candidates if q.id not in selected_ids]
+    rejected = [q for q in candidates if q.id not in selected_ids and q.id not in paired_choice_ids]
 
     chapter_coverage = Counter()
     bloom_hist: Counter = Counter()
     difficulty_hist: Counter = Counter()
+    cbq_count = 0
     for q in selected:
         for cid in q.chapter_ids:
             chapter_coverage[cid] += 1
         bloom_hist[q.bloom_level] += 1
         difficulty_hist[q.difficulty] += 1
+        if is_competency_question(q):
+            cbq_count += 1
 
     if selected:
         distinct_chapters = len(chapter_coverage)
@@ -115,6 +213,13 @@ def optimize(candidates: list[QuestionSchema], blueprint: Blueprint,
             f"Selected paper totals {total_marks_selected} marks, blueprint target is {blueprint.total_marks}."
         )
 
+    cbq_percentage = (cbq_count / len(selected)) if selected else 0.0
+    if selected and cbq_percentage < competency_target:
+        warnings.append(
+            f"Selected paper has {round(cbq_percentage * 100, 1)}% competency-based questions "
+            f"(CBSE target: {int(competency_target * 100)}%)."
+        )
+
     return QuestionOptimizationResult(
         selected_questions=selected,
         rejected_questions=rejected,
@@ -124,6 +229,9 @@ def optimize(candidates: list[QuestionSchema], blueprint: Blueprint,
             "chapterCoverage": dict(chapter_coverage),
             "bloomDistribution": dict(bloom_hist),
             "difficultyDistribution": dict(difficulty_hist),
+            "competencyPercentage": round(cbq_percentage, 3),
+            "tier": tier,
+            "internalChoicesPaired": len(paired_choice_ids),
         },
         warnings=warnings,
         gaps=gaps,

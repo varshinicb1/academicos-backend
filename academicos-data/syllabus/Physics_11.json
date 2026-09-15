@@ -1,0 +1,134 @@
+{
+  "subject": "Physics",
+  "grade": 11,
+  "source": "CBSE Curriculum 2025-26, Physics_SrSec_2025-26.pdf, Class XI Course Structure",
+  "total_marks": 70,
+  "units": [
+    {
+      "unit_no": "I",
+      "name": "Physical World and Measurement",
+      "marks": 6,
+      "chapters": [
+        {
+          "id": "units-and-measurements",
+          "name": "Units and Measurements"
+        }
+      ]
+    },
+    {
+      "unit_no": "II",
+      "name": "Kinematics",
+      "marks": 17,
+      "chapters": [
+        {
+          "id": "motion-straight-line",
+          "name": "Motion in a Straight Line"
+        },
+        {
+          "id": "motion-plane",
+          "name": "Motion in a Plane"
+        }
+      ]
+    },
+    {
+      "unit_no": "III",
+      "name": "Laws of Motion",
+      "marks": 10,
+      "chapters": [
+        {
+          "id": "laws-of-motion",
+          "name": "Laws of Motion"
+        }
+      ]
+    },
+    {
+      "unit_no": "IV",
+      "name": "Work, Energy and Power",
+      "marks": 6,
+      "chapters": [
+        {
+          "id": "work-energy-power",
+          "name": "Work, Energy and Power"
+        }
+      ]
+    },
+    {
+      "unit_no": "V",
+      "name": "Motion of System of Particles and Rigid Body",
+      "marks": 7,
+      "chapters": [
+        {
+          "id": "system-particles-rotational-motion",
+          "name": "System of Particles and Rotational Motion"
+        }
+      ]
+    },
+    {
+      "unit_no": "VI",
+      "name": "Gravitation",
+      "marks": 6,
+      "chapters": [
+        {
+          "id": "gravitation",
+          "name": "Gravitation"
+        }
+      ]
+    },
+    {
+      "unit_no": "VII",
+      "name": "Properties of Bulk Matter",
+      "marks": 8,
+      "chapters": [
+        {
+          "id": "mechanical-properties-solids",
+          "name": "Mechanical Properties of Solids"
+        },
+        {
+          "id": "mechanical-properties-fluids",
+          "name": "Mechanical Properties of Fluids"
+        },
+        {
+          "id": "thermal-properties-matter",
+          "name": "Thermal Properties of Matter"
+        }
+      ]
+    },
+    {
+      "unit_no": "VIII",
+      "name": "Thermodynamics",
+      "marks": 5,
+      "chapters": [
+        {
+          "id": "thermodynamics",
+          "name": "Thermodynamics"
+        }
+      ]
+    },
+    {
+      "unit_no": "IX",
+      "name": "Kinetic Theory of Gases",
+      "marks": 5,
+      "chapters": [
+        {
+          "id": "kinetic-theory",
+          "name": "Kinetic Theory of Gases"
+        }
+      ]
+    },
+    {
+      "unit_no": "X",
+      "name": "Oscillations and Waves",
+      "marks": 10,
+      "chapters": [
+        {
+          "id": "oscillations",
+          "name": "Oscillations"
+        },
+        {
+          "id": "waves",
+          "name": "Waves"
+        }
+      ]
+    }
+  ]
+}
