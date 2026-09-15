@@ -18,13 +18,18 @@ not something any route handler can do implicitly.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from .supabase_kv import SupabaseTable
+import requests
+
+from .supabase_kv import SupabaseTable, SupabaseUnavailable
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -59,12 +64,15 @@ class AuditLog:
         timestamp = datetime.now(timezone.utc).isoformat()
         details_json = json.dumps(details or {})
         if self._remote.enabled:
-            self._remote.upsert({
-                "id": entry_id, "timestamp": timestamp, "action": action,
-                "assessment_id": assessment_id, "student_id": student_id,
-                "actor": actor, "details": details or {},
-            }, on_conflict="id")
-            return entry_id
+            try:
+                self._remote.upsert({
+                    "id": entry_id, "timestamp": timestamp, "action": action,
+                    "assessment_id": assessment_id, "student_id": student_id,
+                    "actor": actor, "details": details or {},
+                }, on_conflict="id")
+                return entry_id
+            except (SupabaseUnavailable, requests.exceptions.RequestException):
+                logger.warning("Supabase unavailable for audit_log append, falling back to local SQLite", exc_info=True)
         self.conn.execute(
             """INSERT INTO audit_log (id, timestamp, action, assessment_id, student_id, actor, details)
                VALUES (?,?,?,?,?,?,?)""",
@@ -75,7 +83,10 @@ class AuditLog:
 
     def for_assessment(self, assessment_id: str) -> list[dict[str, Any]]:
         if self._remote.enabled:
-            return self._remote.select(assessment_id=assessment_id, order="timestamp.desc")
+            try:
+                return self._remote.select(assessment_id=assessment_id, order="timestamp.desc")
+            except (SupabaseUnavailable, requests.exceptions.RequestException):
+                logger.warning("Supabase unavailable for audit_log for_assessment, falling back to local SQLite", exc_info=True)
         rows = self.conn.execute(
             "SELECT * FROM audit_log WHERE assessment_id=? ORDER BY timestamp DESC",
             (assessment_id,)).fetchall()
@@ -83,7 +94,10 @@ class AuditLog:
 
     def for_action(self, action: str) -> list[dict[str, Any]]:
         if self._remote.enabled:
-            return self._remote.select(action=action, order="timestamp.desc")
+            try:
+                return self._remote.select(action=action, order="timestamp.desc")
+            except (SupabaseUnavailable, requests.exceptions.RequestException):
+                logger.warning("Supabase unavailable for audit_log for_action, falling back to local SQLite", exc_info=True)
         rows = self.conn.execute(
             "SELECT * FROM audit_log WHERE action=? ORDER BY timestamp DESC",
             (action,)).fetchall()

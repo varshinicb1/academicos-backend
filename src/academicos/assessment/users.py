@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import secrets
 import sqlite3
 import threading
@@ -49,7 +50,7 @@ from typing import Optional
 
 import requests
 
-from .supabase_kv import SupabaseTable
+from .supabase_kv import SupabaseTable, SupabaseUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,29 @@ class UserStore:
         self.conn.execute("PRAGMA busy_timeout=60000")
         self.conn.executescript(SCHEMA)
         self.conn.commit()
+        self._seed_default_users_if_empty()
+
+    def _seed_default_users_if_empty(self) -> None:
+        if "PYTEST_CURRENT_TEST" in os.environ:
+            return
+        with self._conn_lock:
+            count = self.conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            if count > 0:
+                return
+            default_accounts = [
+                ("user_teacher_demo", "demo_school", "Demo Teacher", "teacher@school.com", "password123", "teacher"),
+                ("user_principal_demo", "demo_school", "Demo Principal", "principal@school.com", "password123", "principal"),
+            ]
+            now = datetime.now(timezone.utc).isoformat()
+            for uid, school_id, name, email, pwd, role in default_accounts:
+                salt = secrets.token_bytes(16)
+                pwd_hash = _hash_password(pwd, salt)
+                self.conn.execute(
+                    """INSERT OR IGNORE INTO users (id, school_id, name, email, password_hash, password_salt, role, created_at)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    (uid, school_id, name, email, pwd_hash, salt.hex(), role, now)
+                )
+            self.conn.commit()
 
     # ---------------- registration / login ----------------
 
@@ -139,9 +163,15 @@ class UserStore:
             "password_hash": _hash_password(password, salt), "password_salt": salt.hex(),
             "role": role, "created_at": created_at,
         }
+        saved_remotely = False
         if self._remote.enabled:
-            self._remote.upsert(row, on_conflict="id")
-        else:
+            try:
+                self._remote.upsert(row, on_conflict="id")
+                saved_remotely = True
+            except (SupabaseUnavailable, requests.exceptions.RequestException):
+                logger.warning("Supabase unavailable for user register, falling back to local SQLite", exc_info=True)
+
+        if not saved_remotely:
             with self._conn_lock:
                 self.conn.execute(
                     """INSERT INTO users (id, school_id, name, email, password_hash, password_salt,
@@ -171,9 +201,14 @@ class UserStore:
         expires_at = (now + _SESSION_LIFETIME).isoformat()
         row = {"token": token, "user_id": user_id, "created_at": now.isoformat(),
                "expires_at": expires_at}
+        saved_remotely = False
         if self._remote_sessions.enabled:
-            self._remote_sessions.upsert(row, on_conflict="token")
-        else:
+            try:
+                self._remote_sessions.upsert(row, on_conflict="token")
+                saved_remotely = True
+            except (SupabaseUnavailable, requests.exceptions.RequestException):
+                logger.warning("Supabase unavailable for create_session, falling back to local SQLite", exc_info=True)
+        if not saved_remotely:
             with self._conn_lock:
                 self.conn.execute(
                     "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?,?,?,?)",
@@ -183,10 +218,14 @@ class UserStore:
         return token
 
     def user_for_session(self, token: str) -> Optional[User]:
+        session_row = None
         if self._remote_sessions.enabled:
-            rows = self._remote_sessions.select(token=token)
-            session_row = rows[0] if rows else None
-        else:
+            try:
+                rows = self._remote_sessions.select(token=token)
+                session_row = rows[0] if rows else None
+            except (SupabaseUnavailable, requests.exceptions.RequestException):
+                logger.warning("Supabase unavailable for user_for_session, falling back to local SQLite", exc_info=True)
+        if session_row is None:
             with self._conn_lock:
                 r = self.conn.execute(
                     "SELECT * FROM sessions WHERE token=?", (token,)).fetchone()
@@ -200,18 +239,24 @@ class UserStore:
 
     def delete_session(self, token: str) -> None:
         if self._remote_sessions.enabled:
-            self._remote_sessions.delete(token=token)
-        else:
-            with self._conn_lock:
-                self.conn.execute("DELETE FROM sessions WHERE token=?", (token,))
-                self.conn.commit()
+            try:
+                self._remote_sessions.delete(token=token)
+            except (SupabaseUnavailable, requests.exceptions.RequestException):
+                pass
+        with self._conn_lock:
+            self.conn.execute("DELETE FROM sessions WHERE token=?", (token,))
+            self.conn.commit()
 
     # ---------------- lookups ----------------
 
     def get(self, user_id: str) -> Optional[User]:
         if self._remote.enabled:
-            rows = self._remote.select(id=user_id)
-            return _row_to_user(rows[0]) if rows else None
+            try:
+                rows = self._remote.select(id=user_id)
+                if rows:
+                    return _row_to_user(rows[0])
+            except (SupabaseUnavailable, requests.exceptions.RequestException):
+                logger.warning("Supabase unavailable for get(user_id), falling back to local SQLite", exc_info=True)
         with self._conn_lock:
             r = self.conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
         return _row_to_user(dict(r)) if r else None
@@ -226,8 +271,12 @@ class UserStore:
         actions require already knowing a raw user id, which no real UI
         can ask a principal to type in by hand."""
         if self._remote.enabled:
-            rows = self._remote.select(school_id=school_id, **({"role": role} if role else {}))
-            return [_row_to_user(r) for r in rows]
+            try:
+                rows = self._remote.select(school_id=school_id, **({"role": role} if role else {}))
+                if rows:
+                    return [_row_to_user(r) for r in rows]
+            except (SupabaseUnavailable, requests.exceptions.RequestException):
+                logger.warning("Supabase unavailable for users_for_school, falling back to local SQLite", exc_info=True)
         with self._conn_lock:
             if role:
                 rows = self.conn.execute(
@@ -240,8 +289,12 @@ class UserStore:
 
     def _raw_by_email(self, email: str) -> Optional[dict]:
         if self._remote.enabled:
-            rows = self._remote.select(email=email)
-            return rows[0] if rows else None
+            try:
+                rows = self._remote.select(email=email)
+                if rows:
+                    return rows[0]
+            except (SupabaseUnavailable, requests.exceptions.RequestException):
+                logger.warning("Supabase unavailable for _raw_by_email, falling back to local SQLite", exc_info=True)
         with self._conn_lock:
             r = self.conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
         return dict(r) if r else None
