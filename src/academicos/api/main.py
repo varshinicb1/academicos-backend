@@ -404,3 +404,42 @@ def question_solve(req: QuestionSolveRequest) -> dict:
     qmap = QuestionMapper(_graph).map(req.question)
     _qmap_store.append(qmap.to_dict())
     return qmap.to_dict()
+
+
+# --- Static web frontend mounting (SPA) ---
+from starlette.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+
+class SPAStaticFiles(StaticFiles):
+    """Serves compiled Flutter web static assets with client-side SPA fallback.
+    Any non-file GET path that does not start with /api/ or /v1/ falls back to index.html."""
+
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as ex:
+            if ex.status_code == 404:
+                norm = path.replace("\\", "/").strip("/")
+                if norm.startswith("api/") or norm.startswith("v1/") or norm == "health":
+                    raise
+                return await super().get_response("index.html", scope)
+            raise
+
+
+def _mount_web_frontend(fastapi_app: FastAPI) -> None:
+    candidates = [
+        Path.cwd() / "academicos-data" / "web",
+        Path(__file__).resolve().parents[3] / "academicos-data" / "web",
+        Path("/app/academicos-data/web"),
+        Path(__file__).resolve().parents[3] / "frontend" / "build" / "web",
+    ]
+    for p in candidates:
+        if p.is_dir() and (p / "index.html").is_file():
+            fastapi_app.mount("/", SPAStaticFiles(directory=str(p), html=True), name="web")
+            logger.info("Mounted AcademicOS web frontend from %s", p)
+            return
+
+
+_mount_web_frontend(app)
+
