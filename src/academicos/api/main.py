@@ -6,18 +6,20 @@ Storage and graph are constructed once at startup from Config.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
 
-import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ..agents.orchestrator import DoubtSolver, ExaminerScorer, PaperAnalyst
 from ..assessment import auth_routes, ingest_routes, mobile_routes, mobile_scan, pillar_routes
 from ..assessment import routes as assessment_routes
+from ..assessment.supabase_kv import SupabaseTable, SupabaseUnavailable
 from ..config import Config
 from ..curriculum import routes as curriculum_routes
 from ..graph.store import GraphStore
@@ -26,6 +28,8 @@ from ..retrieval.index import ChunkIndex
 from ..storage.event_store import EventStore
 from ..storage.question_map import QuestionMapStore
 from ..storage.registry import SourceRegistry
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AcademicOS", version="0.1.0",
               description="CBSE/NCERT Academic Brain — evidence-grounded retrieval + reasoning")
@@ -38,6 +42,20 @@ app.include_router(mobile_routes.router)
 app.include_router(ingest_routes.router)
 app.include_router(auth_routes.router)
 app.include_router(curriculum_routes.router)
+
+
+@app.exception_handler(SupabaseUnavailable)
+def _on_supabase_unavailable(_request: Any, exc: SupabaseUnavailable) -> JSONResponse:
+    """One place so a live Supabase failure is never a bare 500 again. The
+    stores that fall back to local SQLite (AssessmentStore, EventStore)
+    catch SupabaseUnavailable themselves before it reaches this handler --
+    this is for everything else (auth, papers, templates, ...): a real 503
+    naming the table and the PostgREST error, logged with a traceback
+    server-side. See SupabaseUnavailable's docstring for the production
+    incident this closes."""
+    logger.error("Supabase call failed: %s", exc, exc_info=exc)
+    return JSONResponse(status_code=503,
+                        content={"detail": f"storage backend unavailable: {exc}"})
 
 
 class SearchRequest(BaseModel):
@@ -150,25 +168,44 @@ _DURABLE_STORES = [
     "EventStore", "CurriculumStore (snapshot/restore)",
 ]
 
+# One SupabaseTable per _DURABLE_STORES row above (keep the two lists in
+# sync): the real table each store reads/writes, so the probe below covers
+# every durability-critical table, not just one of them.
+_DURABLE_TABLES = [
+    "assessments", "papers", "practice_sets", "graded_evaluations",
+    "scan_sessions", "school_templates", "users", "sessions",
+    "audit_log", "learner_events",
+]
+
 
 @app.get("/health/storage")
 def health_storage() -> dict:
     """Answers "is this actually live" without guessing from Render's
     dashboard or grepping env vars on the host -- whether Supabase is
-    configured at all, and (only if so) whether it's reachable right now
-    via one cheap, unfiltered, limit-1 select."""
+    configured at all, and (only if so) whether every durability-critical
+    table is actually reachable right now, one limit-1 select each.
+
+    `supabase_reachable` is true only when ALL of them answer. Probing a
+    single table (this route's original behavior) is exactly how a live
+    deployment spent its whole life reporting "reachable" while the
+    `users`/`sessions` tables were missing and every auth call 500'd --
+    the per-table detail below is the point: it names the broken one."""
     cfg = Config.load()
-    reachable: Optional[bool] = None
+    tables: dict[str, str] = {}
     if cfg.supabase_enabled:
-        from ..assessment.supabase_kv import SupabaseTable
-        try:
-            SupabaseTable("assessments").select(limit=1)
-            reachable = True
-        except requests.exceptions.RequestException:
-            reachable = False
+        for table in _DURABLE_TABLES:
+            try:
+                SupabaseTable(table).select(limit=1)
+                tables[table] = "ok"
+            except SupabaseUnavailable as exc:
+                tables[table] = f"error: {exc}"
+    reachable: Optional[bool] = None
+    if tables:
+        reachable = all(status == "ok" for status in tables.values())
     return {
         "supabase_configured": cfg.supabase_enabled,
         "supabase_reachable": reachable,
+        "tables": tables,
         "durable_stores": _DURABLE_STORES,
     }
 
