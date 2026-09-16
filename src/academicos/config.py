@@ -7,12 +7,34 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import tomllib
 
 _HERE = Path(__file__).resolve().parent.parent.parent
 SECRETS_FILE = _HERE / "config" / "secrets.env"
+
+# The value `deploy/gcp/bootstrap.sh` writes into every Secret Manager entry it
+# creates, so Cloud Run can start before the team has pasted real credentials.
+# It must therefore read as "not configured": it is a non-empty string, so a
+# plain `bool(url and key)` would call it configured, and the blob stores
+# (scan media at assessment/mobile_scan.py, curriculum snapshots at
+# curriculum/store.py) would then try to reach the host `REPLACE_ME` and fail
+# with a DNS error on a deployment that otherwise looks perfectly healthy.
+SUPABASE_PLACEHOLDER = "REPLACE_ME"
+
+
+def credential_or_none(name: str) -> Optional[str]:
+    """Read a credential from the environment, treating an empty value and the
+    deployment placeholder alike as 'not configured'.
+
+    The single source of truth for that rule -- `assessment/supabase_kv.py`
+    imports this rather than repeating the comparison.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw or raw == SUPABASE_PLACEHOLDER:
+        return None
+    return raw
 
 
 def load_secrets(path: Path | None = None) -> int:
@@ -118,13 +140,13 @@ class Config:
         # meant to survive a redeploy has to live here instead. The actual
         # HTTP client (SupabaseTable/SupabaseStorage in
         # assessment/supabase_kv.py) reads these same two env vars directly
-        # and is left alone -- these Config fields exist purely so CLI
-        # `stats` and the /health endpoint can report whether Supabase is
-        # configured without importing supabase_kv.py or duplicating its
-        # env-var names.
-        self.supabase_url = os.environ.get("SUPABASE_KNOWLEDGE_URL", "").strip() or None
+        # -- these Config fields exist purely so CLI `stats` and the /health
+        # endpoint can report whether Supabase is configured. The placeholder
+        # rule lives in `credential_or_none` so config.py and supabase_kv.py
+        # cannot drift apart on what "configured" means.
+        self.supabase_url = credential_or_none("SUPABASE_KNOWLEDGE_URL")
         self.supabase_enabled = bool(
-            self.supabase_url and os.environ.get("SUPABASE_KNOWLEDGE_ANON_KEY", "").strip()
+            self.supabase_url and credential_or_none("SUPABASE_KNOWLEDGE_ANON_KEY")
         )
 
     @classmethod

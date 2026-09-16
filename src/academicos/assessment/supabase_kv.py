@@ -11,10 +11,24 @@ project, multiple tables.
 """
 from __future__ import annotations
 
-import os
-from typing import Any
+from typing import Any, Optional
 
 import requests
+
+from ..config import credential_or_none
+
+
+def _supabase_credentials() -> tuple[Optional[str], Optional[str]]:
+    """The (url, key) pair, with the deployment placeholder treated as absent.
+
+    Shared by SupabaseTable and SupabaseStorage so the two can never disagree
+    about whether Supabase is configured -- they used to duplicate the raw
+    `os.environ.get(...)` read, and `bool(url and key)` reported True for the
+    GCP bootstrap's `REPLACE_ME` placeholder, which sent blob uploads at a host
+    that does not exist. See config.credential_or_none.
+    """
+    url = (credential_or_none("SUPABASE_KNOWLEDGE_URL") or "").rstrip("/") or None
+    return url, credential_or_none("SUPABASE_KNOWLEDGE_ANON_KEY")
 
 
 class SupabaseUnavailable(requests.exceptions.RequestException):
@@ -54,8 +68,7 @@ class SupabaseTable:
 
     def __init__(self, table: str):
         self.table = table
-        self._url = os.environ.get("SUPABASE_KNOWLEDGE_URL", "").strip().rstrip("/") or None
-        self._key = os.environ.get("SUPABASE_KNOWLEDGE_ANON_KEY", "").strip() or None
+        self._url, self._key = _supabase_credentials()
 
     @property
     def enabled(self) -> bool:
@@ -123,8 +136,7 @@ class SupabaseStorage:
 
     def __init__(self, bucket: str):
         self.bucket = bucket
-        self._url = os.environ.get("SUPABASE_KNOWLEDGE_URL", "").strip().rstrip("/") or None
-        self._key = os.environ.get("SUPABASE_KNOWLEDGE_ANON_KEY", "").strip() or None
+        self._url, self._key = _supabase_credentials()
 
     @property
     def enabled(self) -> bool:
