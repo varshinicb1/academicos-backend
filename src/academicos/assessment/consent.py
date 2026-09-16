@@ -23,7 +23,7 @@ from typing import Any, Optional
 import requests
 from pydantic import BaseModel, Field
 
-from .supabase_kv import SupabaseTable
+from .postgres_kv import durable_table
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ class ParentalConsentRecord(BaseModel):
 
 class ConsentStore:
     def __init__(self, db_path: Path):
-        self._remote = SupabaseTable("parental_consents")
+        self._remote = durable_table("parental_consents")
         self._conn_lock = threading.Lock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)

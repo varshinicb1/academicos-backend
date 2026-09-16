@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Optional
 
 from .schemas import SchoolTemplate, SectionBlueprint
-from .supabase_kv import SupabaseTable
+from .postgres_kv import durable_table
 from .templates import default_sections
 
 SCHEMA = """
@@ -42,7 +42,7 @@ CREATE INDEX IF NOT EXISTS idx_templates_school ON school_templates(school_id);
 
 class TemplateStore:
     def __init__(self, db_path: Path):
-        self._remote = SupabaseTable("school_templates")
+        self._remote = durable_table("school_templates")
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row

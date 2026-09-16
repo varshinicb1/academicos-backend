@@ -131,7 +131,8 @@ def _users():
 # ---- Blueprint ----
 
 @router.post("/blueprints/generate", response_model=Blueprint)
-def generate_blueprint(request: BlueprintRequest) -> Blueprint:
+def generate_blueprint(request: BlueprintRequest,
+                       current: User = Depends(get_current_user)) -> Blueprint:
     sections = request.sections or default_sections(request.total_marks)
     return Blueprint(
         total_marks=request.total_marks,
@@ -180,7 +181,8 @@ def get_paper_templates(school_id: str, current: User = Depends(get_current_user
 # confidential content actually starts, and where auth is required.
 
 @router.post("/questions/search", response_model=list[QuestionSchema])
-def search_questions(params: QuestionSearchParams) -> list[QuestionSchema]:
+def search_questions(params: QuestionSearchParams,
+                     current: User = Depends(get_current_user)) -> list[QuestionSchema]:
     cfg, _ = _require()
     grade_roman = _int_grade_to_roman(params.grade)
     pool = get_pool(cfg, subject=params.subject, grade=grade_roman)
@@ -221,7 +223,8 @@ def _int_grade_to_roman(grade: int) -> str:
 
 
 @router.post("/questions/optimize", response_model=QuestionOptimizationResult)
-def optimize_questions(request: QuestionOptimizationRequest) -> QuestionOptimizationResult:
+def optimize_questions(request: QuestionOptimizationRequest,
+                       current: User = Depends(get_current_user)) -> QuestionOptimizationResult:
     cfg, _ = _require()
     fallback: list[QuestionSchema] = []
     if request.candidates:

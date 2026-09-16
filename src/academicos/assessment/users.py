@@ -50,7 +50,8 @@ from typing import Optional
 
 import requests
 
-from .supabase_kv import SupabaseTable, SupabaseUnavailable
+from .supabase_kv import SupabaseUnavailable
+from .postgres_kv import durable_table
 
 logger = logging.getLogger(__name__)
 
@@ -105,8 +106,8 @@ class InvalidCredentials(Exception):
 
 class UserStore:
     def __init__(self, db_path: Path, principal_bootstrap_key: str = ""):
-        self._remote = SupabaseTable("users")
-        self._remote_sessions = SupabaseTable("sessions")
+        self._remote = durable_table("users")
+        self._remote_sessions = durable_table("sessions")
         self._principal_key = principal_bootstrap_key
         self._conn_lock = threading.Lock()
         db_path.parent.mkdir(parents=True, exist_ok=True)

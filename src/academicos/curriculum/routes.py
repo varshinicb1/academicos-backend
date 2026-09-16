@@ -571,7 +571,8 @@ def tag_question(chapter_id: str, req: TagQuestionRequest,
 
 
 @router.post("/questions/by-subtopics", response_model=QuestionsForSubtopicsResponse)
-def questions_by_subtopics(req: QuestionsForSubtopicsRequest) -> QuestionsForSubtopicsResponse:
+def questions_by_subtopics(req: QuestionsForSubtopicsRequest,
+                           current: User = Depends(get_current_user)) -> QuestionsForSubtopicsResponse:
     """"Generate paper using selected subtopics": every question tagged
     (via tag_question above) to any of the given subtopics."""
     ids = _require().question_ids_for_subtopics(req.subtopic_ids)

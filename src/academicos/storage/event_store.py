@@ -55,7 +55,7 @@ from typing import Any, Optional
 import requests
 
 from ..algorithms.learner_model import Interaction, LearnerModel
-from ..assessment.supabase_kv import SupabaseTable
+from ..assessment.postgres_kv import durable_table
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ class EventStore:
     """Append-only event log for one or many learners."""
 
     def __init__(self, db_path: Path):
-        self._remote = SupabaseTable("learner_events")
+        self._remote = durable_table("learner_events")
         self._locks_guard = threading.Lock()
         self._learner_locks: dict[str, threading.Lock] = {}
         self._conn_lock = threading.Lock()

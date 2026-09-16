@@ -22,6 +22,10 @@ retrieval = ["numpy>=1.26", "sentence-transformers>=3.0"]
 api = ["fastapi>=0.111", "uvicorn>=0.30", "reportlab>=4.0", "python-multipart>=0.0.9"]
 mobile-scan = ["opencv-python-headless>=4.9", "numpy>=1.26", "Pillow"]
 gcs = ["google-cloud-storage>=2.16"]
+# Cloud SQL durability backend (assessment/postgres_kv.py). [binary] bundles
+# libpq so the slim runtime image needs no extra system packages; psycopg_pool
+# bounds connections, which Cloud Run's concurrency would otherwise blow past.
+postgres = ["psycopg[binary]>=3.2", "psycopg_pool>=3.2"]
 dev = ["pytest>=8", "httpx2>=2.0"]  # httpx2 required by starlette.testclient
 
 [tool.setuptools.packages.find]

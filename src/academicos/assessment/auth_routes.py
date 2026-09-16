@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..api.rate_limit import rate_limit_login, rate_limit_register
 from ..config import Config
@@ -117,10 +118,27 @@ def _bearer_token(authorization: str) -> Optional[str]:
     return authorization[7:].strip() or None
 
 
-def get_current_user(authorization: str = Header(default="")) -> User:
+# Declared as a real security scheme rather than a bare `Header(...)`.
+# Functionally identical at runtime, but FastAPI now publishes
+# `components.securitySchemes.bearerAuth` and marks all 89 routes that depend
+# on get_current_user/require_principal as secured. Before this, the generated
+# OpenAPI schema advertised `securitySchemes: None` and zero secured
+# operations -- i.e. /docs told every integrator the entire API was public,
+# including endpoints that 401 on the first call. `auto_error=False` keeps our
+# own 401 wording instead of HTTPBearer's default 403.
+_bearer_scheme = HTTPBearer(
+    auto_error=False,
+    description="Session token from POST /api/v1/auth/login, sent as "
+                "`Authorization: Bearer <token>`.",
+)
+
+
+def get_current_user(
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
+) -> User:
     """Required-auth dependency: 401s if there's no valid session token."""
-    token = _bearer_token(authorization)
-    if token is None:
+    token = creds.credentials if creds is not None else None
+    if not token:
         raise HTTPException(401, "missing bearer token")
     user = _require().user_for_session(token)
     if user is None:

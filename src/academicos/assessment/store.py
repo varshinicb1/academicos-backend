@@ -21,7 +21,7 @@ from typing import Any, Optional
 import requests
 
 from .schemas import Assessment
-from .supabase_kv import SupabaseTable
+from .postgres_kv import durable_table
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ CREATE INDEX IF NOT EXISTS idx_assessments_school ON assessments(school_id);
 
 class AssessmentStore:
     def __init__(self, db_path: Path):
-        self._remote = SupabaseTable("assessments")
+        self._remote = durable_table("assessments")
         self._conn_lock = threading.Lock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)

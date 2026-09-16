@@ -27,7 +27,8 @@ from typing import Any, Optional
 
 import requests
 
-from .supabase_kv import SupabaseTable, SupabaseUnavailable
+from .supabase_kv import SupabaseUnavailable
+from .postgres_kv import durable_table
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
 
 class AuditLog:
     def __init__(self, db_path: Path):
-        self._remote = SupabaseTable("audit_log")
+        self._remote = durable_table("audit_log")
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row

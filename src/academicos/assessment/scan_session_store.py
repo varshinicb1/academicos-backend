@@ -33,7 +33,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .supabase_kv import SupabaseTable
+from .postgres_kv import durable_table
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS scan_sessions (
@@ -66,7 +66,7 @@ def _item_to_dict(i) -> dict:
 
 class ScanSessionStore:
     def __init__(self, db_path: Path):
-        self._remote = SupabaseTable("scan_sessions")
+        self._remote = durable_table("scan_sessions")
         self._conn_lock = threading.Lock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)

@@ -14,15 +14,18 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ..agents.orchestrator import DoubtSolver, ExaminerScorer, PaperAnalyst
 from ..assessment import auth_routes, consent_routes, ingest_routes, mobile_routes, mobile_scan, pillar_routes
 from ..assessment import routes as assessment_routes
-from ..assessment.supabase_kv import SupabaseTable, SupabaseUnavailable
+from ..assessment.supabase_kv import SupabaseUnavailable
+from ..assessment.postgres_kv import durable_table
+from ..assessment.auth_routes import get_current_user
 from ..config import Config, get_config
 from ..curriculum import routes as curriculum_routes
 from ..graph.store import GraphStore
@@ -36,6 +39,17 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AcademicOS", version="0.1.0",
               description="CBSE/NCERT Academic Brain — evidence-grounded retrieval + reasoning")
+
+# Compression. Measured on this repo's Flutter web build, gzip takes the
+# assets that dominate first load from 19.4 MB to 5.0 MB (-74%):
+#   main.dart.js        5.43 MB -> 1.53 MB  (-72%)
+#   questions.json      6.76 MB -> 0.57 MB  (-92%)
+#   canvaskit.wasm      7.23 MB -> 2.90 MB  (-60%)
+# Nothing compressed it before -- Cloud Run does not gzip responses on your
+# behalf -- so every user downloaded all of it raw, on every visit.
+# Added last so it is the outermost middleware and also compresses the
+# CORS-wrapped responses registered below.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 _cfg = get_config()
 _cors_origins = getattr(_cfg, "cors_origins", ["*"])
@@ -212,7 +226,7 @@ _probe_lock = threading.Lock()
 
 def _probe_table(table: str) -> tuple[str, str]:
     try:
-        SupabaseTable(table).select(limit=1)
+        durable_table(table).select(limit=1)
         return table, "ok"
     except SupabaseUnavailable as exc:
         return table, f"error: {exc}"
@@ -226,11 +240,32 @@ def _probe_all_tables() -> dict[str, str]:
     return tables
 
 
-def _refresh_storage_probe() -> dict:
+def _durable_backend(cfg) -> str:
+    """Which durability backend the stores are actually bound to right now.
+
+    Cloud SQL wins when configured (see assessment/postgres_kv.py's
+    durable_table), then Supabase, else none -- the same precedence the
+    stores themselves resolve.
+    """
+    from ..assessment.postgres_kv import postgres_configured
+    if postgres_configured():
+        return "cloudsql"
+    return "supabase" if cfg.supabase_enabled else "none"
+
+
+def _refresh_storage_probe(cfg) -> dict:
     tables = _probe_all_tables()
+    reachable = all(status == "ok" for status in tables.values())
+    backend = _durable_backend(cfg)
     body = {
-        "supabase_configured": True,
-        "supabase_reachable": all(status == "ok" for status in tables.values()),
+        "durability_backend": backend,
+        "durability_reachable": reachable,
+        "supabase_configured": cfg.supabase_enabled,
+        # Legacy key: the Flutter client and the live cutover runbook both
+        # read it. Means "the Supabase backend is reachable"; null when
+        # Supabase is not the active backend (e.g. after the Cloud SQL move),
+        # so it can never be mistaken for a healthy Supabase.
+        "supabase_reachable": reachable if backend == "supabase" else None,
         "tables": tables,
         "durable_stores": _DURABLE_STORES,
     }
@@ -240,12 +275,13 @@ def _refresh_storage_probe() -> dict:
 
 @app.get("/health/storage")
 def health_storage() -> dict:
-    """Answers "is this actually live" without guessing from Render's
-    dashboard or grepping env vars on the host -- whether Supabase is
-    configured at all, and (only if so) whether every durability-critical
-    table is actually reachable right now, one limit-1 select each.
+    """Answers "is this actually live" without guessing from the hosting
+    dashboard or grepping env vars on the host -- which durability backend
+    the stores are bound to, and (only if one is configured) whether every
+    durability-critical table is actually reachable right now, one limit-1
+    select each.
 
-    `supabase_reachable` is true only when ALL of them answer. Probing a
+    `durability_reachable` is true only when ALL of them answer. Probing a
     single table (this route's original behavior) is exactly how a live
     deployment spent its whole life reporting "reachable" while the
     `users`/`sessions` tables were missing and every auth call 500'd --
@@ -255,8 +291,11 @@ def health_storage() -> dict:
     single-flighted (see above): this endpoint is 10x-amplified upstream
     traffic and must never be able to saturate the worker pool itself."""
     cfg = Config.load()
-    if not cfg.supabase_enabled:
+    backend = _durable_backend(cfg)
+    if backend == "none":
         return {
+            "durability_backend": "none",
+            "durability_reachable": None,
             "supabase_configured": False,
             "supabase_reachable": None,
             "tables": {},
@@ -267,7 +306,7 @@ def health_storage() -> dict:
         return cached
     if _probe_lock.acquire(blocking=False):
         try:
-            return _refresh_storage_probe()
+            return _refresh_storage_probe(cfg)
         finally:
             _probe_lock.release()
     # A refresh is already in flight: serve last-known state rather than
@@ -277,17 +316,17 @@ def health_storage() -> dict:
     if cached is not None:
         return cached
     with _probe_lock:
-        return _refresh_storage_probe()
+        return _refresh_storage_probe(cfg)
 
 
-@app.get("/v1/registry/stats")
+@app.get("/v1/registry/stats", dependencies=[Depends(get_current_user)])
 def registry_stats() -> dict:
     if not _registry:
         raise HTTPException(503, "runtime not initialized")
     return {"count": _registry.count()}
 
 
-@app.post("/v1/search")
+@app.post("/v1/search", dependencies=[Depends(get_current_user)])
 def search(req: SearchRequest) -> dict:
     if not _retriever:
         raise HTTPException(503, "runtime not initialized")
@@ -305,28 +344,28 @@ def search(req: SearchRequest) -> dict:
     }
 
 
-@app.post("/v1/agent/doubt")
+@app.post("/v1/agent/doubt", dependencies=[Depends(get_current_user)])
 def agent_doubt(req: DoubtRequest) -> dict:
     if not _retriever:
         raise HTTPException(503, "runtime not initialized")
     return DoubtSolver(_retriever, _graph, critic=_critic).solve(req.doubt)
 
 
-@app.post("/v1/agent/score")
+@app.post("/v1/agent/score", dependencies=[Depends(get_current_user)])
 def agent_score(req: ScoreRequest) -> dict:
     if not _retriever:
         raise HTTPException(503, "runtime not initialized")
     return ExaminerScorer(_retriever, _graph).score(req.question, req.student_answer, req.marks_available)
 
 
-@app.post("/v1/agent/analyze")
+@app.post("/v1/agent/analyze", dependencies=[Depends(get_current_user)])
 def agent_analyze(req: AnalyzeRequest) -> dict:
     if not _retriever:
         raise HTTPException(503, "runtime not initialized")
     return PaperAnalyst(_retriever, _graph).analyze(req.paper_id)
 
 
-@app.post("/v1/graph/neighbors")
+@app.post("/v1/graph/neighbors", dependencies=[Depends(get_current_user)])
 def graph_neighbors(req: NodeQuery) -> GraphResult:
     if not _graph:
         raise HTTPException(503, "runtime not initialized")
@@ -335,14 +374,14 @@ def graph_neighbors(req: NodeQuery) -> GraphResult:
                                "edge": x["edge"].type.value} for x in _graph.neighbors(req.node_id, req.max_depth)])
 
 
-@app.post("/v1/graph/paths")
+@app.post("/v1/graph/paths", dependencies=[Depends(get_current_user)])
 def graph_paths(req: PathQuery) -> dict:
     if not _graph:
         raise HTTPException(503, "runtime not initialized")
     return {"paths": [[e.type.value for e in p] for p in _graph.paths(req.source, req.target, req.max_depth)]}
 
 
-@app.post("/v1/revise")
+@app.post("/v1/revise", dependencies=[Depends(get_current_user)])
 def revise(req: ReviseRequest) -> dict:
     """P5.2 — what to revise today (FSRS-backed, from the learner's event store)."""
     if not _events:
@@ -365,7 +404,7 @@ def revise(req: ReviseRequest) -> dict:
     }
 
 
-@app.post("/v1/plan")
+@app.post("/v1/plan", dependencies=[Depends(get_current_user)])
 def study_plan(req: StudyPlanRequest) -> dict:
     """P5.2 — today's study session: prereqs in order, FSRS-due items first,
     bounded by a daily capacity window."""
@@ -393,7 +432,7 @@ def study_plan(req: StudyPlanRequest) -> dict:
     }
 
 
-@app.post("/v1/question/solve")
+@app.post("/v1/question/solve", dependencies=[Depends(get_current_user)])
 def question_solve(req: QuestionSolveRequest) -> dict:
     """P5.2 — question-solve with evidence: map a question to graph concepts
     (LLM-assisted, verifier-checked) and persist the mapping for tracing."""
@@ -415,16 +454,36 @@ class SPAStaticFiles(StaticFiles):
     """Serves compiled Flutter web static assets with client-side SPA fallback.
     Any non-file GET path that does not start with /api/ or /v1/ falls back to index.html."""
 
+    # canvaskit/ is pinned to the Flutter engine version, so a filename there
+    # never means two different things -- safe to cache forever. Everything
+    # else keeps Starlette's ETag but must revalidate (`no-cache` = "check
+    # before using", not "don't store"): Flutter web asset filenames are NOT
+    # content-hashed, so `main.dart.js` and `assets/**` keep their names
+    # across releases. Long-caching those would serve a stale app forever.
+    # Measured on this repo's build: canvaskit.wasm is 7.2 MB, main.dart.js
+    # 5.4 MB, assets/corpus/questions.json 6.8 MB -- re-downlading those on
+    # every visit is exactly the "loading time" that matters.
+    _IMMUTABLE_PREFIX = "canvaskit/"
+
     async def get_response(self, path: str, scope):
         try:
-            return await super().get_response(path, scope)
+            response = await super().get_response(path, scope)
         except StarletteHTTPException as ex:
             if ex.status_code == 404:
                 norm = path.replace("\\", "/").strip("/")
                 if norm.startswith("api/") or norm.startswith("v1/") or norm == "health":
                     raise
-                return await super().get_response("index.html", scope)
+                response = await super().get_response("index.html", scope)
+                response.headers.setdefault("Cache-Control", "no-cache")
+                return response
             raise
+
+        norm = path.replace("\\", "/").lstrip("/")
+        if norm.startswith(self._IMMUTABLE_PREFIX):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            response.headers.setdefault("Cache-Control", "no-cache")
+        return response
 
 
 def _mount_web_frontend(fastapi_app: FastAPI) -> None:

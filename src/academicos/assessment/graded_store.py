@@ -29,7 +29,7 @@ from typing import Optional
 
 from .evaluate import Evaluation, MarkingPointOutcome
 from .schemas import QuestionSchema
-from .supabase_kv import SupabaseTable
+from .postgres_kv import durable_table
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS graded (
@@ -51,7 +51,7 @@ def _evaluation_from_dict(d: dict) -> Evaluation:
 
 class GradedStore:
     def __init__(self, db_path: Path):
-        self._remote = SupabaseTable("graded_evaluations")
+        self._remote = durable_table("graded_evaluations")
         self._conn_lock = threading.Lock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)

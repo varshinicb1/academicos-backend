@@ -29,7 +29,7 @@ from ..models.enums import DocType
 from ..storage.base import LocalStore
 from ..storage.registry import SourceRegistry
 from .audit_log import get_audit_log
-from .auth_routes import get_current_user_optional
+from .auth_routes import get_current_user
 from .schemas import Camel
 from .users import User
 
@@ -98,17 +98,21 @@ class DocumentIngestResponse(Camel):
 
 @router.post("/ingest/school-documents", response_model=DocumentIngestResponse)
 async def ingest_school_document(
-    school_id: str = Form(..., alias="schoolId"),
-    uploader_id: str = Form(..., alias="uploaderId"),
+    # schoolId/uploaderId are accepted for multipart-client compatibility but
+    # are NO LONGER read. They used to be the identity when no session was
+    # present, which let any anonymous caller file a document against any
+    # school_id they chose, and attribute it to any uploader_id.
+    school_id: str = Form("", alias="schoolId"),
+    uploader_id: str = Form("", alias="uploaderId"),
     doc_type: str = Form(..., alias="docType"),
     copyright_confirmed: bool = Form(..., alias="copyrightConfirmed"),
     title: str = Form("", alias="title"),
     file: UploadFile = File(...),
-    current: Optional[User] = Depends(get_current_user_optional),
+    current: User = Depends(get_current_user),
 ) -> DocumentIngestResponse:
-    if current is not None:
-        school_id = current.school_id
-        uploader_id = current.id
+    # Identity is always the authenticated session's, never the request body.
+    school_id = current.school_id
+    uploader_id = current.id
     cfg, registry, store = _require()
     audit = get_audit_log(cfg.data_root)
 
