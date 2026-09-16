@@ -33,6 +33,22 @@ BASE_URL = "https://api.sarvam.ai/doc-digitization/job/v1"
 _POLL_INTERVAL_SEC = 5
 _POLL_MAX_ATTEMPTS = 60
 
+# Every outbound call needs its own socket-level ceiling, and `timeout_sec`
+# (which is derived from the two constants above) is NOT one: that value bounds
+# how long we are willing to *wait for the job to finish*, not how long a single
+# HTTP call may hang. `requests` with no `timeout=` waits forever, and this
+# module previously omitted it on all seven calls.
+#
+# Why that was a real availability bug and not a style point: FastAPI runs
+# synchronous endpoints on a bounded threadpool (workers = min(40, cpu+4) by
+# default). A call that never returns does not release its worker, so a handful
+# of wedged uploads permanently removes serving capacity -- and it presents as
+# "the API got slow" with no error anywhere, because nothing timed out to raise.
+# Timeouts are the difference between a slow dependency and an outage.
+_API_TIMEOUT_SEC = 30        # control plane: create, upload-urls, start, poll, download-urls
+_UPLOAD_TIMEOUT_SEC = 120    # the file PUT carries a full page image
+_DOWNLOAD_TIMEOUT_SEC = 120  # the result ZIP comes back from blob storage
+
 # Phrases the VLM emits when it is describing the image instead of transcribing it.
 _HALLUCINATION_MARKERS = (
     "i am an expert ocr engine",
@@ -106,26 +122,31 @@ def extract(path: Path, *, language: str = "en-IN", output_format: str = "md",
 
     r = requests.post(BASE_URL, headers=json_headers,
                       json={"job_parameters": {"language": language,
-                                               "output_format": output_format}})
+                                               "output_format": output_format}},
+                      timeout=_API_TIMEOUT_SEC)
     r.raise_for_status()
     job_id = r.json()["job_id"]
 
     r = requests.post(f"{BASE_URL}/upload-files", headers=json_headers,
-                      json={"job_id": job_id, "files": [fname]})
+                      json={"job_id": job_id, "files": [fname]},
+                      timeout=_API_TIMEOUT_SEC)
     r.raise_for_status()
     put_url = _first_upload_url(r.json(), fname)
 
     with path.open("rb") as f:
-        pr = requests.put(put_url, data=f, headers={"x-ms-blob-type": "BlockBlob"})
+        pr = requests.put(put_url, data=f, headers={"x-ms-blob-type": "BlockBlob"},
+                          timeout=_UPLOAD_TIMEOUT_SEC)
     pr.raise_for_status()
 
-    r = requests.post(f"{BASE_URL}/{job_id}/start", headers=json_headers, json={})
+    r = requests.post(f"{BASE_URL}/{job_id}/start", headers=json_headers, json={},
+                      timeout=_API_TIMEOUT_SEC)
     r.raise_for_status()
 
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
         time.sleep(_POLL_INTERVAL_SEC)
-        st = requests.get(f"{BASE_URL}/{job_id}/status", headers=headers).json()
+        st = requests.get(f"{BASE_URL}/{job_id}/status", headers=headers,
+                          timeout=_API_TIMEOUT_SEC).json()
         state = (st.get("job_state") or "").lower()
         if state in ("completed", "succeeded", "success"):
             return _download_text(job_id, headers, json_headers)
@@ -153,14 +174,14 @@ def _first_upload_url(payload: dict, fname: str) -> str:
 
 def _download_text(job_id: str, headers: dict, json_headers: dict) -> str:
     r = requests.post(f"{BASE_URL}/{job_id}/download-files", headers=json_headers,
-                      json={"job_id": job_id})
+                      json={"job_id": job_id}, timeout=_API_TIMEOUT_SEC)
     r.raise_for_status()
     downloads = r.json().get("download_urls", {})
     if not downloads:
         raise VisionError("no download urls returned")
     entry = next(iter(downloads.values()))
     url = entry["file_url"] if isinstance(entry, dict) else entry
-    blob = requests.get(url).content
+    blob = requests.get(url, timeout=_DOWNLOAD_TIMEOUT_SEC).content
 
     parts: list[str] = []
     with zipfile.ZipFile(io.BytesIO(blob)) as zf:

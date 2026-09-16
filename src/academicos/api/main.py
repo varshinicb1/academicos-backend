@@ -7,6 +7,7 @@ Storage and graph are constructed once at startup from Config.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -29,6 +30,8 @@ from ..assessment.auth_routes import get_current_user
 from ..config import Config, get_config
 from ..curriculum import routes as curriculum_routes
 from ..graph.store import GraphStore
+from ..llm.budget import LLMBudgetExceeded, llm_budget
+from ..llm.telemetry import TELEMETRY
 from ..retrieval.hybrid import HybridRetriever
 from ..retrieval.index import ChunkIndex
 from ..storage.event_store import EventStore
@@ -37,8 +40,68 @@ from ..storage.registry import SourceRegistry
 
 logger = logging.getLogger(__name__)
 
+# --------------------------------------------------------------------------- #
+# Request bounds and the per-request LLM budget
+# --------------------------------------------------------------------------- #
+# OWASP's LLM Top 10 (2026) ranks Unbounded Consumption sixth, up four places,
+# because the evidence caught up with the theory: their survey found a confirmed
+# denial-of-wallet path in 12 of 14 applications with an AI surface. The shape
+# is always the same -- an endpoint that costs the caller one HTTP request and
+# costs the operator an unbounded amount of inference.
+#
+# These limits were absent. `DoubtRequest.doubt` was `Field(min_length=2)` with
+# no upper bound, and `ScoreRequest.student_answer` had no `Field` at all, so an
+# authenticated caller could post an arbitrarily large body that went straight
+# into a model prompt. The bounds below are generous enough that no real request
+# meets them (the largest legitimate answer sheet is well under 20k characters)
+# and tight enough that a hostile one cannot be expensive.
+MAX_QUERY_CHARS = 4_000
+MAX_ANSWER_CHARS = 20_000
+MAX_ID_CHARS = 128
+MAX_CAPACITY_MINUTES = 240
+
+# Ceiling on provider calls for one inbound request, enforced by
+# llm/budget.py. The deepest current path is 5 calls (1 retrieval decision + 3
+# evidence-path scores + 1 question mapping), so 12 leaves room to grow while
+# still stopping a runaway loop in single digits rather than at the request
+# timeout. Overridable per deployment via ACOS_MAX_LLM_CALLS_PER_REQUEST.
+_DEFAULT_MAX_LLM_CALLS = 12
+
+
+def _max_llm_calls() -> int:
+    raw = os.environ.get("ACOS_MAX_LLM_CALLS_PER_REQUEST", "").strip()
+    if not raw:
+        return _DEFAULT_MAX_LLM_CALLS
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("ACOS_MAX_LLM_CALLS_PER_REQUEST=%r is not an integer; using default", raw)
+        return _DEFAULT_MAX_LLM_CALLS
+    return max(1, value)
+
+
 app = FastAPI(title="AcademicOS", version="0.1.0",
               description="CBSE/NCERT Academic Brain — evidence-grounded retrieval + reasoning")
+
+
+@app.exception_handler(LLMBudgetExceeded)
+def _on_llm_budget_exceeded(_request: Any, exc: LLMBudgetExceeded) -> JSONResponse:
+    """A spent budget is 429, not 500.
+
+    The request was well-formed and the caller is authenticated; it simply asked
+    for more model work than one request may consume. 429 with `Retry-After` is
+    the honest answer, and it is actionable -- a 500 would read as our bug and
+    would invite the caller to retry immediately, which is exactly what we do
+    not want.
+    """
+    logger.warning("LLM budget exhausted: %s", exc)
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "This request exceeded its model-call budget. "
+                           "Narrow the request or retry with a smaller scope."},
+        headers={"Retry-After": "5"},
+    )
+
 
 # Compression. Measured on this repo's Flutter web build, gzip takes the
 # assets that dominate first load from 19.4 MB to 5.0 MB (-74%):
@@ -90,32 +153,32 @@ def _on_supabase_unavailable(_request: Any, exc: SupabaseUnavailable) -> JSONRes
 
 
 class SearchRequest(BaseModel):
-    query: str = Field(min_length=2)
+    query: str = Field(min_length=2, max_length=MAX_QUERY_CHARS)
     limit: int = Field(default=10, ge=1, le=50)
 
 
 class DoubtRequest(BaseModel):
-    doubt: str = Field(min_length=2)
+    doubt: str = Field(min_length=2, max_length=MAX_QUERY_CHARS)
 
 
 class ScoreRequest(BaseModel):
-    question: str
-    student_answer: str = ""
-    marks_available: float = 0.0
+    question: str = Field(min_length=1, max_length=MAX_QUERY_CHARS)
+    student_answer: str = Field(default="", max_length=MAX_ANSWER_CHARS)
+    marks_available: float = Field(default=0.0, ge=0.0, le=1000.0)
 
 
 class AnalyzeRequest(BaseModel):
-    paper_id: str
+    paper_id: str = Field(min_length=1, max_length=MAX_ID_CHARS)
 
 
 class NodeQuery(BaseModel):
-    node_id: str
+    node_id: str = Field(min_length=1, max_length=MAX_ID_CHARS)
     max_depth: int = Field(default=2, ge=1, le=6)
 
 
 class PathQuery(BaseModel):
-    source: str
-    target: str
+    source: str = Field(min_length=1, max_length=MAX_ID_CHARS)
+    target: str = Field(min_length=1, max_length=MAX_ID_CHARS)
     max_depth: int = Field(default=4, ge=1, le=8)
 
 
@@ -125,22 +188,25 @@ class GraphResult(BaseModel):
 
 
 class ReviseRequest(BaseModel):
-    learner: str = "default"
+    learner: str = Field(default="default", max_length=MAX_ID_CHARS)
     model: str = Field(default="fsrs", pattern="^(fsrs|exponential)$")
 
 
 class StudyPlanRequest(BaseModel):
-    target: str = Field(min_length=1)
-    learner: Optional[str] = None
+    target: str = Field(min_length=1, max_length=MAX_ID_CHARS)
+    learner: Optional[str] = Field(default=None, max_length=MAX_ID_CHARS)
     model: str = Field(default="fsrs", pattern="^(fsrs|exponential)$")
-    capacity_minutes: Optional[int] = Field(default=None, ge=1)
+    # Upper bound added with the lower one: `capacity_minutes` feeds a planning
+    # loop, so an unbounded value is a request that asks the server to compute
+    # for an arbitrary length of time.
+    capacity_minutes: Optional[int] = Field(default=None, ge=1, le=MAX_CAPACITY_MINUTES)
     lo: bool = False
     min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     mastery_gate: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 class QuestionSolveRequest(BaseModel):
-    question: str = Field(min_length=2)
+    question: str = Field(min_length=2, max_length=MAX_QUERY_CHARS)
 
 
 _retriever: Optional[HybridRetriever] = None
@@ -186,6 +252,24 @@ def _startup() -> None:
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/health/llm")
+def health_llm() -> dict:
+    """Recent provider-call behaviour for this process.
+
+    Unauthenticated, like `/health`, and safe to be: it reports counts, timings,
+    model names and failure rates, never prompt or completion content. That is
+    the component level of agent observability -- enough to answer "is the
+    provider degrading" or "did the retry rate move after that deploy", which is
+    precisely what a discarded log line cannot tell you.
+
+    The window is the in-process ring buffer (llm/telemetry.py), so on a
+    multi-instance deployment this describes one instance. That is a stated
+    limitation, not an oversight: a "global" view needs a metrics backend, and
+    this exists so the question is answerable at all before one is added.
+    """
+    return TELEMETRY.summary()
 
 
 # Durability-critical stores (see AGENTS.md's storage inventory and
@@ -348,21 +432,31 @@ def search(req: SearchRequest) -> dict:
 def agent_doubt(req: DoubtRequest) -> dict:
     if not _retriever:
         raise HTTPException(503, "runtime not initialized")
-    return DoubtSolver(_retriever, _graph, critic=_critic).solve(req.doubt)
+    # The budget is entered *inside* the body, not in a dependency, on purpose.
+    # A budget must be visible to the code that calls the model, and it is
+    # carried in a context variable; FastAPI runs dependencies and sync
+    # endpoints on threadpool workers with separately-copied contexts, so a
+    # value set in a dependency would not reliably reach this frame. Entering it
+    # here guarantees the same thread that makes the call is the one that set
+    # the ceiling.
+    with llm_budget(_max_llm_calls(), label="agent.doubt"):
+        return DoubtSolver(_retriever, _graph, critic=_critic).solve(req.doubt)
 
 
 @app.post("/v1/agent/score", dependencies=[Depends(get_current_user)])
 def agent_score(req: ScoreRequest) -> dict:
     if not _retriever:
         raise HTTPException(503, "runtime not initialized")
-    return ExaminerScorer(_retriever, _graph).score(req.question, req.student_answer, req.marks_available)
+    with llm_budget(_max_llm_calls(), label="agent.score"):
+        return ExaminerScorer(_retriever, _graph).score(req.question, req.student_answer, req.marks_available)
 
 
 @app.post("/v1/agent/analyze", dependencies=[Depends(get_current_user)])
 def agent_analyze(req: AnalyzeRequest) -> dict:
     if not _retriever:
         raise HTTPException(503, "runtime not initialized")
-    return PaperAnalyst(_retriever, _graph).analyze(req.paper_id)
+    with llm_budget(_max_llm_calls(), label="agent.analyze"):
+        return PaperAnalyst(_retriever, _graph).analyze(req.paper_id)
 
 
 @app.post("/v1/graph/neighbors", dependencies=[Depends(get_current_user)])
@@ -440,7 +534,8 @@ def question_solve(req: QuestionSolveRequest) -> dict:
         raise HTTPException(503, "runtime not initialized")
     from ..qmap import QuestionMapper
 
-    qmap = QuestionMapper(_graph).map(req.question)
+    with llm_budget(_max_llm_calls(), label="question.solve"):
+        qmap = QuestionMapper(_graph).map(req.question)
     _qmap_store.append(qmap.to_dict())
     return qmap.to_dict()
 
