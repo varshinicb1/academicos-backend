@@ -277,10 +277,10 @@ def generate_paper_endpoint(
         selected_questions=request.selected_questions,
         set_count=set_count,
     )
-    _require_papers().save(paper, request.template)
+    _require_papers().save(paper, request.template, school_id=current.school_id)
     if paper.sets:
         for s in paper.sets:
-            _require_papers().save(s, request.template)
+            _require_papers().save(s, request.template, school_id=current.school_id)
 
     if assessment:
         assessment.generated_paper_id = paper.id
@@ -365,10 +365,10 @@ def quick_generate_paper(request: QuickPaperRequest, current: User = Depends(get
         t_store = TemplateStore(cfg.data_root / "templates" / "templates.sqlite")
         template = t_store.get(request.template_id)
 
-    _require_papers().save(paper, template)
+    _require_papers().save(paper, template, school_id=current.school_id)
     if paper.sets:
         for s in paper.sets:
-            _require_papers().save(s, template)
+            _require_papers().save(s, template, school_id=current.school_id)
 
     assessment = Assessment(
         id=asm_id,
@@ -471,7 +471,7 @@ def generate_from_ids(request: GenerateFromIdsRequest, current: User = Depends(g
         t_store = TemplateStore(cfg.data_root / "templates" / "templates.sqlite")
         template = t_store.get(request.template_id)
 
-    _require_papers().save(paper, template)
+    _require_papers().save(paper, template, school_id=current.school_id)
 
     existing_asm = store.get(asm_id)
     if existing_asm:

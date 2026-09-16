@@ -110,6 +110,13 @@ class ScanSession:
 # In-memory cache for fast access within a single process lifetime; _store is
 # the durable copy that survives a Render idle-restart (see module docstring).
 _sessions: dict[str, ScanSession] = {}
+# ScanSession (the dataclass) deliberately doesn't carry school_id -- it's
+# store-level metadata, same choice as PaperStore's (see scan_session_store.py's
+# module docstring). Recorded once at create_session() time and looked up
+# here on every subsequent save_session() call (there are many, spread across
+# add_page/review_decision/finalize_scan_session/etc.) rather than threading
+# a school_id parameter through all of them.
+_session_school: dict[str, str] = {}
 _WORKDIR_ROOT = Path("academicos-data") / "scan-sessions"
 # Derived from the workdir configure_workdir() receives (app startup passes
 # `cfg.data_root / "scan-sessions"`), so audit logging has somewhere to land
@@ -161,12 +168,14 @@ def configure_workdir(root: Path) -> None:
 def save_session(session: ScanSession) -> None:
     _sessions[session.id] = session
     if _store is not None:
-        _store.save(session)
+        _store.save(session, school_id=_session_school.get(session.id))
 
 
 def create_session(assessment_id: str, student_id: str, student_name: str,
-                   subject: str = "", grade: int = 10) -> ScanSession:
+                   subject: str = "", grade: int = 10, school_id: str = "") -> ScanSession:
     sid = f"scan_{uuid.uuid4().hex[:12]}"
+    if school_id:
+        _session_school[sid] = school_id
     session = ScanSession(id=sid, assessment_id=assessment_id, student_id=student_id,
                           student_name=student_name, subject=subject, grade=grade)
     save_session(session)

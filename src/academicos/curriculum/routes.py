@@ -1240,22 +1240,23 @@ def export_school_data(principal: User = Depends(require_principal)) -> dict[str
     seed_cbse10 above does the same: nothing here should let one school's
     admin pull another school's data by guessing an id.
 
-    Covers everything that's cleanly school_id-scoped today: the full
-    curriculum tree (years/grades/subjects/books/units/chapters/topics/
-    subtopics) with period allocations/timetable/holidays, assessments,
-    paper templates, and this school's user accounts (password
-    hashes/salts excluded -- this is a data export, not a credential dump).
+    Covers the full curriculum tree (years/grades/subjects/books/units/
+    chapters/topics/subtopics) with period allocations/timetable/holidays,
+    assessments, generated papers, practice sets, scan sessions, paper
+    templates, and this school's user accounts (password hashes/salts
+    excluded -- this is a data export, not a credential dump).
 
-    Deliberately does NOT include papers, practice sets, or scan sessions:
-    those three stores have no school_id column at all today (school
-    identity, if present, lives unindexed inside their JSON payload) --
-    see curriculum/store.py and this export's own `notes` field below.
-    Partitioning them per-school is real follow-up work, not silently
-    pretended to be covered here.
+    Papers/practice sets/scan sessions were the largest outstanding
+    correctness gap per docs/system-review.html until 2026-09-17 (those
+    three stores had no school_id column at all). Rows written before that
+    column existed are still invisible to list_by_school() -- there's no
+    backfill for data that was never tagged -- see each store's own
+    docstring (paper_store.py / practice_store.py / scan_session_store.py).
     """
     store = _require()
     school_id = principal.school_id
 
+    from ..assessment import mobile_scan
     from ..assessment import routes as assessment_routes
     from ..assessment import pillar_routes
 
@@ -1264,6 +1265,28 @@ def export_school_data(principal: User = Depends(require_principal)) -> dict[str
         assessments = [
             json.loads(a.model_dump_json())
             for a in assessment_routes._store.list_by_school(school_id)
+        ]
+
+    papers = []
+    if assessment_routes._papers is not None:
+        papers = [json.loads(p.model_dump_json())
+                 for p in assessment_routes._papers.list_by_school(school_id)]
+
+    practice_sets = []
+    if pillar_routes._practice is not None:
+        practice_sets = [
+            {"id": p.id, "student_id": p.student_id, "concept_ids": p.concept_ids,
+             "answer_key": p.answer_key, "warnings": p.warnings, "created_at": p.created_at}
+            for p in pillar_routes._practice.list_by_school(school_id)
+        ]
+
+    scan_sessions = []
+    if mobile_scan._store is not None:
+        scan_sessions = [
+            {"id": s.id, "assessment_id": s.assessment_id, "student_id": s.student_id,
+             "student_name": s.student_name, "status": s.status,
+             "created_at": s.created_at.isoformat()}
+            for s in mobile_scan._store.list_by_school(school_id)
         ]
 
     templates = []
@@ -1283,13 +1306,16 @@ def export_school_data(principal: User = Depends(require_principal)) -> dict[str
         "school_id": school_id,
         "curriculum": _curriculum_tree_for_export(store, school_id),
         "assessments": assessments,
+        "papers": papers,
+        "practice_sets": practice_sets,
+        "scan_sessions": scan_sessions,
         "paper_templates": templates,
         "users": users,
         "notes": [
-            "Papers, practice sets, and scan sessions are not included: those "
-            "stores have no school_id column, only assessment_id/opaque JSON "
-            "payloads, so a clean per-school export isn't possible without a "
-            "schema change. Reachable papers can still be found via each "
+            "Papers/practice sets/scan sessions saved before 2026-09-17 (when "
+            "school_id was added to those stores) are not included here -- "
+            "there is no way to recover their school ownership retroactively. "
+            "Reachable papers from that era can still be found via each "
             "exported assessment's generated_paper_id.",
             "User rows exclude password_hash/password_salt -- this bundle is "
             "not sufficient to log in as an exported user on another instance.",

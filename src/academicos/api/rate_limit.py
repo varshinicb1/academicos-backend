@@ -68,10 +68,30 @@ register_limiter = RateLimiter(max_requests=10, window_seconds=60.0)
 
 
 def get_client_ip(request: Request) -> str:
-    """Extract real client IP, respecting standard reverse-proxy headers."""
+    """Extract real client IP, respecting standard reverse-proxy headers.
+
+    Security fix 2026-09-17 (flagged by automated review): this used to take
+    the FIRST (leftmost) value in X-Forwarded-For, which is exactly backwards
+    -- the leftmost entry is whatever the ORIGINAL client claimed, so an
+    attacker sending `X-Forwarded-For: 1.2.3.4` (or a fresh fake value on
+    every request) reset their own rate-limit bucket key on demand,
+    completely defeating the brute-force protection this file exists for.
+
+    Both real deployment targets (Render and Cloud Run, see
+    docs/PRODUCTS_AND_RELEASES.md) sit their app behind a managed edge proxy
+    that APPENDS the true connecting peer's IP as the last hop rather than
+    trusting/forwarding whatever the client sent -- so the rightmost value is
+    the one the platform itself vouches for, not something a remote client
+    can control. There's no fixed, publishable IP allowlist for either
+    platform's edge (it's managed infrastructure, not a static IP range), so
+    "trust only a known proxy IP" isn't practical here; taking the last hop
+    is the standard mitigation when you can't pin the proxy's own address.
+    """
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        hops = [h.strip() for h in forwarded.split(",") if h.strip()]
+        if hops:
+            return hops[-1]
     return request.client.host if request.client else "unknown"
 
 

@@ -764,7 +764,7 @@ def generate_practice(req: PracticeRequestBody, current: User = Depends(get_curr
     pset = remediation_mod.build_practice_set(
         req.student_id, weak, pool, per_concept=req.per_concept,
         answer_key=req.correct_options)
-    _require_practice().save(pset)
+    _require_practice().save(pset, school_id=current.school_id)
     return PracticeSetResponse(
         id=pset.id, student_id=pset.student_id, concept_ids=pset.concept_ids,
         items=[PracticeItemResponse(

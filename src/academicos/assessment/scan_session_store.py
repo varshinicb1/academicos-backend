@@ -23,6 +23,13 @@ ScanSession/CapturedPage/ReviewItem are plain dataclasses (mobile_scan.py).
 Path and datetime fields aren't JSON-native, so they're converted explicitly
 rather than via dataclasses.asdict(), which would silently deepcopy them
 into non-serializable objects instead of erroring.
+
+`school_id` (2026-09-17): real column, store-level metadata only, same
+reasoning as PaperStore's -- ScanSession's authoritative owner is still the
+assessment it's marking against (assessment_id, already a real column here
+on the remote side), this column exists purely so list_by_school() and the
+school-data export route can work without joining through AssessmentStore
+for every row.
 """
 from __future__ import annotations
 
@@ -38,6 +45,8 @@ from .postgres_kv import durable_table
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS scan_sessions (
   id           TEXT PRIMARY KEY,
+  school_id    TEXT,
+  assessment_id TEXT,
   session_json TEXT NOT NULL
 );
 """
@@ -74,7 +83,19 @@ class ScanSessionStore:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=60000")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """The index lives here, not in SCHEMA -- see PaperStore._migrate()'s
+        docstring for why an index in SCHEMA on a column this method might
+        still need to add would crash against a real pre-existing db."""
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(scan_sessions)").fetchall()}
+        if "school_id" not in cols:
+            self.conn.execute("ALTER TABLE scan_sessions ADD COLUMN school_id TEXT")
+        if "assessment_id" not in cols:
+            self.conn.execute("ALTER TABLE scan_sessions ADD COLUMN assessment_id TEXT")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_scan_sessions_school ON scan_sessions(school_id)")
 
     def _encode(self, session) -> dict:
         return {
@@ -90,19 +111,50 @@ class ScanSessionStore:
             "corrected_pdf_storage_key": session.corrected_pdf_storage_key,
         }
 
-    def save(self, session) -> None:
+    def save(self, session, school_id: Optional[str] = None) -> None:
+        # save_session() in mobile_scan.py is called many times across one
+        # session's lifecycle (page upload, review, finalize, ...), but only
+        # knows school_id from an in-process cache populated at
+        # create_session() time -- which a Render idle-restart wipes mid-
+        # session. Without this guard, resuming a session after exactly that
+        # restart would silently overwrite a real school_id with NULL on the
+        # next save, breaking the school-scoping this column exists for.
+        # COALESCE (local) / a pre-write read (remote) both mean "only ever
+        # move from unknown to known, never known back to unknown."
         d = self._encode(session)
         if self._remote.enabled:
-            self._remote.upsert({"id": session.id, "assessment_id": session.assessment_id,
+            if school_id is None:
+                existing = self._remote.select(id=session.id)
+                if existing:
+                    school_id = existing[0].get("school_id")
+            self._remote.upsert({"id": session.id, "school_id": school_id,
+                                 "assessment_id": session.assessment_id,
                                  "payload": d}, on_conflict="id")
             return
         with self._conn_lock:
             self.conn.execute(
-                """INSERT INTO scan_sessions (id, session_json) VALUES (?, ?)
-                   ON CONFLICT(id) DO UPDATE SET session_json=excluded.session_json""",
-                (session.id, json.dumps(d)),
+                """INSERT INTO scan_sessions (id, school_id, assessment_id, session_json)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     school_id=COALESCE(excluded.school_id, scan_sessions.school_id),
+                     assessment_id=excluded.assessment_id,
+                     session_json=excluded.session_json""",
+                (session.id, school_id, session.assessment_id, json.dumps(d)),
             )
             self.conn.commit()
+
+    def list_by_school(self, school_id: str) -> list:
+        """For the school-data export route -- see curriculum/routes.py.
+        Sessions saved before this column existed are invisible here; they
+        remain reachable via a join on assessment_id if ever needed."""
+        if self._remote.enabled:
+            rows = self._remote.select(school_id=school_id)
+            return [self._decode(r["payload"]) for r in rows]
+        with self._conn_lock:
+            rows = self.conn.execute(
+                "SELECT session_json FROM scan_sessions WHERE school_id=?", (school_id,)
+            ).fetchall()
+        return [self._decode(json.loads(r["session_json"])) for r in rows]
 
     def _decode(self, d: dict):
         from .mobile_scan import CapturedPage, ReviewItem, ScanSession  # avoid import cycle

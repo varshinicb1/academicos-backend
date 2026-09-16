@@ -87,7 +87,7 @@ def create_scan_session(
     subject = assessment.subject if assessment else "Science"
     grade = assessment.grade if assessment else 10
     session = mobile_scan.create_session(req.assessment_id, req.student_id, req.student_name,
-                                         subject=subject, grade=grade)
+                                         subject=subject, grade=grade, school_id=current.school_id)
     return _session_response(session)
 
 
