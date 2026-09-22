@@ -29,7 +29,7 @@ from ..models.enums import DocType
 from ..storage.base import LocalStore
 from ..storage.registry import SourceRegistry
 from .audit_log import get_audit_log
-from .auth_routes import get_current_user
+from .auth_routes import require_staff
 from .schemas import Camel
 from .users import User
 
@@ -108,7 +108,7 @@ async def ingest_school_document(
     copyright_confirmed: bool = Form(..., alias="copyrightConfirmed"),
     title: str = Form("", alias="title"),
     file: UploadFile = File(...),
-    current: User = Depends(get_current_user),
+    current: User = Depends(require_staff),
 ) -> DocumentIngestResponse:
     # Identity is always the authenticated session's, never the request body.
     school_id = current.school_id

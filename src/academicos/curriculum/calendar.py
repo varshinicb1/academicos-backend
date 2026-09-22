@@ -29,6 +29,30 @@ from .store import CurriculumStore
 
 _WEEKDAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
+# Holiday kinds. Every kind the web admin offers (public / school / emergency,
+# principal_admin_page.dart) closes the school; until 2026-09-22 only
+# 'holiday' and 'unexpected_closure' were counted, so a Dussehra break
+# entered from the UI was stored, listed with a 200 and removed zero
+# teaching days. 'event' (Annual Day, a PTM) is the one kind that marks a
+# day WITHOUT closing the school -- it stays a working day on purpose.
+CLOSURE_KINDS = ("holiday", "public", "school", "emergency", "unexpected_closure")
+NON_CLOSURE_KINDS = ("event",)
+HOLIDAY_KINDS = CLOSURE_KINDS + NON_CLOSURE_KINDS
+
+# Named alternate-Saturday rules, beside the digit form ("2nd,4th", "1,3").
+# 'second_fourth' is what the web admin's dropdown sends; the digit-only
+# parser used to match none of its tokens, so no Saturday ever came off.
+_NAMED_SATURDAY_RULES: dict[str, frozenset[int]] = {
+    "none": frozenset(),
+    "all": frozenset({1, 2, 3, 4, 5}),
+    "second_fourth": frozenset({2, 4}),
+    "first_third": frozenset({1, 3}),
+}
+_ORDINAL_SUFFIX = {1: "st", 2: "nd", 3: "rd", 4: "th", 5: "th"}
+ACCEPTED_SATURDAY_RULES_TEXT = (
+    "'none', 'all', 'second_fourth', 'first_third', or Saturdays of the month as "
+    "ordinals such as '2nd,4th'")
+
 
 def _parse_date(s: str) -> date:
     return date.fromisoformat(s)
@@ -51,28 +75,87 @@ def _nth_weekday_of_month(d: date) -> int:
     return (d.day - 1) // 7 + 1
 
 
-def _is_alternate_saturday_off(d: date, rule: str) -> bool:
-    rule = (rule or "none").strip().lower()
-    if rule == "none" or not rule:
-        return False
-    if d.weekday() != 5:  # not a Saturday
-        return False
-    if rule == "all":
-        return True
-    wanted = set()
-    for tok in rule.split(","):
+def normalize_weekly_off_days(days: list[str]) -> list[str]:
+    """Lower-cased, de-duplicated weekday names; ValueError naming the
+    accepted values for anything else. Validated up front because an
+    unknown name ('Sun') used to be stored, then break working-days with
+    'tuple.index(x): x not in tuple' -- and a calendar cannot be re-created."""
+    out: list[str] = []
+    for raw in days:
+        name = str(raw).strip().lower()
+        if name not in _WEEKDAY_NAMES:
+            raise ValueError(
+                f"unknown weekly off day {raw!r} -- use full weekday names: "
+                + ", ".join(_WEEKDAY_NAMES))
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def parse_alternate_saturday_rule(rule: Optional[str]) -> frozenset[int]:
+    """Which Saturdays of the month (1st..5th) are off. Accepts a named rule
+    or comma-separated ordinals ('2nd,4th', '2,4'). An unrecognised rule is
+    a ValueError: silently reading it as "no Saturdays off" is how the web
+    admin's 'second_fourth' went unnoticed."""
+    text = (rule or "none").strip().lower()
+    if not text:
+        return frozenset()
+    if text in _NAMED_SATURDAY_RULES:
+        return _NAMED_SATURDAY_RULES[text]
+    wanted: set[int] = set()
+    for tok in text.split(","):
         tok = tok.strip()
-        if tok.startswith("1"):
-            wanted.add(1)
-        elif tok.startswith("2"):
-            wanted.add(2)
-        elif tok.startswith("3"):
-            wanted.add(3)
-        elif tok.startswith("4"):
-            wanted.add(4)
-        elif tok.startswith("5"):
-            wanted.add(5)
-    return _nth_weekday_of_month(d) in wanted
+        n = int(tok[0]) if tok[:1].isdigit() else 0
+        if not 1 <= n <= 5 or tok not in (str(n), f"{n}{_ORDINAL_SUFFIX[n]}"):
+            raise ValueError(
+                f"unrecognised alternate Saturday rule {rule!r} -- use "
+                + ACCEPTED_SATURDAY_RULES_TEXT)
+        wanted.add(n)
+    return frozenset(wanted)
+
+
+def normalize_alternate_saturday_rule(rule: Optional[str]) -> str:
+    """Validates the rule and returns it trimmed and lower-cased, in the
+    caller's own form: the web admin reads it back into a dropdown whose
+    values are the named forms, so 'second_fourth' is not rewritten."""
+    parse_alternate_saturday_rule(rule)
+    return (rule or "none").strip().lower() or "none"
+
+
+def validate_holiday(*, date_: str, end_date: Optional[str], kind: str,
+                     year_start: str, year_end: str) -> None:
+    """ValueError for anything a holiday row must never hold: an unknown
+    kind (it would be listed but never counted), an unparseable date
+    ('next monday' was accepted), an end before the start (a 500 from the
+    store before 2026-09-22), or a day outside the academic year
+    (2030-01-01 was accepted for a 2026-27 year)."""
+    if kind not in HOLIDAY_KINDS:
+        raise ValueError(
+            f"unknown holiday kind {kind!r} -- closures: {', '.join(CLOSURE_KINDS)}; "
+            f"a marked day that still teaches: {', '.join(NON_CLOSURE_KINDS)}")
+    parsed = {}
+    for field_name, value in (("date", date_), ("end_date", end_date)):
+        if value is None:
+            continue
+        try:
+            parsed[field_name] = _parse_date(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"holiday {field_name} {value!r} is not a YYYY-MM-DD date") from None
+        # Python 3.11+ fromisoformat also takes '20261005' and '2026-W41-1'.
+        # The raw string is what gets stored, and working_days_for_year matches
+        # holidays against d.isoformat(), so such a holiday was listed but
+        # closed zero days (261 working days before and after), and a mixed
+        # '20261006' .. '2026-10-08' pair 500'd on the store's string compare.
+        if parsed[field_name].isoformat() != value:
+            raise ValueError(f"holiday {field_name} {value!r} is not a YYYY-MM-DD date")
+    start = parsed["date"]
+    end = parsed.get("end_date", start)
+    if end < start:
+        raise ValueError(f"holiday end_date {end_date} is before its date {date_}")
+    if start < _parse_date(year_start) or end > _parse_date(year_end):
+        raise ValueError(
+            f"holiday {date_}{f' .. {end_date}' if end_date else ''} falls outside the "
+            f"academic year ({year_start} .. {year_end})")
 
 
 @dataclass(frozen=True)
@@ -96,7 +179,8 @@ def compute_working_days(*, start_date: str, end_date: str, weekly_off_days: lis
     if end < start:
         raise ValueError(f"end_date {end_date} is before start_date {start_date}")
 
-    off_weekdays = {_WEEKDAY_NAMES.index(w.strip().lower()) for w in weekly_off_days}
+    off_weekdays = {_WEEKDAY_NAMES.index(w) for w in normalize_weekly_off_days(weekly_off_days)}
+    saturdays_off = parse_alternate_saturday_rule(alternate_saturday_rule)
 
     total_days = 0
     working: list[str] = []
@@ -109,7 +193,7 @@ def compute_working_days(*, start_date: str, end_date: str, weekly_off_days: lis
         total_days += 1
         if d.weekday() in off_weekdays:
             weekly_off_count += 1
-        elif _is_alternate_saturday_off(d, alternate_saturday_rule):
+        elif d.weekday() == 5 and _nth_weekday_of_month(d) in saturdays_off:
             alt_sat_count += 1
         elif d.isoformat() in holiday_dates:
             holiday_count += 1
@@ -136,13 +220,13 @@ def working_days_for_year(store: CurriculumStore, academic_year_id: str) -> Work
             f"academic year {academic_year_id} has no calendar configured yet -- "
             "create one first (POST .../calendar)")
     holidays = store.holidays_for_calendar(cal.id)
-    # "event" markers (e.g. Annual Day) don't remove a teaching day; only
-    # real closures do. A holiday with end_date set (a real multi-day block --
+    # "event" markers (e.g. Annual Day) don't remove a teaching day; every
+    # closure kind does (CLOSURE_KINDS above). A holiday with end_date set (a real multi-day block --
     # a 30-45 day summer break) expands to every date in the inclusive range,
     # not just its start date.
     holiday_dates: set[str] = set()
     for h in holidays:
-        if h.kind not in ("holiday", "unexpected_closure"):
+        if h.kind not in CLOSURE_KINDS:
             continue
         if h.end_date is None:
             holiday_dates.add(h.date)

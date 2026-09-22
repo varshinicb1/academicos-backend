@@ -47,6 +47,23 @@ CREATE TABLE IF NOT EXISTS papers (
 """
 
 
+_SET_SUFFIX = "_set_"
+
+
+def paper_question_ids(paper: GeneratedPaper) -> set[str]:
+    """Every question the paper prints -- compulsory and OR alternative, on
+    the paper and on each of its sets. What "already asked on that paper"
+    means when a swap avoids a teacher's recent papers."""
+    ids: set[str] = set()
+    for p in [paper, *paper.sets]:
+        for section in p.sections:
+            for q in section.questions:
+                ids.add(q.question_id)
+                if q.internal_choice_question_id:
+                    ids.add(q.internal_choice_question_id)
+    return ids
+
+
 class PaperStore:
     def __init__(self, db_path: Path):
         self._remote = durable_table("papers")
@@ -115,6 +132,17 @@ class PaperStore:
                 "SELECT paper_json FROM papers WHERE school_id=?", (school_id,)
             ).fetchall()
         return [GeneratedPaper.model_validate_json(r["paper_json"]) for r in rows]
+
+    def family(self, paper_id: str) -> list[GeneratedPaper]:
+        """The paper and each of its set rows, base first.
+
+        `paper.generate_paper_sets` saves set A under the paper's own id and
+        the others as `<id>_set_B` .. `<id>_set_E`, each its own row. A swap
+        or pick on any one of them has to reach all of them, or set B keeps
+        printing the question the teacher took off the paper."""
+        base = paper_id.split(_SET_SUFFIX)[0]
+        ids = [base] + [f"{base}{_SET_SUFFIX}{label}" for label in "BCDE"]
+        return [p for p in (self.get(i) for i in ids) if p is not None]
 
     def get_template(self, paper_id: str) -> Optional[SchoolTemplate]:
         if self._remote.enabled:

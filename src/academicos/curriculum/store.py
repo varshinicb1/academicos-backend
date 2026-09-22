@@ -56,14 +56,11 @@ import json
 import logging
 import sqlite3
 import threading
-import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-import requests
-
-from ..assessment.supabase_kv import SupabaseStorage
+from ..storage.snapshot_sync import SnapshotSync
 
 from .models import (
     AcademicYear,
@@ -331,16 +328,16 @@ class CurriculumStore:
 
     def __init__(self, db_path: Path):
         self.db_path = db_path
-        self._remote_storage = SupabaseStorage("curriculum-snapshots")
         # RLock, not Lock: helpers below take it per-call, and _commit/
-        # _maybe_snapshot nest a raw connection use inside their own
+        # the snapshot sync nest a raw connection use inside their own
         # acquisition -- a plain Lock would deadlock those paths.
         self._conn_lock = threading.RLock()
-        self._last_snapshot_at = 0.0
+        # Restores the last snapshot into db_path before the connect below;
+        # upload, conflicts and flush live there too (storage/snapshot_sync.py).
+        self._snapshots = SnapshotSync("curriculum-snapshots", self._SNAPSHOT_KEY, db_path,
+                                       self._conn_lock, debounce_seconds=self._SNAPSHOT_DEBOUNCE_SECONDS)
 
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        if not db_path.exists() and self._remote_storage.enabled:
-            self._restore_from_remote()
 
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
@@ -360,24 +357,6 @@ class CurriculumStore:
         cols = {r["name"] for r in self._fetchall("PRAGMA table_info(holidays)")}
         if "end_date" not in cols:
             self._exec("ALTER TABLE holidays ADD COLUMN end_date TEXT")
-
-    def _restore_from_remote(self) -> None:
-        """Called only when db_path doesn't exist locally yet and Supabase
-        is configured -- a fresh container restoring last known state
-        instead of starting empty. No snapshot yet (first-ever boot) is the
-        normal, expected case, not an error: falls through to a fresh
-        CREATE TABLE against an empty file exactly like before this pass."""
-        try:
-            data = self._remote_storage.download(self._SNAPSHOT_KEY)
-        except requests.exceptions.RequestException:
-            logger.info(
-                "No curriculum snapshot restored from Supabase (none uploaded yet, "
-                "or unreachable) -- starting with a fresh local database",
-                exc_info=True,
-            )
-            return
-        self.db_path.write_bytes(data)
-        logger.info("Restored CurriculumStore from Supabase snapshot (%d bytes)", len(data))
 
     # ------------------------------------------------------------------
     # Serialized SQLite access. The store holds ONE shared connection with
@@ -415,34 +394,11 @@ class CurriculumStore:
         # The commit itself is a shared-connection use and must be
         # serialized like every other one -- two threads committing at
         # once is the same race as two threads executing at once.
-        with self._conn_lock:
-            self.conn.commit()
-        self._maybe_snapshot()
-
-    def _maybe_snapshot(self) -> None:
-        if not self._remote_storage.enabled:
-            return
-        now = time.monotonic()
-        with self._conn_lock:
-            if now - self._last_snapshot_at < self._SNAPSHOT_DEBOUNCE_SECONDS:
-                return
-            self._last_snapshot_at = now
-            try:
-                # WAL mode means recent commits can still live only in the
-                # -wal sidecar file -- checkpoint first so db_path itself is
-                # a complete, self-contained snapshot, not a stale main file
-                # missing whatever hasn't been checkpointed back into it yet.
-                self._exec("PRAGMA wal_checkpoint(TRUNCATE)")
-                data = self.db_path.read_bytes()
-            except OSError:
-                logger.warning("Could not read CurriculumStore db file to snapshot", exc_info=True)
-                return
-        try:
-            self._remote_storage.upload(self._SNAPSHOT_KEY, data, "application/x-sqlite3")
-        except requests.exceptions.RequestException:
-            logger.warning("Failed to upload CurriculumStore snapshot to Supabase", exc_info=True)
+        # SnapshotSync.commit takes self._conn_lock around the commit.
+        self._snapshots.commit(self.conn)
 
     def close(self) -> None:
+        self._snapshots.close()
         self.conn.close()
 
     # ---------------- boards ----------------
@@ -715,6 +671,30 @@ class CurriculumStore:
             "JOIN academic_years y ON g.academic_year_id = y.id "
             "WHERE st.id=?", (subtopic_id,))
         return r["school_id"] if r else None
+
+    def school_ids_for_subtopics(self, subtopic_ids: list[str]) -> dict[str, str]:
+        """school_id_for_subtopic for a whole request's ids in one query:
+        {subtopic_id: school_id}. The two subtopic-keyed question routes
+        (curriculum questions/by-subtopics and assessment questions/search)
+        take a caller-picked list, and the per-id lookup is a seven-join query
+        per subtopic. An id that resolves to no school is absent from the result
+        rather than mapped to None -- the callers treat "another school's" and
+        "no longer exists" differently (403 vs. ignore)."""
+        if not subtopic_ids:
+            return {}
+        unique = list(dict.fromkeys(subtopic_ids))
+        placeholders = ",".join("?" * len(unique))
+        rows = self._fetchall(
+            "SELECT st.id AS subtopic_id, y.school_id FROM subtopics st "
+            "JOIN topics t ON st.topic_id = t.id "
+            "JOIN chapters c ON t.chapter_id = c.id "
+            "JOIN units u ON c.unit_id = u.id "
+            "JOIN books b ON u.book_id = b.id "
+            "JOIN subjects s ON b.subject_id = s.id "
+            "JOIN grades g ON s.grade_id = g.id "
+            "JOIN academic_years y ON g.academic_year_id = y.id "
+            f"WHERE st.id IN ({placeholders})", tuple(unique))
+        return {r["subtopic_id"]: r["school_id"] for r in rows}
 
     _SEQUENCE_TABLES = {"unit": "units", "chapter": "chapters", "topic": "topics", "subtopic": "subtopics"}
 
@@ -1060,8 +1040,11 @@ class CurriculumStore:
     def create_calendar(self, *, academic_year_id: str,
                         weekly_off_days: Optional[list[str]] = None,
                         alternate_saturday_rule: str = "none") -> Calendar:
+        # `is not None`, not `or`: an explicit [] (a school with no weekly off)
+        # used to become ["sunday"] here while update_calendar stored [] --
+        # the same request body gave two different calendars by verb.
         c = Calendar(id=new_id("cal"), academic_year_id=academic_year_id,
-                    weekly_off_days=weekly_off_days or ["sunday"],
+                    weekly_off_days=weekly_off_days if weekly_off_days is not None else ["sunday"],
                     alternate_saturday_rule=alternate_saturday_rule)
         self._exec(
             "INSERT INTO calendars (id, academic_year_id, weekly_off_days, alternate_saturday_rule) "
@@ -1078,6 +1061,34 @@ class CurriculumStore:
         d = dict(r)
         d["weekly_off_days"] = json.loads(d["weekly_off_days"])
         return Calendar(**d)
+
+    def update_calendar(self, *, academic_year_id: str, weekly_off_days: list[str],
+                        alternate_saturday_rule: str) -> Calendar:
+        """The correction path: a calendar is one row per academic year
+        (create is a 409 the second time), so before this existed a wrong
+        weekly off day entered once was stuck for the whole year."""
+        with self._conn_lock:
+            cur = self.conn.execute(
+                "UPDATE calendars SET weekly_off_days=?, alternate_saturday_rule=? "
+                "WHERE academic_year_id=?",
+                (json.dumps(weekly_off_days), alternate_saturday_rule, academic_year_id))
+            rowcount = cur.rowcount
+        if rowcount == 0:
+            raise ValueError(f"academic year {academic_year_id!r} has no calendar to update")
+        self._commit()
+        return self.get_calendar_for_year(academic_year_id)
+
+    def get_holiday(self, holiday_id: str) -> Optional[Holiday]:
+        r = self._fetchone("SELECT * FROM holidays WHERE id=?", (holiday_id,))
+        return Holiday(**dict(r)) if r else None
+
+    def remove_holiday(self, holiday_id: str) -> None:
+        with self._conn_lock:
+            cur = self.conn.execute("DELETE FROM holidays WHERE id=?", (holiday_id,))
+            rowcount = cur.rowcount
+        if rowcount == 0:
+            raise ValueError(f"no holiday with id {holiday_id!r}")
+        self._commit()
 
     def add_holiday(self, *, calendar_id: str, date: str, label: str, kind: str = "holiday",
                     end_date: Optional[str] = None) -> Holiday:
@@ -1460,11 +1471,29 @@ class CurriculumStore:
         }
 
 
-_INSTANCE: Optional[CurriculumStore] = None
+_INSTANCE: Optional[dict] = {}
 
 
 def get_curriculum_store(data_root: Path) -> CurriculumStore:
+    # Keyed on the RESOLVED PATH, not a bare global.
+    #
+    # This was `if _INSTANCE is None`, so the FIRST data_root ever passed won
+    # for the life of the process and every later call with a different root got
+    # that first instance. In production only one root is used, which is why it
+    # survived unspotted -- but anywhere a process touches more than one root
+    # (tests, a CLI run beside a server, tooling) the store silently reads and
+    # writes the WRONG database. For the audit log that means a compliance trail
+    # filed against another data root.
+    # `_INSTANCE` is a PATH-KEYED cache, not one store. Tests reset it with
+    # `monkeypatch.setattr(..., "_INSTANCE", None)`, which is kept working,
+    # but the reset is no longer load-bearing: two data roots now get two
+    # stores by construction. See git history for the single-global version.
     global _INSTANCE
     if _INSTANCE is None:
-        _INSTANCE = CurriculumStore(data_root / "curriculum" / "curriculum.sqlite")
-    return _INSTANCE
+        _INSTANCE = {}                      # a caller cleared the cache
+    key = str(Path(data_root) / "curriculum" / "curriculum.sqlite")
+    instance = _INSTANCE.get(key)
+    if instance is None:
+        instance = CurriculumStore(Path(key))
+        _INSTANCE[key] = instance
+    return instance

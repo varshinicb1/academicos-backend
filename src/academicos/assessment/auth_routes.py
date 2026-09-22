@@ -1,6 +1,8 @@
 """Teacher/principal authentication. See users.py's module docstring for the
-password-hashing/session-token design choices and the "first registrant per
-school becomes principal" bootstrap rule.
+password-hashing/session-token design choices, the invite rule (a new
+account's school and role come from a principal-issued invite, never from the
+request) and what the principal bootstrap key can still do (create a school's
+first principal, nothing more).
 
 `get_current_user` / `get_current_user_optional` are the dependencies other
 routers use to identify the caller: `Depends(get_current_user)` for anything
@@ -21,7 +23,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from ..api.rate_limit import rate_limit_login, rate_limit_register
 from ..config import Config
 from .schemas import Camel
-from .users import EmailAlreadyRegistered, InvalidCredentials, User, UserStore, get_user_store
+from .users import (
+    EmailAlreadyRegistered, InvalidCredentials, Invite, InviteAlreadyUsed, InviteNotFound,
+    RegistrationRefused, User, UserStore, get_user_store,
+)
 
 router = APIRouter(prefix="/api/v1/auth")
 
@@ -42,14 +47,19 @@ def _require() -> UserStore:
 
 
 class RegisterRequest(Camel):
-    school_id: str
     name: str
     email: str
     password: str
+    # The normal way in: a single-use code a principal issued. The account's
+    # school and role are the invite's.
+    invite_code: Optional[str] = None
+    # With principal_key: the school whose FIRST principal this is. With an
+    # invite it is optional, and if sent it must match the invite (400).
+    school_id: Optional[str] = None
     principal_key: Optional[str] = None
-    # Self-selected role: "teacher" (default) or "student". Never
-    # "principal" -- that's granted only by a valid principal_key,
-    # unaffected by this field (see UserStore.register's docstring).
+    # Never chosen by the caller. Accepted only when it agrees with the
+    # invite ("principal" on the key path), so an old client that still sends
+    # it is told when it disagrees instead of silently landing elsewhere.
     role: Optional[str] = None
 
 
@@ -78,13 +88,20 @@ def _to_response(user: User) -> UserResponse:
 
 @router.post("/register", response_model=AuthResponse, dependencies=[Depends(rate_limit_register)])
 def register(req: RegisterRequest) -> AuthResponse:
+    """Needs an invite code, or (for a school's first principal only) the
+    operator's principal key with a schoolId. 403 without either, or when
+    the invite is unknown/used/revoked/expired/for another email, or the
+    school already has a principal. 400 when schoolId/role disagree with the
+    invite. Until 2026-09-21 any caller could name any school here."""
     if not req.password or len(req.password) < 8:
         raise HTTPException(400, "password must be at least 8 characters")
     store = _require()
     try:
-        user = store.register(school_id=req.school_id, name=req.name, email=req.email,
-                               password=req.password, principal_key=req.principal_key,
-                               requested_role=req.role or "teacher")
+        user = store.register(name=req.name, email=req.email, password=req.password,
+                               invite_code=req.invite_code, principal_key=req.principal_key,
+                               school_id=req.school_id, role=req.role)
+    except RegistrationRefused as e:
+        raise HTTPException(403, str(e))
     except EmailAlreadyRegistered:
         raise HTTPException(409, "an account with this email already exists")
     except ValueError as e:
@@ -162,6 +179,23 @@ def require_principal(current: User = Depends(get_current_user)) -> User:
     return current
 
 
+# The roles that may do a teacher's work. A tuple of what is allowed, not a
+# check for "student": a role added later (parent, guardian) is refused here
+# until someone decides otherwise.
+STAFF_ROLES = ("teacher", "principal")
+
+
+def require_staff(current: User = Depends(get_current_user)) -> User:
+    """Teacher or principal. Until 2026-09-21 the teacher routes depended on
+    get_current_user alone, which proves identity and nothing else: a
+    student-role token read every classmate's answer to a question and
+    changed another student's marks. api/route_policy.py lists which routes
+    carry this gate; tests/test_role_gates.py holds every route to that list."""
+    if current.role not in STAFF_ROLES:
+        raise HTTPException(403, "this action requires a teacher or principal account")
+    return current
+
+
 @router.get("/me", response_model=UserResponse)
 def me(current: User = Depends(get_current_user)) -> UserResponse:
     return _to_response(current)
@@ -180,3 +214,71 @@ def list_school_users(role: Optional[str] = None,
         raise HTTPException(400, f"invalid role filter: {role!r}")
     users = _require().users_for_school(principal.school_id, role=role)
     return [_to_response(u) for u in users]
+
+
+# ---------------- invites (principal only, own school only) ----------------
+
+
+class InviteCreateRequest(Camel):
+    role: str  # "teacher" | "student"
+    # Bind the invite to one person; any email may use it when omitted.
+    email: Optional[str] = None
+    # 1..90, default 14 (users.py explains the cap).
+    expires_in_days: Optional[int] = None
+
+
+class InviteResponse(Camel):
+    code: str
+    role: str
+    email: Optional[str] = None
+    expires_at: str
+    created_at: str
+    created_by: str
+    status: str  # "open" | "used" | "revoked" | "expired"
+    used_by: Optional[str] = None
+    used_at: Optional[str] = None
+    revoked_at: Optional[str] = None
+
+
+def _invite_response(invite: Invite) -> InviteResponse:
+    return InviteResponse(
+        code=invite.code, role=invite.role, email=invite.email or None,
+        expires_at=invite.expires_at, created_at=invite.created_at,
+        created_by=invite.created_by, status=invite.status(),
+        used_by=invite.used_by or None, used_at=invite.used_at or None,
+        revoked_at=invite.revoked_at or None,
+    )
+
+
+@router.post("/invites", response_model=InviteResponse)
+def create_invite(req: InviteCreateRequest,
+                  principal: User = Depends(require_principal)) -> InviteResponse:
+    """A single-use invite to the CALLER's school. There is no school field
+    to send: a principal can only ever invite people into their own school."""
+    try:
+        invite = _require().create_invite(
+            school_id=principal.school_id, role=req.role, created_by=principal.id,
+            email=req.email, expires_in_days=req.expires_in_days)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _invite_response(invite)
+
+
+@router.get("/invites", response_model=list[InviteResponse])
+def list_invites(principal: User = Depends(require_principal)) -> list[InviteResponse]:
+    """The caller's school's invites, used and unused, newest first. Each
+    row says who created it and which account used it and when."""
+    return [_invite_response(i) for i in _require().invites_for_school(principal.school_id)]
+
+
+@router.delete("/invites/{code}", response_model=InviteResponse)
+def revoke_invite(code: str, principal: User = Depends(require_principal)) -> InviteResponse:
+    """Withdraw an unused invite. Another school's code is a 404, the same as
+    an unknown one."""
+    try:
+        invite = _require().revoke_invite(code=code, school_id=principal.school_id)
+    except InviteNotFound:
+        raise HTTPException(404, "no such invite at your school")
+    except InviteAlreadyUsed:
+        raise HTTPException(409, "this invite has already been used and cannot be withdrawn")
+    return _invite_response(invite)

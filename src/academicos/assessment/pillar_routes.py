@@ -5,6 +5,7 @@ endpoints stay readable. Mounted under the same /api/v1 prefix.
 """
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -12,21 +13,26 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import FileResponse
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from ..config import Config
+from . import grades
 from . import insights as insights_mod
 from . import mailer as mailer_mod
 from . import remediation as remediation_mod
-from .authz import require_own_school, require_school_owns_student
+from .authz import require_consent, require_own_school, require_school_owns_student
 from .authz import require_school_owns_assessment as _authz_require_school_owns_assessment
-from .auth_routes import get_current_user, require_principal
+from .auth_routes import get_current_user, require_principal, require_staff
+from .audit_log import AuditLog, get_audit_log, record_pii_read
+from .consent import ConsentStore, get_consent_store
 from .evaluate import Evaluation, evaluate_answer
+from .grade_lock import FINALIZED_ACTION, record_grade_change, require_reason_if_finalized
 from .graded_store import GradedStore
-from .knowledge import KnowledgeStore
+from .knowledge import KnowledgeStore, sheet_source
 from .mapping import to_question_schema
 from .marking import build_answer_key, build_answer_scheme
 from .pool import get_pool
+from .routes import _int_grade_to_roman
 from .practice_store import PracticeStore
 from .schemas import (
     AnswerSchemeSchema,
@@ -77,6 +83,39 @@ def _require_graded() -> GradedStore:
     return _graded
 
 
+def _audit() -> AuditLog:
+    """The audit log every grading write goes through (grade_lock.py)."""
+    cfg, _knowledge_store, _template_store = _require()
+    return get_audit_log(cfg.data_root)
+
+
+def _log_read(current: User, what: str, **kw: Any) -> None:
+    """Log that `current` read a named student's data (audit_log.record_pii_read):
+    docs/compliance.md box 2. Called by every read route here and in
+    mobile_routes.py after its access checks pass and before the data is
+    returned, so a refused request is not logged as a read, and a read the
+    log refuses (503) is not served."""
+    record_pii_read(_audit(), actor=current.id, what=what, **kw)
+
+
+def _consents() -> ConsentStore:
+    """The parental-consent store every route that processes a student's work
+    checks before it does (authz.require_consent). The same path-keyed instance
+    consent_routes.py records into, because both resolve it from the one
+    data root. Also handed to grade_by_question and read by mobile_routes."""
+    cfg, _knowledge_store, _template_store = _require()
+    return get_consent_store(cfg.data_root)
+
+
+def _require_consent(student_id: str, current: User) -> None:
+    """authz.require_consent at the caller's own school: the school doing the
+    grading is the one that must hold the parent's consent, and every caller
+    of this has already passed its school-ownership check. (The evaluation
+    routes accept a student id that is no registered user, so there is no
+    other school to look it up under.)"""
+    require_consent(_consents(), current.school_id, student_id)
+
+
 def _require_practice() -> PracticeStore:
     if _practice is None:
         raise HTTPException(503, "pillar module not initialized")
@@ -113,7 +152,7 @@ def _papers():
     raise HTTPException(503, "pillar module not initialized")
 
 
-def _pool_questions(subject: str = "Science", grade: str = "X") -> list[QuestionSchema]:
+def _pool_questions(subject: str, grade: str) -> list[QuestionSchema]:
     cfg, _, _ = _require()
     return [to_question_schema(q) for q in get_pool(cfg, subject=subject, grade=grade).questions]
 
@@ -125,8 +164,26 @@ class TemplateSaveRequest(Camel):
     sections: list[SectionBlueprint] = Field(default_factory=list)
 
 
+def _branding_row_or_403(store, school_id: str, template_id: str) -> None:
+    """The table behind these routes also holds teacher paper templates
+    (Task 901), which can be private to one teacher. These routes check only
+    the school, so they refuse paper rows outright -- read, overwrite and
+    delete go through /teacher-templates, which applies the owner and role
+    rules -- and refuse another school's row reached by its id. A missing id
+    passes: save creates it, and sections/delete behave as before."""
+    info = store.row_info(template_id)
+    if info is None:
+        return
+    kind, owner_school = info
+    if kind == "paper":
+        raise HTTPException(403, "this is a teacher's paper template; use "
+                                 "/teacher-templates, which applies its sharing rules")
+    if owner_school != school_id:
+        raise HTTPException(403, "this template belongs to a different school")
+
+
 @router.get("/schools/{school_id}/school-templates", response_model=list[SchoolTemplate])
-def list_templates(school_id: str, current: User = Depends(get_current_user)) -> list[SchoolTemplate]:
+def list_templates(school_id: str, current: User = Depends(require_staff)) -> list[SchoolTemplate]:
     require_own_school(school_id, current)
     _, _, store = _require()
     existing = store.list_for_school(school_id)
@@ -135,10 +192,12 @@ def list_templates(school_id: str, current: User = Depends(get_current_user)) ->
 
 @router.post("/schools/{school_id}/school-templates", response_model=SchoolTemplate)
 def save_template(
-    school_id: str, req: TemplateSaveRequest, current: User = Depends(get_current_user),
+    school_id: str, req: TemplateSaveRequest, current: User = Depends(require_staff),
 ) -> SchoolTemplate:
     require_own_school(school_id, current)
     _, _, store = _require()
+    if req.template.id and req.template.id != "new":
+        _branding_row_or_403(store, school_id, req.template.id)
     template = req.template.model_copy(update={"school_id": school_id})
     sections = req.sections or store.sections_for(school_id, None, 80)
     return store.save(template, sections)
@@ -147,19 +206,21 @@ def save_template(
 @router.get("/schools/{school_id}/school-templates/{template_id}/sections",
             response_model=list[SectionBlueprint])
 def template_sections(
-    school_id: str, template_id: str, current: User = Depends(get_current_user),
+    school_id: str, template_id: str, current: User = Depends(require_staff),
 ) -> list[SectionBlueprint]:
     require_own_school(school_id, current)
     _, _, store = _require()
+    _branding_row_or_403(store, school_id, template_id)
     return store.sections_for(school_id, template_id, 80)
 
 
 @router.delete("/schools/{school_id}/school-templates/{template_id}")
 def delete_template(
-    school_id: str, template_id: str, current: User = Depends(get_current_user),
+    school_id: str, template_id: str, current: User = Depends(require_staff),
 ) -> dict:
     require_own_school(school_id, current)
     _, _, store = _require()
+    _branding_row_or_403(store, school_id, template_id)
     store.delete(template_id)
     return {"ok": True}
 
@@ -179,7 +240,7 @@ class AnswerKeyResponse(Camel):
 
 @router.post("/assessments/{assessment_id}/answer-key", response_model=AnswerKeyResponse)
 def make_answer_key(
-    assessment_id: str, req: AnswerKeyRequest, current: User = Depends(get_current_user),
+    assessment_id: str, req: AnswerKeyRequest, current: User = Depends(require_staff),
 ) -> AnswerKeyResponse:
     _require_school_owns_assessment(assessment_id, current)
     schemes = build_answer_key(req.questions, req.correct_options)
@@ -215,15 +276,23 @@ class CatalogResponse(Camel):
     total_questions: int
 
 
-_GRADE_ROMAN = {8: "VIII", 9: "IX", 10: "X", 11: "XI", 12: "XII"}
-# Subjects the bulk board ingest stages. Kept explicit so the catalog never
-# probes hundreds of empty (subject, grade) pairs on every request.
-_CATALOG_SCOPE: list[tuple[str, int]] = [
-    ("Science", 10), ("Mathematics", 10), ("Social Science", 10), ("English", 10),
-    ("Physics", 12), ("Chemistry", 12), ("Biology", 12), ("Mathematics", 12),
-    ("Accountancy", 12), ("Business Studies", 12), ("Economics", 12),
-    ("History", 12), ("Geography", 12), ("Political Science", 12), ("English", 12),
-]
+def _catalog_scope(cfg) -> list[tuple[str, int]]:
+    """Every (subject, grade) the served bank holds.
+
+    This was a hand-written list of grade 10 and 12 pairs, so class 6-9 never
+    appeared in the catalog however many questions existed for them. Deriving
+    it from the bank still keeps the catalog from probing hundreds of empty
+    (subject, grade) pairs on every request.
+    """
+    from .pool import _baked_bank_paths
+
+    for path in _baked_bank_paths(cfg):
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            pairs = {(q.get("subject", ""), grades.to_int(q.get("grade")))
+                     for q in data.get("questions", [])}
+            return sorted((s, g) for s, g in pairs if s and g)
+    return []
 
 
 @router.get("/catalog", response_model=CatalogResponse)
@@ -236,8 +305,8 @@ def catalog(response: Response) -> CatalogResponse:
     cfg, _, _ = _require()
     entries: list[CatalogEntry] = []
     total = 0
-    for subject, grade in _CATALOG_SCOPE:
-        pool = get_pool(cfg, subject=subject, grade=_GRADE_ROMAN.get(grade, "X"))
+    for subject, grade in _catalog_scope(cfg):
+        pool = get_pool(cfg, subject=subject, grade=_int_grade_to_roman(grade))
         if not pool.questions:
             continue
         schemas = [to_question_schema(q) for q in pool.questions]
@@ -257,7 +326,7 @@ def catalog(response: Response) -> CatalogResponse:
 def catalog_chapters(subject: str, grade: int, response: Response) -> list[ChapterEntry]:
     """Chapter breakdown for one subject — the real syllabus view."""
     cfg, _, _ = _require()
-    pool = get_pool(cfg, subject=subject, grade=_GRADE_ROMAN.get(grade, "X"))
+    pool = get_pool(cfg, subject=subject, grade=_int_grade_to_roman(grade))
     schemas = [to_question_schema(q) for q in pool.questions]
 
     by_chapter: dict[str, list[QuestionSchema]] = {}
@@ -407,7 +476,7 @@ class SendPaperResponse(Camel):
 
 
 @router.post("/mail/send-paper", response_model=SendPaperResponse)
-def send_paper(req: SendPaperRequest, current: User = Depends(get_current_user)) -> SendPaperResponse:
+def send_paper(req: SendPaperRequest, current: User = Depends(require_staff)) -> SendPaperResponse:
     """Email an exported paper (and its answer key) to the given recipients.
 
     The PDF must already have been exported — this endpoint never regenerates
@@ -450,6 +519,9 @@ class EvaluateAnswerRequest(Camel):
     question: QuestionSchema
     student_answer: str
     answer_scheme: Optional[AnswerSchemeSchema] = None
+    # Needed only when the sheet is finalized (grade_lock.py), because
+    # re-grading one answer on a finalized sheet replaces its marks.
+    reason: str = ""
 
 
 class EvaluationResponse(Camel):
@@ -486,16 +558,25 @@ def _to_response(ev: Evaluation, question: QuestionSchema, student_answer: str) 
 
 
 @router.post("/evaluations/answer", response_model=EvaluationResponse)
-def evaluate_one(req: EvaluateAnswerRequest, current: User = Depends(get_current_user)) -> EvaluationResponse:
+def evaluate_one(req: EvaluateAnswerRequest, current: User = Depends(require_staff)) -> EvaluationResponse:
     _require_school_owns_assessment(req.assessment_id, current)
     _require()
+    _require_consent(req.student_id, current)
     scheme = req.answer_scheme or build_answer_scheme(req.question)
     concept = req.question.chapter_ids[0] if req.question.chapter_ids else None
     ev = evaluate_answer(req.question, scheme, req.student_answer, concept_label=concept)
     store = _require_graded()
-    bucket = store.get(req.assessment_id, req.student_id) or []
-    bucket = [(q, e) for q, e in bucket if q.id != req.question.id]
+    audit = _audit()
+    finalized = require_reason_if_finalized(audit, req.assessment_id, req.student_id,
+                                            req.reason)
+    existing = store.get(req.assessment_id, req.student_id) or []
+    before = next((e.awarded_marks for q, e in existing if q.id == req.question.id), None)
+    bucket = [(q, e) for q, e in existing if q.id != req.question.id]
     bucket.append((req.question, ev))
+    record_grade_change(audit, "answer_evaluated", assessment_id=req.assessment_id,
+                        student_id=req.student_id, actor=current.id, finalized=finalized,
+                        reason=req.reason, question_id=req.question.id,
+                        before=before, after=ev.awarded_marks)
     store.save(req.assessment_id, req.student_id, bucket)
     return _to_response(ev, req.question, req.student_answer)
 
@@ -507,6 +588,9 @@ class EvaluateSheetRequest(Camel):
     questions: list[QuestionSchema]
     answers: dict[str, str]
     correct_options: dict[str, str] = Field(default_factory=dict)
+    # Needed only when the sheet is finalized (grade_lock.py), because this
+    # call replaces every mark on the sheet.
+    reason: str = ""
 
 
 class EvaluateSheetResponse(Camel):
@@ -520,9 +604,15 @@ class EvaluateSheetResponse(Camel):
 
 
 @router.post("/evaluations/sheet", response_model=EvaluateSheetResponse)
-def evaluate_sheet(req: EvaluateSheetRequest, current: User = Depends(get_current_user)) -> EvaluateSheetResponse:
+def evaluate_sheet(req: EvaluateSheetRequest, current: User = Depends(require_staff)) -> EvaluateSheetResponse:
     _require_school_owns_assessment(req.assessment_id, current)
-    cfg, knowledge, _ = _require()
+    _require()
+    # Before the answers are read, not just before they are saved: scoring
+    # them is the processing DPDP asks consent for.
+    _require_consent(req.student_id, current)
+    audit = _audit()
+    finalized = require_reason_if_finalized(audit, req.assessment_id, req.student_id,
+                                            req.reason)
     schemes = build_answer_key(req.questions, req.correct_options)
     graded: list[tuple[QuestionSchema, Evaluation]] = []
     for q in req.questions:
@@ -530,7 +620,21 @@ def evaluate_sheet(req: EvaluateSheetRequest, current: User = Depends(get_curren
         ev = evaluate_answer(q, schemes[q.id], req.answers.get(q.id, ""), concept_label=concept)
         graded.append((q, ev))
 
-    _require_graded().save(req.assessment_id, req.student_id, graded)
+    store = _require_graded()
+    previous = store.get(req.assessment_id, req.student_id)
+    awarded = sum(e.awarded_marks for _, e in graded)
+    maximum = sum(e.max_marks for _, e in graded)
+    # Logged before the save, so a change never exists without its entry.
+    # The actor was None here until 2026-09-22 (audit item 8.5).
+    record_grade_change(
+        audit, "sheet_evaluated", assessment_id=req.assessment_id,
+        student_id=req.student_id, actor=current.id, finalized=finalized,
+        reason=req.reason,
+        before=(sum(e.awarded_marks for _, e in previous) if previous is not None else None),
+        after=awarded,
+        extra={"totalAwarded": awarded, "totalMax": maximum, "questionCount": len(graded)},
+    )
+    store.save(req.assessment_id, req.student_id, graded)
     # Deliberately NOT knowledge.record_evaluations() here -- this is the raw
     # AI pass, before any teacher has looked at it. Folding it into mastery
     # immediately would let an unreviewed (and per docs/compliance.md's own
@@ -539,14 +643,6 @@ def evaluate_sheet(req: EvaluateSheetRequest, current: User = Depends(get_curren
     # that does this, once, using whatever marks the teacher actually
     # approved -- mirrors mobile_scan.finalize_scan_session's same one-shot
     # design for the scan-and-grade flow.
-
-    awarded = sum(e.awarded_marks for _, e in graded)
-    maximum = sum(e.max_marks for _, e in graded)
-    from .audit_log import get_audit_log
-    get_audit_log(cfg.data_root).append(
-        "sheet_evaluated", assessment_id=req.assessment_id, student_id=req.student_id,
-        details={"totalAwarded": awarded, "totalMax": maximum, "questionCount": len(graded)},
-    )
     return EvaluateSheetResponse(
         assessment_id=req.assessment_id, student_id=req.student_id,
         total_awarded=awarded, total_max=maximum,
@@ -559,6 +655,8 @@ def evaluate_sheet(req: EvaluateSheetRequest, current: User = Depends(get_curren
 class SheetReviewRequest(Camel):
     action: str  # "approve" | "edit"
     marks: Optional[int] = None
+    # Needed only to change marks on a finalized sheet (grade_lock.py).
+    reason: str = ""
 
 
 class SheetReviewResponse(Camel):
@@ -571,14 +669,17 @@ class SheetReviewResponse(Camel):
              response_model=SheetReviewResponse)
 def review_sheet_answer(assessment_id: str, student_id: str, question_id: str,
                          req: SheetReviewRequest,
-                         current: User = Depends(get_current_user)) -> SheetReviewResponse:
+                         current: User = Depends(require_staff)) -> SheetReviewResponse:
     """Records the teacher's approve/adjust decision on one answer from a
     prior POST /evaluations/sheet, so it survives past the Evaluate tab's
-    local widget state. Each question here is decided exactly once (there is
-    no "already approved, now correcting" case like mobile_scan's ReviewItem
-    has) so this mirrors mobile_scan.review_decision's "edit" branch only --
-    no reason/reviewer_id gate, since that gate exists specifically for
-    *changing* an existing decision, which can't happen in this flow.
+    local widget state.
+
+    Before 2026-09-22 this docstring said a decision here could not be changed
+    later, so no reason gate was needed. That was wrong: nothing stopped an
+    edit after finalize, and the audit found a finalized sheet changed with no
+    entry written (item 8.5). A mark change to a finalized sheet now needs a
+    reason (409 without one), and every decision is audited with the caller as
+    the actor. See grade_lock.py.
 
     Requires a real logged-in caller from the assessment's own school (fixed
     2026-09-11: this endpoint mutated the graded store for any
@@ -593,7 +694,9 @@ def review_sheet_answer(assessment_id: str, student_id: str, question_id: str,
     idx = next((i for i, (q, _e) in enumerate(graded) if q.id == question_id), None)
     if idx is None:
         raise HTTPException(404, f"question {question_id} not in this sheet")
+    _require_consent(student_id, current)
     question, ev = graded[idx]
+    before = ev.awarded_marks
 
     if req.action == "approve":
         pass  # accept the AI's award as-is
@@ -605,6 +708,19 @@ def review_sheet_answer(assessment_id: str, student_id: str, question_id: str,
     else:
         raise HTTPException(400, f"unknown action {req.action!r}")
 
+    audit = _audit()
+    if ev.awarded_marks != before:
+        finalized = require_reason_if_finalized(audit, assessment_id, student_id, req.reason)
+    else:
+        # An approval, or an edit to the same mark, changes nothing and needs
+        # no reason. It is still logged.
+        finalized = audit.has_entry(FINALIZED_ACTION, assessment_id=assessment_id,
+                                    student_id=student_id)
+    record_grade_change(audit, "sheet_answer_reviewed", assessment_id=assessment_id,
+                        student_id=student_id, actor=current.id, finalized=finalized,
+                        reason=req.reason, question_id=question_id,
+                        before=before, after=ev.awarded_marks,
+                        extra={"decision": req.action})
     store.save(assessment_id, student_id, graded)
     return SheetReviewResponse(
         question_id=question_id, awarded_marks=ev.awarded_marks, max_marks=ev.max_marks,
@@ -627,12 +743,27 @@ class SheetFinalizeResponse(Camel):
              response_model=SheetFinalizeResponse)
 def finalize_sheet_review(assessment_id: str, student_id: str,
                            req: SheetFinalizeRequest,
-                           current: User = Depends(get_current_user),
+                           current: User = Depends(require_staff),
                            ) -> SheetFinalizeResponse:
     """Folds a teacher-reviewed sheet (whatever mix of approved/edited marks
     is currently in the graded store) into the student's knowledge state,
     exactly once. See the comment on evaluate_sheet() for why that endpoint
     doesn't do this itself.
+
+    "Exactly once" holds across repeated calls (fixed 2026-09-22, Task 306).
+    Before, every call appended the whole sheet to mastery again, and the
+    obvious workflow after grade_lock.py -- correct a finalized mark with a
+    reason, press Finalize again -- counted the sheet twice. Now:
+
+    * finalize again with no mark changed since: 200 with the same totals, and
+      nothing is written (no mastery update, no second finalize entry);
+    * finalize again after a correction: a new finalize entry
+      (`refinalized: true`), and the sheet's earlier contribution to mastery
+      is replaced by the corrected one (KnowledgeStore.record_sheet);
+    * a sheet finalized before this fix, whose answers are in mastery
+      untagged and so cannot be told apart from other evidence: 409. Adding
+      the sheet again would count it twice, so it is refused rather than
+      guessed at.
 
     Requires a real logged-in caller from the assessment's own school (fixed
     2026-09-11: auth used to be optional here despite this endpoint mutating
@@ -647,22 +778,52 @@ def finalize_sheet_review(assessment_id: str, student_id: str,
     graded = store.get(assessment_id, student_id)
     if not graded:
         raise HTTPException(404, "no evaluated sheet found for this assessment/student")
+    # Finalizing folds the sheet into the student's mastery model -- new
+    # processing, so a withdrawn consent stops it (authz.require_consent).
+    _require_consent(student_id, current)
 
-    knowledge.record_evaluations(student_id, graded)
     awarded = sum(e.awarded_marks for _, e in graded)
     maximum = sum(e.max_marks for _, e in graded)
-    from .audit_log import get_audit_log
-    get_audit_log(cfg.data_root).append(
-        "sheet_reviewed", assessment_id=assessment_id, student_id=student_id,
-        actor=current.id,
-        details={"totalAwarded": awarded, "totalMax": maximum, "questionCount": len(graded),
-                 "reviewerName": current.name},
-    )
-    return SheetFinalizeResponse(
+    response = SheetFinalizeResponse(
         assessment_id=assessment_id, student_id=student_id,
         total_awarded=awarded, total_max=maximum,
         percentage=round(100.0 * awarded / maximum, 2) if maximum else 0.0,
     )
+    audit = _audit()
+    source = sheet_source(assessment_id, student_id)
+    earlier = audit.sheet_entries(FINALIZED_ACTION, assessment_id=assessment_id,
+                                  student_id=student_id)
+    if earlier:
+        if knowledge.sheet_matches(student_id, source, graded):
+            return response  # already finalized with these marks
+        tagged_finalize = any((e.get("details") or {}).get("masterySource") == source
+                              for e in earlier)
+        if not tagged_finalize and not knowledge.sheet_recorded(student_id, source):
+            # Every earlier finalize predates the tag, so its answers are in
+            # mastery untagged. (A tagged finalize whose mastery write failed
+            # is the other way to reach here with nothing tagged, and that one
+            # is safe to record: its entry carries masterySource.)
+            raise HTTPException(
+                409, f"the sheet for student {student_id} was finalized before "
+                     "re-finalizing was supported; its answers are already in the "
+                     "student's mastery and cannot be replaced safely, so it is not "
+                     "re-finalized. Corrected marks stay saved and audited.")
+    # This entry is also what locks the sheet (grade_lock.FINALIZED_ACTION).
+    # From here on, a mark change needs a reason. It is written before the
+    # knowledge model is touched: if the append raises (a 503 from a lost seq
+    # race or a misconfigured remote table), mastery must not already have
+    # moved, or the client's retry would record the same evaluations twice
+    # into a sheet that is still unlocked. mobile_routes.finalize_scan_session
+    # uses the same order.
+    audit.append(
+        FINALIZED_ACTION, assessment_id=assessment_id, student_id=student_id,
+        actor=current.id,
+        details={"totalAwarded": awarded, "totalMax": maximum, "questionCount": len(graded),
+                 "reviewerName": current.name, "masterySource": source,
+                 "refinalized": bool(earlier)},
+    )
+    knowledge.record_sheet(student_id, graded, source)
+    return response
 
 
 # ---------------- Pillar 3: knowledge ----------------
@@ -692,6 +853,7 @@ def student_knowledge(student_id: str, current: User = Depends(get_current_user)
     require_school_owns_student(_users(), student_id, current)
     _, knowledge, _ = _require()
     views = knowledge.mastery(student_id)
+    _log_read(current, "knowledge", student_id=student_id)
     return StudentMasteryResponse(
         student_id=student_id,
         overall_mastery=knowledge.overall(student_id),
@@ -720,6 +882,7 @@ def student_progress_report(student_id: str, student_name: str = "Student",
     views = knowledge.mastery(student_id)
     if not views:
         raise HTTPException(404, f"no graded answers recorded for {student_id}")
+    _log_read(current, "progress_report", student_id=student_id)
     template = TemplateStore(cfg.data_root / "templates" / "templates.sqlite").default_for("school_1")
     path = report_pdf.export_progress_report_pdf(
         student_name, student_id, subject, views, cfg.data_root / "exports", template=template)
@@ -732,8 +895,16 @@ class PracticeRequestBody(Camel):
     student_id: str
     per_concept: int = 2
     subject: str = "Science"
+    # Deliberately still class 10 Science when omitted: the shipped app posts only
+    # studentId + perConcept (pillar_api.dart generatePractice) and a student
+    # record holds no grade, so requiring it would 422 every practice request.
     grade: str = "X"
     correct_options: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("grade", mode="before")
+    @classmethod
+    def _grade_pool_key(cls, v: object) -> str:
+        return grades.to_roman(v)   # ValueError -> 422; 'X', '10', 10, '10th' -> 'X'
 
 
 class PracticeItemResponse(Camel):
@@ -757,6 +928,7 @@ class PracticeSetResponse(Camel):
 def generate_practice(req: PracticeRequestBody, current: User = Depends(get_current_user)) -> PracticeSetResponse:
     require_school_owns_student(_users(), req.student_id, current)
     _, knowledge, _ = _require()
+    _require_consent(req.student_id, current)
     weak = knowledge.weak_concepts(req.student_id, limit=3)
     if not weak:
         raise HTTPException(400, "No weak concepts for this student — nothing to remediate yet.")
@@ -805,6 +977,7 @@ def submit_practice(body: PracticeSubmitBody, current: User = Depends(get_curren
     if pset is None:
         raise HTTPException(404, "practice set not found")
     require_school_owns_student(_users(), pset.student_id, current)
+    _require_consent(pset.student_id, current)
     res = remediation_mod.submit_practice(pset, body.answers, knowledge)
     return PracticeResultResponse(
         set_id=res.set_id, student_id=res.student_id, score=res.score, max_score=res.max_score,
@@ -849,12 +1022,15 @@ class ClassInsightsResponse(Camel):
 
 @router.get("/insights/class/{assessment_id}", response_model=ClassInsightsResponse)
 def class_report(assessment_id: str, class_id: str = "10A",
-                 current: User = Depends(get_current_user)) -> ClassInsightsResponse:
+                 current: User = Depends(require_staff)) -> ClassInsightsResponse:
     _require_school_owns_assessment(assessment_id, current)
     _require()
     per_student = _require_graded().for_assessment(assessment_id)
     if not per_student:
         raise HTTPException(404, "No evaluated answer sheets for this assessment yet.")
+    # One entry for the whole class, listing whose sheets were read.
+    _log_read(current, "class_insights", assessment_id=assessment_id,
+              student_ids=per_student.keys(), classId=class_id)
     ci = insights_mod.class_insights(assessment_id, class_id, per_student)
     return ClassInsightsResponse(
         assessment_id=ci.assessment_id, class_id=ci.class_id, students=ci.students,

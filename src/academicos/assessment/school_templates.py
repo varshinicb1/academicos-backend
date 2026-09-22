@@ -17,14 +17,17 @@ losing it silently reverts every generated paper to the default CBSE look.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import uuid
 from pathlib import Path
 from typing import Optional
 
-from .schemas import SchoolTemplate, SectionBlueprint
+from .schemas import PaperTemplate, SchoolTemplate, SectionBlueprint
 from .postgres_kv import durable_table
-from .templates import default_sections
+from .templates import default_sections, template_section_blueprints
+
+log = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS school_templates (
@@ -88,6 +91,30 @@ class TemplateStore:
                                 (template_id,)).fetchone()
         return _row(row) if row else None
 
+    def row_info(self, template_id: str) -> Optional[tuple[str, str]]:
+        """(kind, school_id) of a stored row -- "paper" or "school" -- or None.
+        What the older `/school-templates` routes check before touching an id,
+        since the table holds both kinds and the URL's school proves nothing
+        about which school the row belongs to."""
+        if self._remote.enabled:
+            rows = self._remote.select(id=template_id)
+        else:
+            rows = self.conn.execute("SELECT * FROM school_templates WHERE id=?",
+                                     (template_id,)).fetchall()
+        if not rows:
+            return None
+        return _payload_kind(rows[0]), rows[0]["school_id"]
+
+    def get_branding(self, template_id: str, school_id: str,
+                     ) -> Optional[tuple[SchoolTemplate, list[SectionBlueprint]]]:
+        """`get`, limited to one school's branding rows: the lookup for any
+        caller that resolves a client-supplied `templateId` without an owner
+        check (quick and custom generation, `sections_for`)."""
+        info = self.row_info(template_id)
+        if info is None or info != ("school", school_id):
+            return None
+        return self.get(template_id)
+
     def list_for_school(self, school_id: str) -> list[SchoolTemplate]:
         """Empty here means "school has never saved a template" -- and this
         is the list the AI Assessment Designer checks before it will
@@ -111,20 +138,77 @@ class TemplateStore:
         return self._list_raw(school_id)
 
     def _list_raw(self, school_id: str) -> list[SchoolTemplate]:
+        """The school's BRANDING templates. Teacher paper templates share this
+        table but are left out: they can be private to one teacher, and this
+        list is served to the whole school by `/school-templates`."""
+        return [_row_template(r) for r in self._rows_for_school(school_id)
+                if _payload_kind(r) != "paper"]
+
+    def _rows_for_school(self, school_id: str) -> list:
         if self._remote.enabled:
-            rows = self._remote.select(school_id=school_id, order="is_default.desc")
-            return [_remote_row(r)[0] for r in rows]
-        rows = self.conn.execute(
+            return self._remote.select(school_id=school_id, order="is_default.desc")
+        return self.conn.execute(
             "SELECT * FROM school_templates WHERE school_id=? ORDER BY is_default DESC, name",
             (school_id,)).fetchall()
-        return [_row(r)[0] for r in rows]
+
+    # ---- teacher paper templates (Task 901) ----
+    #
+    # Same table, same durable backend, no schema migration: the kind lives
+    # in the JSON payload, so the Supabase table (whose columns this code
+    # cannot migrate) needs no change either. Rows written before this
+    # existed have no kind and read as branding, which is what they are.
+
+    def save_paper_template(self, template: PaperTemplate) -> PaperTemplate:
+        """Stores the template with its SectionBlueprint form in the `sections`
+        column, which the table requires. That column is NOT served for a
+        paper row: `sections_for` and `get_branding` skip paper templates,
+        because they have no owner check and a template can be private."""
+        sections = [s if s.id else s.model_copy(update={"id": f"s{i + 1}"})
+                    for i, s in enumerate(template.sections)]
+        template = template.model_copy(update={
+            "kind": "paper", "is_default": False, "is_preset": False, "sections": sections,
+            "scope_notes": []})
+        saved = self.save(template, template_section_blueprints(template.sections))
+        return template.model_copy(update={"id": saved.id})
+
+    def get_paper_template(self, template_id: str) -> Optional[PaperTemplate]:
+        if self._remote.enabled:
+            rows = self._remote.select(id=template_id)
+        else:
+            rows = self.conn.execute("SELECT * FROM school_templates WHERE id=?",
+                                     (template_id,)).fetchall()
+        if not rows or _payload_kind(rows[0]) != "paper":
+            return None
+        return PaperTemplate.model_validate(_payload_template(rows[0]))
+
+    def list_paper_templates(self, school_id: str) -> list[PaperTemplate]:
+        """Every readable paper template of the school. A row that no longer
+        validates (saved before a validator tightened, or written through the
+        remote path) is skipped and logged: failing the whole list would take
+        down the builder's first screen for every teacher in the school over
+        one template."""
+        out: list[PaperTemplate] = []
+        for r in self._rows_for_school(school_id):
+            if _payload_kind(r) != "paper":
+                continue
+            try:
+                out.append(PaperTemplate.model_validate(_payload_template(r)))
+            except ValueError as exc:  # pydantic's ValidationError is a ValueError
+                log.warning("skipping unreadable paper template %s of school %s: %s",
+                            r["id"], school_id, exc)
+        return sorted(out, key=lambda t: t.name.lower())
 
     def sections_for(self, school_id: str, template_id: str | None,
                      total_marks: int) -> list[SectionBlueprint]:
         """The section layout a paper should use: explicit template, the school
-        default, else the built-in CBSE pattern scaled to the mark total."""
+        default, else the built-in CBSE pattern scaled to the mark total.
+
+        An explicit id counts only when it is one of THIS school's branding
+        rows. A teacher's paper template in the same table is private to its
+        owner, and this method has no caller to check that against; its
+        sections are served by `/teacher-templates`, which does."""
         if template_id:
-            found = self.get(template_id)
+            found = self.get_branding(template_id, school_id)
             if found and found[1]:
                 return found[1]
         if self._remote.enabled:
@@ -162,6 +246,21 @@ class TemplateStore:
             return
         self.conn.execute("DELETE FROM school_templates WHERE id=?", (template_id,))
         self.conn.commit()
+
+
+def _payload_template(row) -> dict:
+    """The stored template dict, from either backend's row shape."""
+    if isinstance(row, dict):
+        return row["payload"]["template"]
+    return json.loads(row["payload"])
+
+
+def _payload_kind(row) -> str:
+    return _payload_template(row).get("kind") or "school"
+
+
+def _row_template(row) -> SchoolTemplate:
+    return (_remote_row(row) if isinstance(row, dict) else _row(row))[0]
 
 
 def _row(row: sqlite3.Row) -> tuple[SchoolTemplate, list[SectionBlueprint]]:

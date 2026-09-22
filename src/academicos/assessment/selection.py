@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from collections import Counter
 
+from .pool import near_duplicate
 from .schemas import Blueprint, QuestionOptimizationResult, QuestionSchema, SectionBlueprint
 from .templates import default_sections
 
@@ -98,6 +99,12 @@ def _fits_section(q: QuestionSchema, section: SectionBlueprint) -> bool:
     return True
 
 
+def _repeats_paper(q: QuestionSchema, *on_paper: list[QuestionSchema]) -> bool:
+    """Is `q` a near-duplicate of any question already printed, OR partners
+    included? One implementation, `pool.near_duplicate`, for every path."""
+    return any(near_duplicate(q.stem, p.stem) for group in on_paper for p in group)
+
+
 def optimize(candidates: list[QuestionSchema], blueprint: Blueprint,
             fallback_candidates: list[QuestionSchema] | None = None) -> QuestionOptimizationResult:
     sections = blueprint.sections or default_sections(blueprint.total_marks)
@@ -112,6 +119,7 @@ def optimize(candidates: list[QuestionSchema], blueprint: Blueprint,
     fallback_remaining = [q for q in (fallback_candidates or []) if q.id not in selected_ids_seen]
     selected: list[QuestionSchema] = []
     paired_choice_ids: set[str] = set()
+    paired: list[QuestionSchema] = []   # the OR partners: printed too
     used_chapters: Counter = Counter()
     warnings: list[str] = []
     gaps: list[str] = []
@@ -121,31 +129,59 @@ def optimize(candidates: list[QuestionSchema], blueprint: Blueprint,
         current_cbq = sum(1 for q in selected if is_competency_question(q))
         need_cbq = (current_cbq / len(selected) < competency_target) if selected else True
 
-        pool = [q for q in remaining if _fits_section(q, section)]
-        shortfall = section.question_count - len(pool)
-        if shortfall > 0:
+        def ranked(qs: list[QuestionSchema]) -> list[QuestionSchema]:
+            return sorted(
+                qs,
+                key=lambda q: _score(q, chapter_weights, used_chapters, tier, need_cbq),
+                reverse=True,
+            )
+
+        # Accept in rank order, skipping a question that restates one already
+        # on the paper (`pool.near_duplicate`, the guard the template path and
+        # swap/pick use). Without it the real pair of Class 10 Mathematics
+        # MCQs (Task 903's test) filled two slots of one 1-mark section.
+        # Returns how many it skipped as repeats, for the gap wording.
+        take: list[QuestionSchema] = []
+
+        def accept(qs: list[QuestionSchema]) -> int:
+            skipped = 0
+            for q in ranked(qs):
+                if len(take) == section.question_count:
+                    break
+                if _repeats_paper(q, selected + take, paired):
+                    skipped += 1
+                else:
+                    take.append(q)
+            return skipped
+
+        # The duplicate filter runs BEFORE the fallback is asked, and the
+        # fallback is filtered the same way. Borrowing exactly the raw
+        # shortfall first and filtering after (the order before this) left a
+        # section short whenever the filter dropped a question -- while the
+        # gap said the shortfall had been filled.
+        repeats = accept([q for q in remaining if _fits_section(q, section)])
+        if len(take) < section.question_count:
             gaps.append(
                 f"Section {section.label} ({section.name}): needs {section.question_count} "
-                f"questions worth {section.marks_per_question} marks each, only {len(pool)} "
+                f"questions worth {section.marks_per_question} marks each, only {len(take)} "
                 f"available in the selected chapters."
             )
-            extra = [q for q in fallback_remaining if _fits_section(q, section)]
-            if extra:
-                extra.sort(
-                    key=lambda q: _score(q, chapter_weights, used_chapters, tier, need_cbq),
-                    reverse=True,
-                )
-                borrowed = extra[:shortfall]
-                pool = pool + borrowed
+            before = len(take)
+            repeats += accept([q for q in fallback_remaining if _fits_section(q, section)])
+            if len(take) > before:
                 gaps.append(
-                    f"Section {section.label}: filled {len(borrowed)} of the shortfall from "
+                    f"Section {section.label}: filled {len(take) - before} of the shortfall from "
                     f"outside the selected chapters so the section isn't left blank."
                 )
-        pool.sort(
-            key=lambda q: _score(q, chapter_weights, used_chapters, tier, need_cbq),
-            reverse=True,
-        )
-        take = pool[: section.question_count]
+        # Whatever the cause -- too few in the bank, or the rest repeating a
+        # question already on the paper -- a section that prints short says so.
+        if len(take) < section.question_count:
+            why = (" after leaving out ones that repeat a question already on the paper"
+                   if repeats else "")
+            gaps.append(
+                f"Section {section.label} ({section.name}): only {len(take)} of "
+                f"{section.question_count} questions{why}; the section prints short."
+            )
         for q in take:
             selected.append(q)
             if q in remaining:
@@ -161,6 +197,8 @@ def optimize(candidates: list[QuestionSchema], blueprint: Blueprint,
             choice_quota = section.internal_choice_count if section.internal_choice_count > 0 else max(1, len(take) // 3)
             # Select target questions to receive an "OR" alternative
             eligible_for_or = take[-choice_quota:]
+            offered = 0
+            left_out_as_repeat = 0
             for primary_q in eligible_for_or:
                 # Find best alternative from same chapter and section fit
                 alt_pool = [
@@ -177,16 +215,37 @@ def optimize(candidates: list[QuestionSchema], blueprint: Blueprint,
                         ),
                         reverse=True,
                     )
-                    alt_q = alt_pool[0]
+                    # The partner is printed too, so it may not restate any
+                    # question on the paper -- its own primary included. Checked
+                    # down the ranking, not over the whole pool.
+                    alt_q = next((c for c in alt_pool if not _repeats_paper(c, selected, paired)), None)
+                    if alt_q is None:
+                        left_out_as_repeat += 1
+                        continue
                     primary_q.metadata["internal_choice_id"] = alt_q.id
                     primary_q.metadata["internal_choice_stem"] = alt_q.stem
                     primary_q.metadata["internal_choice_scheme"] = alt_q.answer_scheme.model_answer
                     primary_q.metadata["internal_choice_question"] = alt_q.model_dump(by_alias=False)
                     paired_choice_ids.add(alt_q.id)
+                    paired.append(alt_q)
                     if alt_q in remaining:
                         remaining.remove(alt_q)
                     elif alt_q in fallback_remaining:
                         fallback_remaining.remove(alt_q)
+                    offered += 1
+            # A section offering fewer ORs than its blueprint asks for (the
+            # Hindi Khand Gha rows need 2 and 1) says so: a silently missing
+            # choice is a wrong paper the teacher would not notice.
+            # Counted against the primaries actually printed: a section that
+            # already prints short has its own gap above.
+            if offered < len(eligible_for_or):
+                why = ("the other alternatives repeat a question already on the paper"
+                       if left_out_as_repeat else
+                       "no other question of this section's marks and type is left to offer")
+                gaps.append(
+                    f"Section {section.label}: only {offered} of {len(eligible_for_or)} internal "
+                    f"choices offered; {why}."
+                )
 
     selected_ids = {q.id for q in selected}
     rejected = [q for q in candidates if q.id not in selected_ids and q.id not in paired_choice_ids]

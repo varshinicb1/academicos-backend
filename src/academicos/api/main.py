@@ -23,11 +23,21 @@ from pydantic import BaseModel, Field
 
 from ..agents.orchestrator import DoubtSolver, ExaminerScorer, PaperAnalyst
 from ..assessment import auth_routes, consent_routes, ingest_routes, mobile_routes, mobile_scan, pillar_routes
+from ..assessment import grade_by_question
+from ..assessment import paper_template_routes
+from ..assessment import qbank_routes
 from ..assessment import routes as assessment_routes
 from ..assessment.supabase_kv import SupabaseUnavailable
+from ..assessment.api_keys import ScopeError
+from ..assessment.llm_evaluate import LLMEvaluationError
+from ..assessment.qbank_store import ReviewStateError
+from ..llm.sarvam import LLMProviderError
 from ..assessment.postgres_kv import durable_table
 from ..assessment.auth_routes import get_current_user
-from ..config import Config, get_config
+from ..assessment.authz import require_school_owns_student
+from ..assessment.users import User
+from ..config import (Config, LLMNotEnabled, build_identity, enforce_production_config,
+                      get_config, is_production)
 from ..curriculum import routes as curriculum_routes
 from ..graph.store import GraphStore
 from ..llm.budget import LLMBudgetExceeded, llm_budget
@@ -124,7 +134,10 @@ else:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins,
-        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$|^https://.*\.onrender\.com$|^https://.*\.web\.app$|^https://.*\.firebaseapp\.com$|^https://.*\.github\.io$",
+        # Any *.web.app is ANY Firebase site, not this school's. In production
+        # only the origins CI passes in ACOS_CORS_ORIGINS (the project's own
+        # web.app / firebaseapp.com) are answered; the wildcards stay for dev.
+        allow_origin_regex=None if is_production() else r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$|^https://.*\.onrender\.com$|^https://.*\.web\.app$|^https://.*\.firebaseapp\.com$|^https://.*\.github\.io$",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -136,6 +149,13 @@ app.include_router(ingest_routes.router)
 app.include_router(auth_routes.router)
 app.include_router(consent_routes.router)
 app.include_router(curriculum_routes.router)
+app.include_router(paper_template_routes.router)
+# The question-bank API carries its own `/v1/...` paths and its own key auth,
+# so it is mounted at the root rather than under `/api/v1` -- its paths are
+# part of a published contract that third parties will build against, and
+# `docs/question-bank-api.md` fixes them as `GET /v1/questions` and friends.
+app.include_router(qbank_routes.router)
+app.include_router(grade_by_question.router)
 
 
 @app.exception_handler(SupabaseUnavailable)
@@ -150,6 +170,89 @@ def _on_supabase_unavailable(_request: Any, exc: SupabaseUnavailable) -> JSONRes
     logger.error("Supabase call failed: %s", exc, exc_info=exc)
     return JSONResponse(status_code=503,
                         content={"detail": f"storage backend unavailable: {exc}"})
+
+
+# --- domain exceptions that used to surface as bare 500s -------------------
+#
+# Four exception classes were raised but never caught anywhere, so every one of
+# them reached the client as a 500. A 500 says "we broke"; three of these say
+# something the caller can act on, and one says the provider did. Mapping them
+# here rather than in each route means a new call site cannot forget.
+
+@app.exception_handler(ScopeError)
+def _on_scope_error(_request: Any, exc: ScopeError) -> JSONResponse:
+    """A scope outside the vocabulary is the CALLER's mistake: 400.
+
+    Raised by `validate_scopes` when a key is defined with an unknown scope,
+    with one permanently refused because it would reach student data, or with
+    none at all. The message is safe to return and is the useful part -- it
+    names the offending scopes and lists the vocabulary -- so a caller can fix
+    the request without reading our source.
+    """
+    logger.info("scope validation rejected a request: %s", exc)
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(ReviewStateError)
+def _on_review_state_error(_request: Any, exc: ReviewStateError) -> JSONResponse:
+    """An illegal state transition is a CONFLICT: 409.
+
+    The request is well-formed and the resource exists; what fails is the
+    transition against its current state (already `published`, `draft -> retired`
+    is not legal, a no-op that would make the audit trail ambiguous).
+
+    Known imprecision, recorded rather than hidden: this class also covers
+    "unknown question", which would ideally be 404. Splitting it needs two
+    exception classes, not a cleverer handler, and 409 is correct for the
+    majority. `str(exc)` is returned because it names the states involved.
+    """
+    logger.info("review-state transition rejected: %s", exc)
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(LLMProviderError)
+def _on_llm_provider_error(_request: Any, exc: LLMProviderError) -> JSONResponse:
+    """503: the model provider is unreachable or not configured.
+
+    Deliberately does NOT echo `str(exc)`. Most of these are "SARVAM_API_KEY is
+    not set", but the class also wraps provider HTTP failures, and an operator
+    message is not the caller's business. Name the subsystem, log the detail.
+    """
+    logger.error("LLM provider unavailable: %s", exc)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "the language model provider is unavailable"},
+    )
+
+
+@app.exception_handler(LLMEvaluationError)
+def _on_llm_evaluation_error(_request: Any, exc: LLMEvaluationError) -> JSONResponse:
+    """502: the provider answered, but not usably.
+
+    Distinct from 503 on purpose. 502 means the upstream was reached and
+    returned something we cannot use (no JSON object in the response); 503
+    means we could not reach it. Retrying is sensible for one and pointless for
+    the other, so collapsing them would lose the distinction the caller needs.
+
+    `str(exc)` is NOT returned: these carry raw model output
+    (`f"no JSON object in model response: {raw[:200]!r}"`), and echoing model
+    output to a client is how prompt content leaks.
+    """
+    logger.error("LLM evaluation failed: %s", exc)
+    return JSONResponse(
+        status_code=502,
+        content={"detail": "the language model returned an unusable response"},
+    )
+
+
+@app.exception_handler(LLMNotEnabled)
+def _on_llm_not_enabled(_request: Any, exc: LLMNotEnabled) -> JSONResponse:
+    """501: this deployment has no AI provider key. Not 503 -- retrying will
+    never help until an administrator configures one -- and a distinct `code`
+    so a client can show "not enabled for this school" rather than an error."""
+    logger.info("LLM feature requested with no provider key configured")
+    return JSONResponse(status_code=501,
+                        content={"detail": str(exc), "code": "llm_not_enabled"})
 
 
 class SearchRequest(BaseModel):
@@ -232,7 +335,29 @@ def init_runtime(config: Optional[Config] = None) -> None:
     auth_routes.init(cfg)
     consent_routes.init(cfg.data_root)
     curriculum_routes.init(cfg)
+    paper_template_routes.init(cfg)
     mobile_scan.configure_workdir(cfg.data_root / "scan-sessions")
+    # The public question-bank API. Its own key store and its own scope
+    # vocabulary, deliberately separate from the user auth above: an API key is
+    # a machine credential for content, and must never carry a user's identity.
+    # See assessment/api_keys.py for why student data is unexpressible here.
+    qbank_routes.init(cfg.data_root / "assessment" / "api_keys.sqlite",
+                      cfg.data_root / "syllabus" / "questions.json")
+
+    # Grade-by-question borrows pillar_routes' stores and guards rather than
+    # opening its own, so a bulk award goes through exactly the same
+    # authorization and clamping the per-student path uses. `questions_by_id`
+    # is best-effort: the marking scheme is an aid to grading, and a teacher
+    # must still be able to mark a question the bank has never seen.
+    grade_by_question.init(
+        graded=pillar_routes._graded,
+        require=pillar_routes._require,
+        require_school_owns_assessment=pillar_routes._require_school_owns_assessment,
+        questions_by_id=lambda qid: (qbank_routes._bank.get(qid)
+                                     if qbank_routes._bank is not None else None),
+        audit=pillar_routes._audit,
+        consent=pillar_routes._consents,
+    )
     if cfg.llm_api_key:
         from ..agents.critic import SarvamCritic
         from ..llm.sarvam import SarvamLLM
@@ -246,12 +371,32 @@ def init_runtime(config: Optional[Config] = None) -> None:
 
 @app.on_event("startup")
 def _startup() -> None:
-    init_runtime()
+    cfg = Config.load()
+    # First, before any store opens: a misconfigured production service must
+    # fail to start (the Cloud Run revision never goes ready and the deploy
+    # goes red) rather than serve a school on placeholder secrets.
+    enforce_production_config(cfg)
+    from ..assessment.pdf import register_unicode_font
+    logger.info("PDF body font: %s", register_unicode_font())
+    init_runtime(cfg)
+
+
+@app.on_event("shutdown")
+def _shutdown() -> None:
+    """Cloud Run sends SIGTERM and allows 10 s before SIGKILL; uvicorn runs
+    this inside that window. CurriculumStore debounces its snapshot upload
+    (storage/snapshot_sync.py), so the last edits before a deploy can still
+    be waiting -- upload them now or they die with the container."""
+    from ..storage.snapshot_sync import flush_all_snapshots
+    flush_all_snapshots()
 
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    """Liveness plus build identity. The 2026-09-21 audit found the live
+    service a build 4+ days behind its source and unable to say so; the deploy
+    job now fails unless `commit` is the commit it just deployed."""
+    return {"status": "ok", **build_identity()}
 
 
 @app.get("/health/llm")
@@ -281,16 +426,24 @@ def health_llm() -> dict:
 _DURABLE_STORES = [
     "AssessmentStore", "PaperStore", "PracticeStore", "GradedStore",
     "ScanSessionStore", "TemplateStore", "UserStore", "AuditLog",
-    "EventStore", "CurriculumStore (snapshot/restore)",
+    "EventStore", "KnowledgeStore", "ConsentStore",
+    "CurriculumStore (snapshot/restore)",
 ]
 
 # One SupabaseTable per _DURABLE_STORES row above (keep the two lists in
 # sync): the real table each store reads/writes, so the probe below covers
 # every durability-critical table, not just one of them.
+#
+# This is also THE list of tables the service requires, on either backend:
+# tests/test_health_storage_schema.py pins it to exactly the tables
+# deploy/gcp/schema.sql creates (schema.sql itself is not in the image, so it
+# cannot be read at runtime). parental_consents joined 2026-09-22: ConsentStore
+# has used it since the DPDP pass, but the probe never looked, so a Cloud SQL
+# instance missing it would have reported healthy.
 _DURABLE_TABLES = [
     "assessments", "papers", "practice_sets", "graded_evaluations",
-    "scan_sessions", "school_templates", "users", "sessions",
-    "audit_log", "learner_events",
+    "scan_sessions", "school_templates", "users", "sessions", "invites",
+    "audit_log", "learner_events", "learner_models", "parental_consents",
 ]
 
 # How long one /health/storage answer stays good. The 2026-09-15 stress
@@ -308,20 +461,62 @@ _probe_cache: dict[str, Any] = {"at": 0.0, "body": None}
 _probe_lock = threading.Lock()
 
 
-def _probe_table(table: str) -> tuple[str, str]:
+def _table_missing(exc: SupabaseUnavailable) -> bool:
+    """True only when the error says the table itself does not exist -- not
+    for an outage, a timeout or a permissions problem, which say nothing
+    about the schema. Cloud SQL: psycopg's UndefinedTable, SQLSTATE 42P01,
+    which postgres_kv chains as the PostgresUnavailable's cause. Supabase:
+    PostgREST's PGRST205 ("Could not find the table")."""
+    if getattr(exc.__cause__, "sqlstate", None) == "42P01":
+        return True
+    return getattr(exc, "status", None) == 404 and "PGRST205" in str(exc)
+
+
+def _probe_table(table: str) -> tuple[str, str, Optional[bool]]:
+    """(table, "ok" | "error: ...", exists). `exists` is None when the probe
+    could not tell -- the backend did not answer."""
     try:
         durable_table(table).select(limit=1)
-        return table, "ok"
+        return table, "ok", True
     except SupabaseUnavailable as exc:
-        return table, f"error: {exc}"
+        return table, f"error: {exc}", (False if _table_missing(exc) else None)
 
 
-def _probe_all_tables() -> dict[str, str]:
+def _probe_all_tables() -> tuple[dict[str, str], dict[str, Optional[bool]]]:
     tables: dict[str, str] = {}
+    exists: dict[str, Optional[bool]] = {}
     with ThreadPoolExecutor(max_workers=len(_DURABLE_TABLES)) as pool:
-        for table, status in pool.map(_probe_table, _DURABLE_TABLES):
+        for table, status, present in pool.map(_probe_table, _DURABLE_TABLES):
             tables[table] = status
-    return tables
+            exists[table] = present
+    return tables, exists
+
+
+# Where /health/storage sends an operator for each backend when a required
+# table is missing. On Cloud SQL nothing applies schema.sql automatically --
+# not the workflow, not bootstrap.sh -- so a table added to schema.sql (as
+# learner_models was) is missing on every instance provisioned before it.
+_SCHEMA_FIX = {
+    "cloudsql": "apply deploy/gcp/schema.sql with scripts/apply_cloudsql_schema.sh "
+                "(docs/gcp-deployment.md section 6)",
+    "supabase": "run docs/supabase-setup.sql in the Supabase SQL editor",
+}
+
+
+def _overall_status(backend: str, tables: dict[str, str],
+                    exists: dict[str, Optional[bool]]) -> tuple[str, str, list[str]]:
+    """(status, status_detail, missing_tables). "ok" only when every required
+    table answered. A missing table outranks an unreachable one: it is the
+    one an operator can fix in one command, and it does not heal itself."""
+    missing = [t for t in _DURABLE_TABLES if exists.get(t) is False]
+    if missing:
+        return ("schema_missing",
+                f"required tables missing: {', '.join(missing)}; "
+                f"{_SCHEMA_FIX.get(backend, 'apply the schema')}", missing)
+    if all(status == "ok" for status in tables.values()):
+        return "ok", "every required table answered", missing
+    broken = [t for t, status in tables.items() if status != "ok"]
+    return "unreachable", f"tables did not answer: {', '.join(broken)}", missing
 
 
 def _durable_backend(cfg) -> str:
@@ -337,12 +532,27 @@ def _durable_backend(cfg) -> str:
     return "supabase" if cfg.supabase_enabled else "none"
 
 
+def _blob_backend() -> str:
+    """Where scan media and the curriculum snapshot actually go right now
+    (gcs | supabase | local) -- see storage/blobs.py. Reported separately from
+    durability_backend because the two moved to GCP independently: a service
+    can be on Cloud SQL and still be writing blobs to container disk."""
+    from ..storage.blobs import blob_backend
+    return blob_backend()
+
+
 def _refresh_storage_probe(cfg) -> dict:
-    tables = _probe_all_tables()
+    tables, exists = _probe_all_tables()
     reachable = all(status == "ok" for status in tables.values())
     backend = _durable_backend(cfg)
+    status, detail, missing = _overall_status(backend, tables, exists)
     body = {
+        "status": status,
+        "status_detail": detail,
+        "missing_tables": missing,
+        "table_exists": exists,
         "durability_backend": backend,
+        "blob_backend": _blob_backend(),
         "durability_reachable": reachable,
         "supabase_configured": cfg.supabase_enabled,
         # Legacy key: the Flutter client and the live cutover runbook both
@@ -363,6 +573,23 @@ def health_storage() -> dict:
     dashboard or grepping env vars on the host -- which durability backend
     the stores are bound to, and (only if one is configured) whether every
     durability-critical table is actually reachable right now, one limit-1
+    select each. `blob_backend` says where scan media and the curriculum
+    snapshot go (gcs | supabase | local).
+
+    `blob_status` (storage/blobs.py) adds this instance's snapshot conflicts,
+    the conflict copies that hold edits awaiting a merge, and failed blob
+    uploads. It is live, never cached: in-process counters, and a conflict
+    must show the moment it happens, not one probe TTL later. The table probe
+    is cached and single-flighted (see _storage_probe)."""
+    from ..storage.blobs import blob_status
+    return {**_storage_probe(), "blob_status": blob_status()}
+
+
+def _storage_probe() -> dict:
+    """Answers "is this actually live" without guessing from the hosting
+    dashboard or grepping env vars on the host -- which durability backend
+    the stores are bound to, and (only if one is configured) whether every
+    durability-critical table is actually reachable right now, one limit-1
     select each.
 
     `durability_reachable` is true only when ALL of them answer. Probing a
@@ -371,6 +598,14 @@ def health_storage() -> dict:
     `users`/`sessions` tables were missing and every auth call 500'd --
     the per-table detail below is the point: it names the broken one.
 
+    `status` is "ok" only when every required table answered;
+    "schema_missing" names the tables that do not exist (`missing_tables`,
+    `table_exists`) and the one command that creates them -- a Cloud SQL
+    instance provisioned before a table was added to schema.sql is exactly
+    that, and nothing applies schema.sql on deploy. "unreachable" is an
+    outage, which says nothing about the schema. The HTTP status stays 200:
+    this is a diagnostic, and the body is the verdict.
+
     Answers are cached for _STORAGE_PROBE_TTL_S seconds and refreshes are
     single-flighted (see above): this endpoint is 10x-amplified upstream
     traffic and must never be able to saturate the worker pool itself."""
@@ -378,7 +613,13 @@ def health_storage() -> dict:
     backend = _durable_backend(cfg)
     if backend == "none":
         return {
+            "status": "unconfigured",
+            "status_detail": "no durability backend configured: every store is "
+                             "on local disk",
+            "missing_tables": [],
+            "table_exists": {},
             "durability_backend": "none",
+            "blob_backend": _blob_backend(),
             "durability_reachable": None,
             "supabase_configured": False,
             "supabase_reachable": None,
@@ -475,11 +716,23 @@ def graph_paths(req: PathQuery) -> dict:
     return {"paths": [[e.type.value for e in p] for p in _graph.paths(req.source, req.target, req.max_depth)]}
 
 
-@app.post("/v1/revise", dependencies=[Depends(get_current_user)])
-def revise(req: ReviseRequest) -> dict:
+def _require_learner_access(learner_id: str, current: User) -> None:
+    """The learner in a /v1 request body is a student id, and a caller may
+    only name one they are entitled to: a student of their own school, and
+    for a student caller, themselves. Until 2026-09-21 these routes checked
+    only that the caller was logged in, and a school_B teacher received a
+    school_A student's due concepts and retention from /v1/revise. A learner
+    id that is no user at all is a 404, which is what these routes already
+    said for a learner with no events."""
+    require_school_owns_student(auth_routes._require(), learner_id, current)
+
+
+@app.post("/v1/revise")
+def revise(req: ReviseRequest, current: User = Depends(get_current_user)) -> dict:
     """P5.2 — what to revise today (FSRS-backed, from the learner's event store)."""
     if not _events:
         raise HTTPException(503, "runtime not initialized")
+    _require_learner_access(req.learner, current)
     from ..algorithms.forgetting import ForgettingModel, ForgettingParams, RevisionScheduler
 
     model = _events.replay(req.learner)
@@ -498,12 +751,16 @@ def revise(req: ReviseRequest) -> dict:
     }
 
 
-@app.post("/v1/plan", dependencies=[Depends(get_current_user)])
-def study_plan(req: StudyPlanRequest) -> dict:
+@app.post("/v1/plan")
+def study_plan(req: StudyPlanRequest, current: User = Depends(get_current_user)) -> dict:
     """P5.2 — today's study session: prereqs in order, FSRS-due items first,
     bounded by a daily capacity window."""
     if not _graph:
         raise HTTPException(503, "runtime not initialized")
+    # Without a learner the plan is the concept graph alone, which any
+    # caller may see; with one, it reads that student's event log.
+    if req.learner:
+        _require_learner_access(req.learner, current)
     from ..algorithms.forgetting import ForgettingModel, ForgettingParams
     from ..algorithms.study_planner import StudyPlanner
 

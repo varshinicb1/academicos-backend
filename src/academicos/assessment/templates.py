@@ -9,7 +9,7 @@ total_marks.
 """
 from __future__ import annotations
 
-from .schemas import BloomDistribution, DifficultyDistribution, SectionBlueprint
+from .schemas import BloomDistribution, DifficultyDistribution, SectionBlueprint, TemplateSection
 
 # Student-level tier presets (Testmate / PARAKH differentiated assessment paradigm)
 TIER_DIFFICULTY: dict[str, DifficultyDistribution] = {
@@ -109,30 +109,109 @@ def get_sections_for_exam_type(exam_type: str, total_marks: int = 80) -> list[Se
 
 
 def default_sections(total_marks: int) -> list[SectionBlueprint]:
+    """The CBSE A-E layout scaled to `total_marks`, summing to it EXACTLY.
+
+    This used to round each section's share independently, and the rounding
+    errors did not cancel: 61 of the 81 totals from 20 to 100 missed (40 came
+    out as 41, 50 as 52, 70 as 69, 100 as 101), so a teacher who asked for a
+    50-mark paper was handed a 52-mark one. Now Section A (1-mark items, the
+    only size that can absorb any remainder) is fixed at its share, and the
+    B-E question counts are the combination nearest their shares whose marks
+    make up exactly the rest. The search is a few hundred combinations, so it
+    is exhaustive rather than clever.
+    """
     if total_marks == 80:
         return get_sections_for_exam_type("board", 80)
+    if total_marks < 1:
+        return []
+
+    shares = [share for _, _, _, share, _ in _LAYOUT]
+    marks_per_q = [mpq for _, _, mpq, _, _ in _LAYOUT]
+    counts = _nearest_exact_counts(total_marks, marks_per_q, shares)
 
     sections: list[SectionBlueprint] = []
-    allocated = 0
-    for i, (label, name, marks_per_q, share, difficulties) in enumerate(_LAYOUT):
-        is_last = i == len(_LAYOUT) - 1
-        section_marks = (total_marks - allocated) if is_last else round(total_marks * share)
-        section_marks = max(section_marks, 0)
-        count = max(1, round(section_marks / marks_per_q)) if section_marks > 0 else 0
+    for (label, name, mpq, _share, difficulties), count in zip(_LAYOUT, counts):
         if count == 0:
             continue
-        actual_marks = count * marks_per_q
-        allocated += actual_marks
         sections.append(SectionBlueprint(
             id=f"section-{label.lower()}",
             label=label,
             name=name,
-            marks_per_question=marks_per_q,
+            marks_per_question=mpq,
             question_count=count,
-            total_marks=actual_marks,
+            total_marks=count * mpq,
             allowed_bloom_levels=[],
             allowed_difficulties=difficulties,
             has_internal_choice=label in ("C", "D", "E"),
             internal_choice_count=1 if label in ("C", "D", "E") else 0,
         ))
     return sections
+
+
+def _nearest_exact_counts(total: int, marks_per_q: list[int], shares: list[float]) -> list[int]:
+    """Question counts per section, index 0 being the 1-mark section, whose
+    marks sum to `total` exactly and sit as close to `shares` as possible."""
+    targets = [total * share / mpq for share, mpq in zip(shares, marks_per_q)]
+    first = max(1, round(targets[0]))
+    best: tuple[float, list[int]] | None = None
+    # Let the 1-mark section drift from its share only when nothing closer fits.
+    for drift in range(0, total):
+        for a in sorted({first - drift, first + drift}):
+            if a < 1 or a > total:
+                continue
+            rest = total - a
+            for combo in _combos(rest, marks_per_q[1:], targets[1:]):
+                counts = [a, *combo]
+                cost = sum((c - t) ** 2 / max(t, 1.0) for c, t in zip(counts, targets))
+                if best is None or cost < best[0]:
+                    best = (cost, counts)
+        if best is not None:
+            return best[1]
+    return [total] + [0] * (len(marks_per_q) - 1)
+
+
+def _combos(rest: int, marks_per_q: list[int], targets: list[float]):
+    """Every count vector within 2 of its target whose marks sum to `rest`."""
+    if not marks_per_q:
+        if rest == 0:
+            yield []
+        return
+    mpq, target = marks_per_q[0], targets[0]
+    low = max(0, int(target) - 2)
+    for count in range(low, int(target) + 3):
+        used = count * mpq
+        if used > rest:
+            break
+        for tail in _combos(rest - used, marks_per_q[1:], targets[1:]):
+            yield [count, *tail]
+
+
+def template_section_blueprints(sections: list[TemplateSection]) -> list[SectionBlueprint]:
+    """A teacher template's sections in the shape the selector and paper
+    builder already use, so a template id works anywhere a SectionBlueprint
+    list does (e.g. `TemplateStore.sections_for` from quick-generate).
+
+    `total_marks` is the section's ATTEMPTED marks -- what it contributes to
+    the paper -- not the printed marks, which differ under "attempt any N".
+    """
+    out: list[SectionBlueprint] = []
+    for i, s in enumerate(sections):
+        label = chr(ord("A") + i) if i < 26 else f"S{i + 1}"
+        allowed = []
+        if s.difficulty_mix is not None:
+            mix = s.difficulty_mix
+            allowed = [d for d, v in (("easy", mix.easy), ("medium", mix.medium),
+                                      ("hard", mix.hard)) if v > 0]
+        out.append(SectionBlueprint(
+            id=s.id or f"section-{label.lower()}",
+            label=label,
+            name=s.title,
+            marks_per_question=s.marks_each,
+            question_count=s.question_count,
+            total_marks=s.marks,
+            allowed_bloom_levels=[],
+            allowed_difficulties=allowed,
+            has_internal_choice=s.attempts < s.question_count,
+            internal_choice_count=s.question_count - s.attempts,
+        ))
+    return out

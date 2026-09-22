@@ -19,13 +19,14 @@ from __future__ import annotations
 
 import io
 import logging
-import os
 import time
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import requests
+
+from ..config import LLMNotEnabled, credential_or_none
 
 log = logging.getLogger(__name__)
 
@@ -72,9 +73,13 @@ class PageOCR:
 
 
 def api_key() -> str:
-    key = os.environ.get("SARVAM_API_KEY", "").strip()
-    if not key:
-        raise VisionError("SARVAM_API_KEY is not set")
+    """The Sarvam key, or LLMNotEnabled. Empty and bootstrap's REPLACE_ME both
+    mean "not configured" -- the placeholder used to be sent as a key.
+    LLMNotEnabled is not a VisionError, so ocr_page's retry loop and its
+    callers' per-page handlers cannot turn it into a blank page."""
+    key = credential_or_none("SARVAM_API_KEY")
+    if key is None:
+        raise LLMNotEnabled()
     return key
 
 

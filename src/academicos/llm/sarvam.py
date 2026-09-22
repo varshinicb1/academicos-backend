@@ -1,6 +1,7 @@
 """Minimal Sarvam LLM client (OpenAI-compatible chat completions).
 
-Reads the API key from `SARVAM_API_KEY` (or ACOS_LLM_API_KEY / config).
+Reads the API key from an explicit `api_key` or `SARVAM_API_KEY`; the
+deployment placeholder REPLACE_ME counts as no key (config.credential_or_none).
 Kept dependency-free (stdlib + requests) so the whole brain can call
 sarvam-30b / sarvam-105b without SDKs.
 
@@ -37,11 +38,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import time
 from typing import Any
 
+from ..config import SUPABASE_PLACEHOLDER, credential_or_none
 from .base import LLMProvider
 from .budget import consume_budget
 from .resilience import RetryPolicy, is_retryable_status, parse_retry_after
@@ -84,7 +85,16 @@ class SarvamLLM(LLMProvider):
                  max_tokens: int = DEFAULT_MAX_TOKENS,
                  max_prompt_chars: int = DEFAULT_MAX_PROMPT_CHARS,
                  sleep=time.sleep, telemetry=TELEMETRY):
-        self.api_key = api_key or os.environ.get("SARVAM_API_KEY", "")
+        # Both sources go through the placeholder rule. bootstrap.sh creates
+        # the LLM secret as REPLACE_ME and the deploy injects it as
+        # SARVAM_API_KEY; read raw, that made `.available` True, so every
+        # client built without an explicit key (curriculum extraction,
+        # /health/llm, the CLI) sent "Bearer REPLACE_ME" to the provider and
+        # retried the 401 through the backoff curve before giving up.
+        explicit = (api_key or "").strip()
+        if explicit == SUPABASE_PLACEHOLDER:
+            explicit = ""
+        self.api_key = explicit or credential_or_none("SARVAM_API_KEY") or ""
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout

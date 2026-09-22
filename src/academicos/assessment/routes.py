@@ -4,6 +4,8 @@ contract exactly (paths, camelCase JSON). Mounted at /api/v1 in api/main.py.
 from __future__ import annotations
 
 import json
+import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,14 +18,17 @@ from typing import get_args
 from ..config import Config
 from ..integrations.composio_calendar import sync_to_google_calendar
 from . import pdf as pdf_export
-from . import selection
+from . import grades, paper_timing, selection
 from .audit_log import get_audit_log
-from .authz import require_own_school, require_school_owns_assessment, require_school_owns_paper
-from .auth_routes import get_current_user, require_principal
+from .authz import (
+    require_own_school, require_own_subtopics, require_school_owns_assessment,
+    require_school_owns_paper,
+)
+from .auth_routes import get_current_user, require_principal, require_staff
 from .users import User, get_user_store
 from .mapping import grade_to_int, to_question_schema
 from .paper import generate_paper as build_generated_paper, generate_paper_sets
-from .pool import get_pool
+from .pool import get_pool, near_duplicate
 from .schemas import (
     Assessment,
     AssessmentStatus,
@@ -53,6 +58,8 @@ from .templates import (
     default_sections,
     get_sections_for_exam_type,
 )
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1")
 
@@ -132,7 +139,7 @@ def _users():
 
 @router.post("/blueprints/generate", response_model=Blueprint)
 def generate_blueprint(request: BlueprintRequest,
-                       current: User = Depends(get_current_user)) -> Blueprint:
+                       current: User = Depends(require_staff)) -> Blueprint:
     sections = request.sections or default_sections(request.total_marks)
     return Blueprint(
         total_marks=request.total_marks,
@@ -147,13 +154,13 @@ def generate_blueprint(request: BlueprintRequest,
 
 
 @router.get("/schools/{school_id}/templates", response_model=list[SectionBlueprint])
-def get_section_templates(school_id: str, current: User = Depends(get_current_user)) -> list[SectionBlueprint]:
+def get_section_templates(school_id: str, current: User = Depends(require_staff)) -> list[SectionBlueprint]:
     require_own_school(school_id, current)
     return list(default_sections(80))
 
 
 @router.get("/schools/{school_id}/paper-templates", response_model=list[SchoolTemplate])
-def get_paper_templates(school_id: str, current: User = Depends(get_current_user)) -> list[SchoolTemplate]:
+def get_paper_templates(school_id: str, current: User = Depends(require_staff)) -> list[SchoolTemplate]:
     """Kept for the older Dart `ApiClient` (pillar_api.dart's `/school-templates`
     is the canonical one template_maker_page.dart saves to). This used to be a
     stub that always returned a hardcoded "Default CBSE Template" regardless of
@@ -172,30 +179,41 @@ def get_paper_templates(school_id: str, current: User = Depends(get_current_user
 
 # ---- Questions ----
 #
-# Deliberately unauthenticated, same reasoning as curriculum/routes.py's own
-# public read endpoints and pillar_routes.py's /catalog and /syllabus: these
-# browse the shared CBSE previous-year-paper question pool (public, official,
-# not any one school's confidential exam), not a specific school's generated
-# assessment. Search/optimize never touch AssessmentStore/PaperStore -- see
-# ---- Papers ---- and ---- Assessments ---- below for where a real school's
-# confidential content actually starts, and where auth is required.
+# Signed-in, but not school-scoped as a whole: these browse the shared CBSE
+# previous-year-paper question pool (public, official, not any one school's
+# confidential exam), not a specific school's generated assessment.
+# Search/optimize never touch AssessmentStore/PaperStore -- see ---- Papers
+# ---- and ---- Assessments ---- below for where a real school's confidential
+# content starts. The one school-owned input is search's subtopic_ids: those
+# are a school's own approved curriculum rows, and the question ids tagged to
+# them are that school's tagging, so they get the same ownership check as
+# curriculum/routes.py's questions/by-subtopics.
 
 @router.post("/questions/search", response_model=list[QuestionSchema])
 def search_questions(params: QuestionSearchParams,
-                     current: User = Depends(get_current_user)) -> list[QuestionSchema]:
+                     current: User = Depends(require_staff)) -> list[QuestionSchema]:
     cfg, _ = _require()
+    curriculum = None
+    if params.subtopic_ids:
+        # Checked before the pool is built, so a refused request costs one
+        # query. Until 2026-09-21 this path resolved any school's subtopic:
+        # school_2 holding a school_1 subtopic id got school_1's tagged
+        # question ids back. by-subtopics had the check; this route -- the
+        # one assessment_create_page.dart actually calls -- did not.
+        from ..curriculum.store import get_curriculum_store
+        curriculum = get_curriculum_store(cfg.data_root)
+        require_own_subtopics(curriculum, params.subtopic_ids, current)
     grade_roman = _int_grade_to_roman(params.grade)
     pool = get_pool(cfg, subject=params.subject, grade=grade_roman)
     candidates = pool.filter(subject=params.subject, grade=grade_roman, chapter_ids=params.chapter_ids)
     schemas = [to_question_schema(c) for c in candidates]
 
-    if params.subtopic_ids:
+    if curriculum is not None:
         # The §21-25 bridge: "Generate Question Paper" from a set of
         # selected, approved Subtopics. Real question ids only -- a
         # subtopic with nothing tagged to it correctly excludes every
         # question rather than falling back to the whole chapter.
-        from ..curriculum.store import get_curriculum_store
-        eligible = set(get_curriculum_store(cfg.data_root).question_ids_for_subtopics(params.subtopic_ids))
+        eligible = set(curriculum.question_ids_for_subtopics(params.subtopic_ids))
         schemas = [q for q in schemas if q.id in eligible]
     if params.bloom_levels:
         schemas = [q for q in schemas if q.bloom_level in params.bloom_levels]
@@ -218,13 +236,20 @@ def search_questions(params: QuestionSearchParams,
 
 
 def _int_grade_to_roman(grade: int) -> str:
-    romans = {8: "VIII", 9: "IX", 10: "X", 11: "XI", 12: "XII"}
-    return romans.get(grade, "X")
+    """Pool key for a request's grade. An unreadable grade is a 422, never class 10.
+
+    This used to be `{8: "VIII", ..., 12: "XII"}.get(grade, "X")`, which turned a
+    class 6 or 7 request into class 10 without saying so. See grades.py.
+    """
+    try:
+        return grades.to_roman(grade)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @router.post("/questions/optimize", response_model=QuestionOptimizationResult)
 def optimize_questions(request: QuestionOptimizationRequest,
-                       current: User = Depends(get_current_user)) -> QuestionOptimizationResult:
+                       current: User = Depends(require_staff)) -> QuestionOptimizationResult:
     cfg, _ = _require()
     fallback: list[QuestionSchema] = []
     if request.candidates:
@@ -237,9 +262,55 @@ def optimize_questions(request: QuestionOptimizationRequest,
 
 # ---- Papers ----
 
+def _similar_question_warnings(selected: list[QuestionSchema], *,
+                               reject_similar: bool) -> list[str]:
+    """One warning per pair of questions this paper would print that restate
+    each other; 422 for the same question id twice, and for a similar pair
+    when the client set `rejectSimilar`.
+
+    POST /papers/generate and /papers/generate-from-ids print what the
+    teacher chose; they do not run selection.optimize, so the near-duplicate
+    guard there (and on the template and swap paths) never sees a hand-built
+    selection. OR partners are printed too, so they count. Warned, not
+    refused (Task 906): Task 905 refused, but `pool.near_duplicate` is a
+    measure and a teacher who means to set two alike questions must not be
+    blocked -- the builder shows the warning with "keep both" / "swap one".
+    Never silently dropped: a paper one question shorter than they built is a
+    wrong answer they would not notice. The same id twice is no judgement
+    call, so it stays refused."""
+    printed: list[tuple[str, str]] = []
+    for q in selected:
+        printed.append((q.id, q.stem))
+        meta = q.metadata or {}
+        partner = meta.get("internal_choice_question") or {}
+        pid = meta.get("internal_choice_id") or partner.get("id")
+        pstem = meta.get("internal_choice_stem") or partner.get("stem")
+        if pid and pstem:
+            printed.append((pid, pstem))
+    warnings: list[str] = []
+    for i, (aid, astem) in enumerate(printed):
+        for bid, bstem in printed[:i]:
+            if aid == bid:
+                raise HTTPException(
+                    422, f"question {aid} is selected twice; a paper prints each "
+                         f"question once -- remove one and generate again")
+            if not near_duplicate(astem, bstem):
+                continue
+            if reject_similar:
+                raise HTTPException(
+                    422,
+                    f"questions {bid} and {aid} are the same question; a paper "
+                    f"may carry only one of them -- remove one and generate again",
+                )
+            warnings.append(
+                f"questions {bid} and {aid} look like the same question -- "
+                f"keep both, or swap one")
+    return warnings
+
+
 @router.post("/papers/generate", response_model=GeneratedPaper)
 def generate_paper_endpoint(
-    request: PaperGenerationRequest, current: User = Depends(get_current_user),
+    request: PaperGenerationRequest, current: User = Depends(require_staff),
 ) -> GeneratedPaper:
     cfg, store = _require()
     # Found live in production data (2026-08-19): a real assessment whose
@@ -257,6 +328,8 @@ def generate_paper_endpoint(
             "chapters/filters matched no real questions in the corpus; "
             "widen the chapter selection or check the subject/grade",
         )
+    warnings = _similar_question_warnings(request.selected_questions,
+                                          reject_similar=request.reject_similar)
     assessment = store.get(request.assessment_id)
     if assessment is not None:
         if assessment.school_id != current.school_id:
@@ -264,7 +337,7 @@ def generate_paper_endpoint(
         _require_editable(assessment)
     title = assessment.title if assessment else "Assessment"
     subject = assessment.subject if assessment else (request.selected_questions[0].subject if request.selected_questions else "Science")
-    grade = assessment.grade if assessment else (request.selected_questions[0].grade if request.selected_questions else 10)
+    grade = assessment.grade if assessment else request.selected_questions[0].grade
 
     set_count = getattr(request, "set_count", 1) or 1
     paper = generate_paper_sets(
@@ -288,12 +361,17 @@ def generate_paper_endpoint(
         assessment.status = "paperGenerated"
         assessment.updated_at = _now()
         store.save(assessment)
+    # Set after saving: the warning is about this request, not the paper.
+    paper.warnings = warnings
     return paper
 
 
 @router.post("/papers/quick-generate", response_model=GeneratedPaper)
-def quick_generate_paper(request: QuickPaperRequest, current: User = Depends(get_current_user)) -> GeneratedPaper:
+def quick_generate_paper(request: QuickPaperRequest, current: User = Depends(require_staff)) -> GeneratedPaper:
     """Rapid generation of complete, sectioned papers (Examzo-style 1-click generation)."""
+    # Monotonic, so a clock adjustment during generation cannot change a
+    # reported duration. See assessment/paper_timing.py for what this is for.
+    _started = time.perf_counter()
     cfg, store = _require()
     subject = request.subject
     grade = request.grade
@@ -363,7 +441,10 @@ def quick_generate_paper(request: QuickPaperRequest, current: User = Depends(get
     if request.template_id:
         from .school_templates import TemplateStore
         t_store = TemplateStore(cfg.data_root / "templates" / "templates.sqlite")
-        template = t_store.get(request.template_id)
+        # get_branding returns (template, sections); PaperStore.save wants the
+        # template alone -- passing the tuple raised on every templateId.
+        branding = t_store.get_branding(request.template_id, current.school_id)
+        template = branding[0] if branding else None
 
     _require_papers().save(paper, template, school_id=current.school_id)
     if paper.sets:
@@ -395,6 +476,10 @@ def quick_generate_paper(request: QuickPaperRequest, current: User = Depends(get
             "tier": tier,
             "userId": current.id,
             "schoolId": current.school_id,
+            # MEASURED: how long the machine took. Decision 11 makes this the
+            # renewal criterion, and it was not recorded anywhere before.
+            "generationSeconds": round(time.perf_counter() - _started, 3),
+            "questionCount": len(paper.questions) if hasattr(paper, "questions") else 0,
         },
     )
 
@@ -402,7 +487,8 @@ def quick_generate_paper(request: QuickPaperRequest, current: User = Depends(get
 
 
 @router.post("/papers/generate-from-ids", response_model=GeneratedPaper)
-def generate_from_ids(request: GenerateFromIdsRequest, current: User = Depends(get_current_user)) -> GeneratedPaper:
+def generate_from_ids(request: GenerateFromIdsRequest, current: User = Depends(require_staff)) -> GeneratedPaper:
+    _started_ids = time.perf_counter()
     """Instantly compile selected question IDs into a structured sectioned paper (Examzo-style ID compilation)."""
     cfg, store = _require()
     if not request.question_ids:
@@ -416,6 +502,11 @@ def generate_from_ids(request: GenerateFromIdsRequest, current: User = Depends(g
 
     if not found_questions:
         raise HTTPException(404, "None of the specified question_ids were found in the question bank")
+    # The Flutter client's curated path builds the paper straight from these
+    # ids and never runs optimize, so the near-duplicate guard has to run here
+    # too -- warned (or refused on rejectSimilar), exactly like /papers/generate.
+    warnings = _similar_question_warnings(found_questions,
+                                          reject_similar=request.reject_similar)
 
     by_marks: dict[int, list[QuestionSchema]] = {}
     for q in found_questions:
@@ -469,7 +560,10 @@ def generate_from_ids(request: GenerateFromIdsRequest, current: User = Depends(g
     if request.template_id:
         from .school_templates import TemplateStore
         t_store = TemplateStore(cfg.data_root / "templates" / "templates.sqlite")
-        template = t_store.get(request.template_id)
+        # get_branding returns (template, sections); PaperStore.save wants the
+        # template alone -- passing the tuple raised on every templateId.
+        branding = t_store.get_branding(request.template_id, current.school_id)
+        template = branding[0] if branding else None
 
     _require_papers().save(paper, template, school_id=current.school_id)
 
@@ -505,19 +599,41 @@ def generate_from_ids(request: GenerateFromIdsRequest, current: User = Depends(g
             "questionCount": len(found_questions),
             "userId": current.id,
             "schoolId": current.school_id,
+            # MEASURED, same as quick generation. This route is the curated
+            # path, so a school using only it would otherwise report zero
+            # papers and conclude nothing was saved.
+            "generationSeconds": round(time.perf_counter() - _started_ids, 3),
         },
     )
+    paper.warnings = warnings   # after saving: about this request, not the paper
     return paper
 
 
+@router.get("/paper-timing")
+def get_paper_timing(current: User = Depends(require_principal)) -> dict:
+    """Time saved per paper — the renewal criterion, made answerable.
+
+    Decision 11: *"Renewal is measured as time saved per paper."* Before this
+    route the number existed nowhere, so the criterion could not be checked.
+
+    Scoped to the caller's school. The response separates what was MEASURED
+    (generation time, from a monotonic clock) from what was DECLARED (the manual
+    baseline), and says so in the payload rather than only in the docs --
+    because a saving built on a declared baseline will be quoted at somebody,
+    and the word "estimated" has to travel with it.
+    """
+    cfg, _store = _require()
+    return paper_timing.report(cfg.data_root, school_id=current.school_id).as_dict()
+
+
 @router.get("/papers/{paper_id}", response_model=GeneratedPaper)
-def get_paper(paper_id: str, current: User = Depends(get_current_user)) -> GeneratedPaper:
+def get_paper(paper_id: str, current: User = Depends(require_staff)) -> GeneratedPaper:
     _, store = _require()
     return require_school_owns_paper(_require_papers(), store, paper_id, current)
 
 
 @router.post("/papers/{paper_id}/export/{fmt}")
-def export_paper(paper_id: str, fmt: str, current: User = Depends(get_current_user)) -> dict:
+def export_paper(paper_id: str, fmt: str, current: User = Depends(require_staff)) -> dict:
     cfg, store = _require()
     paper = require_school_owns_paper(_require_papers(), store, paper_id, current)
     if fmt not in ("pdf", "answer-key", "answer_key", "answerKey"):
@@ -535,14 +651,25 @@ def export_paper(paper_id: str, fmt: str, current: User = Depends(get_current_us
     # _page_furniture docstring and docs/compliance.md's paper-release-
     # locking checklist item.
     watermark_id = f"exp_{uuid.uuid4().hex[:10]}"
+    # A render failure is the paper's content, not the server: say so with a
+    # 422 naming the cause instead of a bare 500 (ReportLab raises
+    # LayoutError/IndexError/ValueError on content it cannot lay out).
     if fmt in ("answer-key", "answer_key", "answerKey"):
-        path = pdf_export.export_answer_key_pdf(paper, out_dir, template=template)
+        try:
+            path = pdf_export.export_answer_key_pdf(paper, out_dir, template=template)
+        except Exception as exc:
+            log.exception("answer key for paper %s failed to render", paper_id)
+            raise HTTPException(422, f"this answer key could not be rendered: {exc}") from exc
         get_audit_log(cfg.data_root).append(
             "answer_key_exported", assessment_id=paper.assessment_id,
             details={"paperId": paper_id, "format": fmt, "file": path.name, "watermarkId": watermark_id},
         )
         return {"url": f"/api/v1/papers/{paper_id}/file?format=answer-key", "watermarkId": watermark_id}
-    path = pdf_export.export_pdf(paper, out_dir, template=template, watermark_id=watermark_id)
+    try:
+        path = pdf_export.export_pdf(paper, out_dir, template=template, watermark_id=watermark_id)
+    except Exception as exc:
+        log.exception("paper %s failed to render", paper_id)
+        raise HTTPException(422, f"this paper could not be rendered: {exc}") from exc
     get_audit_log(cfg.data_root).append(
         "paper_exported", assessment_id=paper.assessment_id,
         details={"paperId": paper_id, "format": fmt, "watermarkId": watermark_id},
@@ -551,7 +678,7 @@ def export_paper(paper_id: str, fmt: str, current: User = Depends(get_current_us
 
 
 @router.get("/papers/{paper_id}/file")
-def get_paper_file(paper_id: str, format: str = "pdf", current: User = Depends(get_current_user)):
+def get_paper_file(paper_id: str, format: str = "pdf", current: User = Depends(require_staff)):
     cfg, store = _require()
     require_school_owns_paper(_require_papers(), store, paper_id, current)
     suffix = "_answer_key.pdf" if format in ("answer-key", "answer_key") else ".pdf"
@@ -565,7 +692,7 @@ def get_paper_file(paper_id: str, format: str = "pdf", current: User = Depends(g
 
 @router.post("/assessments", response_model=Assessment)
 def create_assessment(
-    request: CreateAssessmentRequest, current: User = Depends(get_current_user),
+    request: CreateAssessmentRequest, current: User = Depends(require_staff),
 ) -> Assessment:
     _, store = _require()
     # Real bug fixed 2026-09-15: school_id/teacher_id used to come straight
@@ -614,7 +741,7 @@ def create_assessment(
 
 
 @router.get("/assessments/{assessment_id}", response_model=Assessment)
-def get_assessment(assessment_id: str, current: User = Depends(get_current_user)) -> Assessment:
+def get_assessment(assessment_id: str, current: User = Depends(require_staff)) -> Assessment:
     _, store = _require()
     return require_school_owns_assessment(store, assessment_id, current)
 
@@ -622,7 +749,7 @@ def get_assessment(assessment_id: str, current: User = Depends(get_current_user)
 @router.get("/assessments", response_model=list[Assessment])
 def list_assessments(
     teacher_id: Optional[str] = None, school_id: Optional[str] = None,
-    current: User = Depends(get_current_user),
+    current: User = Depends(require_staff),
 ) -> list[Assessment]:
     # Real bug fixed 2026-09-15: teacher_id/school_id used to be trusted
     # straight from the query string with no check that the caller actually
@@ -641,7 +768,7 @@ def list_assessments(
 
 @router.put("/assessments/{assessment_id}", response_model=Assessment)
 def update_assessment(
-    assessment_id: str, assessment: Assessment, current: User = Depends(get_current_user),
+    assessment_id: str, assessment: Assessment, current: User = Depends(require_staff),
 ) -> Assessment:
     _, store = _require()
     existing = store.get(assessment_id)
@@ -663,7 +790,7 @@ def update_assessment(
 
 
 @router.delete("/assessments/{assessment_id}")
-def delete_assessment(assessment_id: str, current: User = Depends(get_current_user)) -> dict:
+def delete_assessment(assessment_id: str, current: User = Depends(require_staff)) -> dict:
     _, store = _require()
     require_school_owns_assessment(store, assessment_id, current)
     store.delete(assessment_id)
@@ -671,7 +798,7 @@ def delete_assessment(assessment_id: str, current: User = Depends(get_current_us
 
 
 @router.patch("/assessments/{assessment_id}/status", response_model=Assessment)
-def update_status(assessment_id: str, body: dict, current: User = Depends(get_current_user)) -> Assessment:
+def update_status(assessment_id: str, body: dict, current: User = Depends(require_staff)) -> Assessment:
     _, store = _require()
     a = require_school_owns_assessment(store, assessment_id, current)
     new_status = body.get("status", a.status)

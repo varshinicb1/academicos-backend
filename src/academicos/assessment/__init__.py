@@ -1,4 +1,4 @@
-"""Assessment Designer: Module 1 of AssessmentOS.
+"""Assessment Designer: Module 1 of AcademicOS.
 
 Blueprint -> question retrieval -> validation -> paper generation -> PDF export.
 Deterministic core (chapter tagging, selection, optimizer, formatting); no LLM

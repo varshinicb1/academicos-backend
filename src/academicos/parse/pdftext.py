@@ -157,6 +157,10 @@ class PdfTextParser(ParserProvider):
                     for l in b.get("lines", []):
                         for s in l.get("spans", []):
                             return round(s.get("size", 0), 1)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Was `pass`, which made a genuine failure indistinguishable from
+            # the legitimate miss below: `0.0` is also what "no span found"
+            # returns, so nothing downstream could tell the two apart.
+            logger.debug("font-size extraction failed (%s: %s)",
+                         type(exc).__name__, exc)
         return 0.0

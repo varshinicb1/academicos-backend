@@ -21,13 +21,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 
 import requests
 
 from .evaluate import Evaluation, MarkingPointOutcome, REVIEW_THRESHOLD, ocr_risk_flags
 from .schemas import AnswerSchemeSchema, QuestionSchema
+from ..config import LLMNotEnabled, credential_or_none
 
 log = logging.getLogger(__name__)
 
@@ -91,9 +91,9 @@ class LLMEvaluationError(RuntimeError):
 
 
 def _api_key() -> str:
-    key = os.environ.get("SARVAM_API_KEY", "").strip()
-    if not key:
-        raise LLMEvaluationError("SARVAM_API_KEY is not set")
+    key = credential_or_none("SARVAM_API_KEY")
+    if key is None:
+        raise LLMNotEnabled()
     return key
 
 
@@ -159,11 +159,17 @@ def _call_sarvam(system: str, user: str) -> dict:
 
 def evaluate_answer_llm(question: QuestionSchema, scheme: AnswerSchemeSchema,
                         student_answer: str, *, concept_label: str | None = None) -> Evaluation:
-    """LLM-scored equivalent of `evaluate.evaluate_answer`. Never raises — on
-    any failure (network, malformed JSON, missing key) it returns a
-    needs-review evaluation rather than breaking the scan-and-grade pipeline
-    for the rest of the booklet.
+    """LLM-scored equivalent of `evaluate.evaluate_answer`. On a provider
+    failure (network, malformed JSON) it returns a needs-review evaluation
+    rather than breaking the scan-and-grade pipeline for the rest of the
+    booklet.
+
+    The one exception it raises is LLMNotEnabled, checked before anything
+    else: with no key configured every answer would come back "AI evaluation
+    unavailable", a booklet of needs-review zeros. The school gets a clear
+    "not enabled" instead, before any result is saved.
     """
+    _api_key()
     answer = (student_answer or "").strip()
     max_marks = scheme.total_marks or question.marks or 1
     ocr_flags = ocr_risk_flags(answer)

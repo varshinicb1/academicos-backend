@@ -5,6 +5,11 @@ pure-Python TF-IDF character n-grams when sentence-transformers is not installed
 """
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
+
 import math
 import re
 import sqlite3
@@ -49,8 +54,13 @@ class ChunkIndex:
                 for t in set(toks):
                     self._df[t] += 1
             self._doc_count = len(self._doc_tokens)
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as exc:
+            # Was `pass`. This rebuilds the in-memory term index from the SQLite
+            # one; swallowing leaves it empty or partial, and search then
+            # returns fewer hits with no indication why.
+            logger.warning(
+                "could not build the in-memory index from SQLite (%s: %s); "
+                "search will be degraded", type(exc).__name__, exc)
 
     def add(self, chunks: list[Chunk], replace_doc: bool = False) -> None:
         if replace_doc and chunks:

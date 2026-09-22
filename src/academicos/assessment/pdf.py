@@ -57,6 +57,7 @@ log = logging.getLogger(__name__)
 # every supported Windows version, so it goes first.
 _BODY_FONT = "Helvetica"
 _BODY_FONT_BOLD = "Helvetica-Bold"
+_BODY_FONT_PATH = ""  # the TTF actually registered, for the startup log
 _FONT_CANDIDATES = (
     ("AcademicSans", r"C:\Windows\Fonts\segoeui.ttf", r"C:\Windows\Fonts\segoeuib.ttf"),
     ("AcademicSans", r"C:\Windows\Fonts\arial.ttf", r"C:\Windows\Fonts\arialbd.ttf"),
@@ -65,6 +66,18 @@ _FONT_CANDIDATES = (
 )
 
 _OPTION_RE = re.compile(r"\(([A-Da-d])\)\s*")
+# The word before a label that names an option instead of starting one:
+# "Both (A) and (B)", "neither (a) nor (b)", "explanation of (A)",
+# "Assertion (A) is correct".
+_MENTION_BEFORE = re.compile(
+    r"(?:\b(?:both|and|or|nor|either|neither|of|but|than|except|assertion|reason)|\bi\.e\.)\s*$",
+    re.I)
+# What joins the items of a mention list: "(A), (B) and (C)", "(A) & (B)".
+_LIST_JOINER = re.compile(r"\s*[,&]\s*")
+# An option that is only a joining word is the tail of a mis-split mention
+# list ([',', 'and', ''] from "All of (A), (B) and (C)"), never an option.
+# "both" / "neither" alone are real one-word options and are not here.
+_JUNK_OPTION = re.compile(r"(?:and|or|nor|of|but|than|except)?", re.I)
 
 DEFAULT_INSTRUCTIONS = (
     "This question paper contains {n} questions. <b>All questions are compulsory.</b>",
@@ -75,20 +88,42 @@ DEFAULT_INSTRUCTIONS = (
 )
 
 _SECTION_NOTE = {
-    "A": "consists of multiple choice questions carrying 1 mark each.",
-    "B": "consists of very short answer questions carrying 2 marks each.",
-    "C": "consists of short answer questions carrying 3 marks each.",
-    "D": "consists of long answer questions carrying 5 marks each.",
-    "E": "consists of case-study based questions carrying 4 marks each.",
+    "A": (1, "consists of multiple choice questions carrying 1 mark each."),
+    "B": (2, "consists of very short answer questions carrying 2 marks each."),
+    "C": (3, "consists of short answer questions carrying 3 marks each."),
+    "D": (5, "consists of long answer questions carrying 5 marks each."),
+    "E": (4, "consists of case-study based questions carrying 4 marks each."),
 }
 
 
+def find_unicode_font(candidates=_FONT_CANDIDATES) -> tuple[str, str, str] | None:
+    """The first candidate whose regular face exists on disk, or None.
+
+    On the production image that is DejaVu, installed by the Dockerfile's
+    `fonts-dejavu-core` (audit 1.2: the image had no Unicode font at all, so
+    subscripts and symbols -- in 4.6% of stems -- printed as boxes).
+    """
+    for name, regular, bold in candidates:
+        if Path(regular).exists():
+            return name, regular, bold
+    return None
+
+
+def register_unicode_font() -> str:
+    """Register the body font now and say which one it is, for the startup
+    log: a missing font is otherwise invisible until a paper prints boxes."""
+    _register_unicode_font()
+    if _BODY_FONT == "Helvetica":
+        return "Helvetica (built-in, Latin-1 only -- no Unicode font found)"
+    return f"{_BODY_FONT} ({_BODY_FONT_PATH})"
+
+
 def _register_unicode_font() -> None:
-    global _BODY_FONT, _BODY_FONT_BOLD
+    global _BODY_FONT, _BODY_FONT_BOLD, _BODY_FONT_PATH
     if _BODY_FONT != "Helvetica":
         return
     for name, regular, bold in _FONT_CANDIDATES:
-        if not Path(regular).exists():
+        if find_unicode_font([(name, regular, bold)]) is None:
             continue
         try:
             pdfmetrics.registerFont(TTFont(name, regular))
@@ -98,12 +133,78 @@ def _register_unicode_font() -> None:
             else:
                 _BODY_FONT_BOLD = name
             _BODY_FONT = name
+            _BODY_FONT_PATH = regular
             return
         except Exception as e:
             log.warning("could not register font %s: %s", regular, e)
 
 
+# A line-for-line port of frontend/lib/core/local_engine/pdf_text_safety.dart,
+# so a question prints the same on the web as on the phone. The web had no
+# equivalent: CBE Maths writes variables as Mathematical Alphanumeric letters
+# (U+1D434-) and symbol-font private-use characters, and those vanished --
+# "12x^2 + 11x - 15" printed as "122 + 11-15". In production it is worse: the
+# container falls back to Helvetica (WinAnsi only) when DejaVu is missing.
+_PDF_PUNCTUATION = (("—", "-"), ("–", "-"), ("•", "-"),
+                    ("‘", "'"), ("’", "'"), ("“", '"'), ("”", '"'))
+# Subscript digits U+2080-2089; superscript digits U+2070, U+00B9, U+00B2,
+# U+00B3, U+2074-2079. The digit is real content (a formula's subscript, an
+# exponent), so it is kept as a plain digit rather than dropped.
+_SUB_SUPER_DIGITS = str.maketrans(
+    "₀₁₂₃₄₅₆₇₈₉"
+    "⁰¹²³⁴⁵⁶⁷⁸⁹",
+    "01234567890123456789")
+_PDF_MATH = (
+    ("−", "-"), ("√", "sqrt"), ("∴", "therefore"), ("∵", "because"),
+    ("∠", "angle "), ("⇒", "=>"), ("⟹", "=>"), ("≠", "!="),
+    ("≥", ">="), ("≤", "<="), ("∈", "in"), ("∞", "infinity"),
+    ("∫", "integral"),
+    ("′", "'"), ("θ", "theta"), ("π", "pi"), ("⃗", ""),
+    ("̂", ""), ("₹", "Rs."), ("…", "..."),
+    ("ଶ", "2"),        # an OCR artifact standing in for a superscript 2
+    ("𝛼", "alpha"), ("𝜃", "theta"), ("𝜋", "pi"),
+)
+# Symbol-font glyph references left by the source PDFs' OCR: no defined
+# meaning, so dropped rather than guessed.
+_PRIVATE_USE = re.compile("[-]")
+# U+2206 INCREMENT and U+0394 GREEK CAPITAL DELTA. Geometry writes a triangle
+# as "∆ABC" (often with italic math letters, so this runs after _demathify),
+# but Economics, Physics and Chemistry use the same glyph for "change in":
+# "Increase in Income (ΔY)", "Energy released = ∆m x 931.5 MeV",
+# "∆E_I > ∆E_II". Mapping every delta to "triangle" printed "triangle Y".
+# So "triangle" only before a three-capital vertex name that is not an
+# energy-level subscript; everything else is "delta".
+_TRIANGLE = re.compile(r"[∆Δ] ?(?=(?!E[IVX]{2}\b)[A-Z]{3}(?![A-Za-z]))")
+_DELTA = re.compile(r"[∆Δ] ?")
+_MATH_LETTER_BLOCKS = (0x1D400, 0x1D434, 0x1D468, 0x1D49C, 0x1D4D0, 0x1D504, 0x1D538,
+                       0x1D56C, 0x1D5A0, 0x1D5D4, 0x1D608, 0x1D63C, 0x1D670)
+
+
+def _demathify(cp: int) -> int | None:
+    """A styled Mathematical Alphanumeric letter or digit, back to plain ASCII."""
+    for start in _MATH_LETTER_BLOCKS:
+        offset = cp - start
+        if 0 <= offset < 52:
+            return 0x41 + offset if offset < 26 else 0x61 + offset - 26
+    if 0x1D7CE <= cp <= 0x1D7FF:
+        return 0x30 + (cp - 0x1D7CE) % 10
+    return None
+
+
+def pdf_safe(text: str) -> str:
+    """Text a base PDF font can print, keeping every symbol's meaning."""
+    for a, b in _PDF_PUNCTUATION:
+        text = text.replace(a, b)
+    text = text.translate(_SUB_SUPER_DIGITS)
+    for a, b in _PDF_MATH:
+        text = text.replace(a, b)
+    text = _PRIVATE_USE.sub("", text)
+    text = "".join(chr(_demathify(ord(c)) or ord(c)) for c in text)
+    return _DELTA.sub("delta ", _TRIANGLE.sub("triangle ", text))
+
+
 def escape(text: str) -> str:
+    text = pdf_safe(text)
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
@@ -153,23 +254,97 @@ def _build_styles(brand_color: str = "#000000") -> _Styles:
     )
 
 
-def split_stem_and_options(stem: str) -> tuple[str, list[str]]:
-    """Separate an MCQ stem from its (A)-(D) options so they can be laid out."""
-    matches = list(_OPTION_RE.finditer(stem))
-    if len(matches) < 2:
-        return stem.strip(), []
-    # Options must be in order and near the end; otherwise "(a)" is a part label.
-    labels = [m.group(1).upper() for m in matches]
-    if labels != sorted(labels) or labels[0] != "A":
-        return stem.strip(), []
-    head = stem[: matches[0].start()].strip()
+def _follows_label_in_list(stem: str, matches: list[re.Match], i: int) -> bool:
+    """matches[i] is joined to the label before it by ',' or '&' -- the next
+    item of a mention list, as the (B) in "(A), (B) and (C)"."""
+    if i == 0:
+        return False
+    prev_close = matches[i - 1].start() + 3  # a label is always "(X)"
+    return bool(_LIST_JOINER.fullmatch(stem, prev_close, matches[i].start()))
+
+
+def _option_run(stem: str, matches: list[re.Match], first: int) -> list[re.Match] | None:
+    """The option labels from matches[first] (an A) to the end of the stem.
+
+    Each next label must be the next letter. A label already used is text when
+    it names an option -- a mention word before it, it opens the option's text
+    ("(C) (A) is correct"), or it follows a mention through ',' or '&'
+    ("All of (A), (B) and (C)"). Anything else -- a gap, a label out of order,
+    a label repeated with nothing naming it -- means this is not an option list.
+    """
+    run = [matches[first]]
+    prev_mention = False
+    for i in range(first + 1, len(matches)):
+        m = matches[i]
+        k = "ABCD".find(m.group(1).upper())
+        if k == len(run):
+            run.append(m)
+            prev_mention = False
+        elif k < len(run) and (_MENTION_BEFORE.search(stem, 0, m.start())
+                               or m.start() == run[-1].end()
+                               or (prev_mention and _follows_label_in_list(stem, matches, i))):
+            prev_mention = True
+        else:
+            return None
+    return run if len(run) >= 2 else None
+
+
+def _options_of(stem: str, run: list[re.Match]) -> list[str]:
     options: list[str] = []
-    for i, m in enumerate(matches):
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(stem)
+    for i, m in enumerate(run):
+        end = run[i + 1].start() if i + 1 < len(run) else len(stem)
         options.append(stem[m.end():end].strip(" .;"))
+    return options
+
+
+def split_stem_and_options(stem: str) -> tuple[str, list[str]]:
+    """Separate an MCQ stem from its (A)-(D) options so they can be laid out.
+
+    The options are the longest run of labels A, B, C[, D] that reaches the end
+    of the stem, the first such run if two are as long. A label is printed in
+    three other places, and none of them is an option:
+
+    - before the options: CBE Science numbers its sub-question "(a) Which
+      conclusions are correct? (A) ... (D)" (5 served items, e.g.
+      cbe:q:Science10TM2) and assertion-reason items say "Assertion (A) and
+      Reason (R) ... (A) ... (D)". Taking every label printed the question as
+      option (A) and shifted each real option down a letter.
+    - inside an option, naming another one: "(D) Both (A) and (B)"
+      (cbse:q:src:e268efcf2e142b7e0591b8ed:2), "(d) neither (a) nor (b)", and
+      the assertion-reason options "(C) (A) is correct but (R) is not correct"
+      (cbse:sqp:ClassXII_2025_26:History:10). Taking the run from the last
+      "(A)" printed head "... (D) Both" and options ['and', '11-'].
+
+    A run that does not reach the end, or none at all, splits nothing and the
+    stem prints verbatim. So does a run with an option that is empty or only a
+    joiner ("and", ",") -- the tail of a mention list like "All of (A), (B)
+    and (C)" -- and no run starts at an (A) that is itself a mention. Over the
+    5840 served + CBE + SQP stems this changed 43 splits (vs 0708f8d), every
+    one from junk options ('', 'and', ', ,') to the stem as written. Of the 4475 served stems, 3 split differently from
+    the trailing-run rule this replaced (measured at 1e3e30f), all three the
+    mention shape above.
+    """
+    matches = list(_OPTION_RE.finditer(stem))
+    best: list[re.Match] | None = None
+    for i, m in enumerate(matches):
+        # An (A) that is itself a mention ("of (A)", ", (A)") starts no run.
+        if (m.group(1).upper() != "A" or _MENTION_BEFORE.search(stem, 0, m.start())
+                or _follows_label_in_list(stem, matches, i)):
+            continue
+        run = _option_run(stem, matches, i)
+        if not run or (best is not None and len(run) <= len(best)):
+            continue
+        # A run with an empty or joiner-only option is a mis-split: print the
+        # stem as written instead of junk options.
+        if any(_JUNK_OPTION.fullmatch(o.strip(" .;,&")) for o in _options_of(stem, run)):
+            continue
+        best = run
+    if best is None:
+        return stem.strip(), []
+    head = stem[: best[0].start()].strip()
     if not head:
         return stem.strip(), []
-    return head, options
+    return head, _options_of(stem, best)
 
 
 def _roll_no_grid(styles: _Styles, boxes: int = 11) -> Table:
@@ -190,7 +365,10 @@ def _roll_no_grid(styles: _Styles, boxes: int = 11) -> Table:
 def _header(paper: GeneratedPaper, template: Optional[SchoolTemplate],
             styles: _Styles, content_width: float) -> list:
     m = paper.metadata
-    school_name = (template.name if template and template.name else "AcademicOS School")
+    # The teacher's header wins over the school's branding name: a template
+    # paper may be set for a named branch or a joint exam.
+    school_name = (m.school_name or (template.name if template and template.name else "")
+                   or "AcademicOS School")
     brand = colors.HexColor(template.brand_color) if template and template.brand_color else colors.black
     story: list = []
 
@@ -199,14 +377,20 @@ def _header(paper: GeneratedPaper, template: Optional[SchoolTemplate],
         exam_title += f" &nbsp;&nbsp;|&nbsp;&nbsp; <b>SET {escape(paper.set_label)}</b>"
 
     logo_path = Path(template.logo_url) if template and template.logo_url else None
-    title_block = [
-        Paragraph(escape(school_name), styles.school),
+    title_block = [Paragraph(escape(school_name), styles.school)]
+    # The exam name is normally the title; a teacher who gave the paper its
+    # own title still gets the exam name their template set.
+    if m.exam_name and m.exam_name != m.assessment_title:
+        title_block.append(Paragraph(escape(m.exam_name), styles.exam))
+    title_block += [
         Paragraph(exam_title, styles.exam),
         Paragraph(f"Subject: {escape(m.subject)} &nbsp;&nbsp;|&nbsp;&nbsp; Class: {m.grade}",
                   styles.meta),
     ]
     if template and template.tagline:
         title_block.append(Paragraph(escape(template.tagline), styles.meta))
+    if m.date_line:
+        title_block.append(Paragraph(escape(m.date_line), styles.meta))
     if logo_path and logo_path.exists():
         try:
             band = Table([[Image(str(logo_path), width=18 * mm, height=18 * mm), title_block]],
@@ -248,6 +432,15 @@ def _instructions(paper: GeneratedPaper, styles: _Styles) -> list:
     total_q = sum(len(s.questions) for s in paper.sections)
     labels = ", ".join(s.label for s in paper.sections)
     story = [Paragraph("General Instructions:", styles.instr_head)]
+    teacher = [line.strip() for line in (paper.metadata.instructions or "").splitlines()
+               if line.strip()]
+    if teacher:
+        # The teacher's own instructions replace the canned list: printing
+        # both would put "internal choice has been provided" on a paper whose
+        # template may offer none.
+        for i, line in enumerate(teacher, start=1):
+            story.append(Paragraph(f"({i})&nbsp;&nbsp;{escape(line)}", styles.instr))
+        return story
     for i, tmpl in enumerate(DEFAULT_INSTRUCTIONS, start=1):
         text = tmpl.format(n=total_q, sections=len(paper.sections), labels=labels)
         story.append(Paragraph(f"({i})&nbsp;&nbsp;{text}", styles.instr))
@@ -256,19 +449,34 @@ def _instructions(paper: GeneratedPaper, styles: _Styles) -> list:
 
 def _question_flowables(gq, styles: _Styles, content_width: float,
                         gutter: float, marks_col: float) -> list:
-    """One question: number in the gutter, marks in the right margin, options gridded."""
-    head, options = split_stem_and_options(gq.stem)
+    """One question: number in the gutter, marks in the right margin, options gridded.
+
+    Options are split out only for an objective question: a descriptive
+    question's sub-parts "(a) Find ... (b) Explain ..." read exactly like
+    options and were gridded as (A)-(D). An empty type is a paper generated
+    before GeneratedQuestionSchema carried one, and keeps the old behaviour.
+
+    The board records type most 1-mark MCQs very_short_answer (538 of them
+    split into exactly four options, against 46 typed mcq), so a 1-mark item
+    whose stem splits into four ordered options is objective too. The
+    descriptive sub-part stems in the bank are all multi-mark.
+    """
+    split_head, split_options = split_stem_and_options(gq.stem)
+    objective = (gq.type in ("", "mcq", "assertion_reason")
+                 or (gq.marks == 1 and len(split_options) == 4))
+    head, options = (split_head, split_options) if objective else (gq.stem.strip(), [])
     body: list = [Paragraph(escape(head), styles.question)]
 
     if options:
         rows: list[list] = []
-        labels = "ABCD"
         pairs = [options[i:i + 2] for i in range(0, len(options), 2)]
         idx = 0
         for pair in pairs:
             row = []
             for opt in pair:
-                row.append(Paragraph(f"({labels[idx]})&nbsp; {escape(opt)}", styles.option))
+                # split_stem_and_options returns at most (A)-(D); chr() is
+                # only a guard so a future fifth label cannot IndexError.
+                row.append(Paragraph(f"({chr(ord('A') + idx)})&nbsp; {escape(opt)}", styles.option))
                 idx += 1
             if len(row) == 1:
                 row.append("")
@@ -288,10 +496,13 @@ def _question_flowables(gq, styles: _Styles, content_width: float,
         body.append(Paragraph("OR", styles.choice))
         body.append(Paragraph(escape(gq.internal_choice_text), styles.question))
 
+    # splitInRow: the whole question is one table row, and a row that cannot
+    # split raised LayoutError (HTTP 500) on any question taller than a page.
     row = Table(
         [[Paragraph(f"<b>{gq.display_number}.</b>", styles.question), body,
           Paragraph(str(gq.marks), styles.marks)]],
         colWidths=[gutter, content_width - gutter - marks_col, marks_col],
+        splitInRow=1,
     )
     row.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -302,18 +513,45 @@ def _question_flowables(gq, styles: _Styles, content_width: float,
     return [row]
 
 
+def _section_note(section: GeneratedSectionSchema) -> str:
+    """The CBSE-standard descriptions in _SECTION_NOTE assume a section
+    *labeled* A/B/C/D/E also follows the CBSE per-section mark convention
+    (A=1, B=2, C=3, D=5, E=4). That's true for a paper generated from a
+    standard CBSE blueprint, but a custom blueprint can label a section "A"
+    while putting 2-mark questions in it -- found live 2026-09-18 by actually
+    reading a generated PDF: it printed "carrying 1 mark each" over a section
+    of 2-mark questions. Only trust the canned description when the section's
+    real, uniform per-question marks actually match what it claims; otherwise
+    fall back to a description built from the real data."""
+    marks_seen = {q.marks for q in section.questions}
+    uniform_marks = marks_seen.pop() if len(marks_seen) == 1 else None
+    canned = _SECTION_NOTE.get(section.label.upper())
+    if canned is not None and canned[0] == uniform_marks:
+        return canned[1]
+    if uniform_marks is not None:
+        plural = "" if uniform_marks == 1 else "s"
+        return f"consists of questions carrying {uniform_marks} mark{plural} each."
+    return "consists of questions carrying marks as indicated."
+
+
 def _section_block(section: GeneratedSectionSchema, styles: _Styles,
-                   content_width: float, gutter: float, marks_col: float) -> list:
-    note = _SECTION_NOTE.get(section.label.upper(),
-                             f"consists of questions carrying marks as indicated.")
+                   content_width: float, gutter: float, marks_col: float,
+                   frame_height: float) -> list:
+    note = _section_note(section)
     story: list = [
         Paragraph(f"SECTION {section.label}", styles.section),
         Paragraph(f"({section.name} — {len(section.questions)} questions, "
                   f"{section.total_marks} marks. This section {note})", styles.section_note),
     ]
     for gq in section.questions:
-        story.append(KeepTogether(
-            _question_flowables(gq, styles, content_width, gutter, marks_col)))
+        flowables = _question_flowables(gq, styles, content_width, gutter, marks_col)
+        # Keep a question on one page when it fits on one; one that cannot
+        # fit anywhere is left free to split across pages instead.
+        height = sum(f.wrap(content_width, frame_height)[1] for f in flowables)
+        if height <= frame_height:
+            story.append(KeepTogether(flowables))
+        else:
+            story.extend(flowables)
     return story
 
 
@@ -365,7 +603,7 @@ def export_pdf(paper: GeneratedPaper, output_dir: Path,
     doc = SimpleDocTemplate(
         str(out_path), pagesize=A4,
         topMargin=top, bottomMargin=bottom, leftMargin=left, rightMargin=right,
-        title=paper.metadata.assessment_title, author="AssessmentOS",
+        title=paper.metadata.assessment_title, author="AcademicOS",
     )
     content_width = A4[0] - left - right
     gutter, marks_col = 10 * mm, 12 * mm
@@ -374,7 +612,8 @@ def export_pdf(paper: GeneratedPaper, output_dir: Path,
     story.extend(_header(paper, template, styles, content_width))
     story.extend(_instructions(paper, styles))
     for section in paper.sections:
-        story.extend(_section_block(section, styles, content_width, gutter, marks_col))
+        story.extend(_section_block(section, styles, content_width, gutter, marks_col,
+                                    doc.height))
 
     footer = _page_furniture(paper, template, watermark_id=watermark_id)
     doc.build(story, onFirstPage=footer, onLaterPages=footer)
@@ -415,7 +654,8 @@ def export_answer_key_pdf(paper: GeneratedPaper, output_dir: Path,
                 Paragraph(str(gq.marks), styles.option),
                 Paragraph(ans_formatted, styles.option),
             ])
-    table = Table(rows, colWidths=[14 * mm, 14 * mm, None], repeatRows=1)
+    # splitInRow: a model answer longer than a page is one row that must split.
+    table = Table(rows, colWidths=[14 * mm, 14 * mm, None], repeatRows=1, splitInRow=1)
     table.setStyle(TableStyle([
         ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#888888")),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EEEEEE")),

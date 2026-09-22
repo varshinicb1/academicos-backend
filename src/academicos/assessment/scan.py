@@ -167,6 +167,7 @@ def scan_sheet(pdf_path: Path, *, sheet_id: str, assessment_id: str,
                workdir: Path, max_pages: int = 6, first_page: int = 0,
                language: str = "en-IN") -> ScannedSheet:
     """Full capture pipeline for one answer booklet."""
+    vision.api_key()  # LLMNotEnabled up front, not six pages of "OCR failed"
     sheet = ScannedSheet(sheet_id=sheet_id, student_id=student_id,
                          student_name=student_name, roll_number=roll_number,
                          assessment_id=assessment_id)

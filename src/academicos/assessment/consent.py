@@ -24,8 +24,18 @@ import requests
 from pydantic import BaseModel, Field
 
 from .postgres_kv import durable_table
+from .supabase_kv import SupabaseUnavailable
 
 logger = logging.getLogger(__name__)
+
+# Rows per remote read in granted_student_ids. PostgREST caps a response at
+# its max-rows setting (1000 by default) without saying so; a school with more
+# consent records than that would silently lose the rest, and every student in
+# the lost part would be refused grading with consent on file. So the read
+# pages by id until a page comes back empty (the same rule as audit_log's
+# _REMOTE_PAGE, which also does not stop at a short page, because a server cap
+# below this number makes every page short).
+_REMOTE_PAGE = 1000
 
 
 class ParentalConsentRecord(BaseModel):
@@ -64,6 +74,21 @@ class ParentalConsentRecord(BaseModel):
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> ParentalConsentRecord:
+        # A consent status must FAIL CLOSED.
+        #
+        # This read `row.get("status") or "granted"`, so a missing or empty
+        # status was interpreted as GRANTED consent. That is the wrong direction
+        # for the failure: a partial Supabase payload, a schema drift or a
+        # truncated write would silently grant permission to process a minor's
+        # data, and nothing would look wrong. An unknown status is not consent,
+        # and the safe reading of "I cannot tell" is "no".
+        status = row.get("status")
+        if not status or not str(status).strip():
+            raise ValueError(
+                f"parental consent record {row.get('id')!r} has no status; "
+                "refusing to read an unknown status as granted. Consent data "
+                "fails closed."
+            )
         return cls(
             id=row["id"],
             schoolId=row["school_id"],
@@ -71,7 +96,7 @@ class ParentalConsentRecord(BaseModel):
             guardianName=row["guardian_name"],
             guardianRelationship=row.get("guardian_relationship") or "parent",
             method=row["method"],
-            status=row.get("status") or "granted",
+            status=str(status).strip(),
             purpose=row.get("purpose") or "assessment_and_grading",
             notes=row.get("notes"),
             recordedBy=row["recorded_by"],
@@ -88,6 +113,13 @@ class ConsentStore:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # AGENTS.md section 3 mandates both pragmas on EVERY connection. This
+        # store set neither: no WAL, and no busy_timeout, under multi-threaded
+        # FastAPI, on the store holding DPDP consent records. A locked database
+        # here did not merely fail -- it failed on the one write that has to be
+        # durable.
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=60000")
         self._init_db()
 
     def _init_db(self) -> None:
@@ -208,6 +240,71 @@ class ConsentStore:
         c = self.get_consent(school_id, student_id)
         return c is not None and c.status == "granted"
 
+    def granted_student_ids(self, school_id: str) -> set[str]:
+        """The ids of every student with ACTIVE consent at `school_id`, in one
+        read of the school's records instead of one read per student.
+
+        authz.students_without_consent uses this for batches: GET
+        /consent/missing takes up to 500 ids and a class-wide bulk award about
+        40, and with the durable table on, has_consent is one remote select
+        per student with a 10 s timeout each -- 500 sequential round trips in
+        one request. This is one select per 1000 records.
+
+        Fails closed per ROW, not per school: a record that cannot be read
+        (from_row raises for a blank status; a partial payload lacks a key) is
+        logged and left out, so that student counts as missing, while every
+        other student's record still counts. list_for_school would raise for
+        the whole school on one bad row."""
+        rows: Optional[list[dict[str, Any]]] = None
+        if self._remote.enabled:
+            try:
+                rows = self._read_school_remote(school_id)
+            except requests.exceptions.RequestException:
+                logger.warning(
+                    "Supabase unreachable, falling back to local SQLite for "
+                    "granted_student_ids (%s)", school_id, exc_info=True,
+                )
+        if rows is None:
+            with self._conn_lock:
+                rows = [dict(r) for r in self.conn.execute(
+                    "SELECT * FROM parental_consents WHERE school_id=?", (school_id,)
+                ).fetchall()]
+
+        granted: set[str] = set()
+        for row in rows:
+            try:
+                record = ParentalConsentRecord.from_row(row)
+            except (ValueError, KeyError):
+                logger.warning(
+                    "unreadable consent record for %s at %s; treating as missing",
+                    row.get("student_id"), school_id, exc_info=True,
+                )
+                continue
+            if record.school_id == school_id and record.status == "granted":
+                granted.add(record.student_id)
+        return granted
+
+    def _read_school_remote(self, school_id: str) -> list[dict[str, Any]]:
+        """Every remote consent row for one school, paged by id (the primary
+        key, so a page boundary cannot skip or repeat a row). See
+        _REMOTE_PAGE for why it stops only at an empty page."""
+        rows: list[dict[str, Any]] = []
+        last: Optional[str] = None
+        while True:
+            page = self._remote.select(
+                order="id.asc", limit=_REMOTE_PAGE,
+                gt={"id": last} if last is not None else None,
+                school_id=school_id)
+            if not page:
+                return rows
+            rows.extend(page)
+            nxt = page[-1]["id"]
+            if last is not None and not nxt > last:
+                raise SupabaseUnavailable(
+                    table="parental_consents", op="select",
+                    body="paging by id did not advance; consents were not fully read")
+            last = nxt
+
     def revoke_consent(
         self,
         school_id: str,
@@ -227,14 +324,23 @@ class ConsentStore:
         row = updated.to_row()
 
         if self._remote.enabled:
+            # No local fallback for a withdrawal. The consent row lives in the
+            # durable store and is read back from there; a local UPDATE hits 0
+            # rows yet used to return the revoked record (a 200), and when the
+            # store came back the row still said 'granted' -- grading went ahead
+            # for a student whose parent had withdrawn. Fail visibly (503 via
+            # the app's SupabaseUnavailable handler) so the school retries.
             try:
                 self._remote.upsert(row, on_conflict="school_id,student_id")
                 return updated
-            except requests.exceptions.RequestException:
-                logger.warning(
-                    "Supabase unreachable, falling back to local SQLite for revoke_consent (%s, %s)",
+            except requests.exceptions.RequestException as exc:
+                logger.error(
+                    "consent withdrawal NOT recorded: durable store unreachable (%s, %s)",
                     school_id, student_id, exc_info=True,
                 )
+                raise SupabaseUnavailable(
+                    table="parental_consents", op="revoke (withdrawal not saved; retry)",
+                    cause=exc) from exc
 
         with self._conn_lock:
             self.conn.execute("""
@@ -266,15 +372,34 @@ class ConsentStore:
         return [ParentalConsentRecord.from_row(dict(r)) for r in rows]
 
 
-_INSTANCE: Optional[ConsentStore] = None
+_INSTANCE: Optional[dict] = {}
 _INSTANCE_LOCK = threading.Lock()
 
 
 def get_consent_store(data_root: Optional[Path] = None) -> ConsentStore:
+    # Keyed on the RESOLVED PATH, not a bare global.
+    #
+    # This was `if _INSTANCE is None`, so the FIRST data_root ever passed won
+    # for the life of the process and every later call with a different root got
+    # that first instance. In production only one root is used, which is why it
+    # survived unspotted -- but anywhere a process touches more than one root
+    # (tests, a CLI run beside a server, tooling) the store silently reads and
+    # writes the WRONG database. For the audit log that means a compliance trail
+    # filed against another data root.
+    root = data_root or Path(os.environ.get("ACOS_DATA_ROOT", "academicos-data"))
+    # `_INSTANCE` is a PATH-KEYED cache, not one store. Tests reset it with
+    # `monkeypatch.setattr(..., "_INSTANCE", None)`, which is kept working,
+    # but the reset is no longer load-bearing: two data roots now get two
+    # stores by construction. See git history for the single-global version.
     global _INSTANCE
     if _INSTANCE is None:
+        _INSTANCE = {}                      # a caller cleared the cache
+    key = str(root / "assessment" / "consents.db")
+    instance = _INSTANCE.get(key)
+    if instance is None:
         with _INSTANCE_LOCK:
-            if _INSTANCE is None:
-                root = data_root or Path(os.environ.get("ACOS_DATA_ROOT", "academicos-data"))
-                _INSTANCE = ConsentStore(root / "assessment" / "consents.db")
-    return _INSTANCE
+            instance = _INSTANCE.get(key)
+            if instance is None:
+                instance = ConsentStore(Path(key))
+                _INSTANCE[key] = instance
+    return instance

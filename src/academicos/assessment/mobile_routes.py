@@ -16,8 +16,8 @@ from pydantic import Field
 
 from . import mobile_scan
 from . import routes as assessment_routes
-from .authz import require_school_owns_scan_session
-from .auth_routes import get_current_user
+from .authz import require_consent, require_school_owns_assessment, require_school_owns_scan_session
+from .auth_routes import require_staff
 from .evaluate import Evaluation, MarkingPointOutcome
 from .mapping import to_question_schema
 from .pool import get_pool
@@ -39,6 +39,36 @@ def _get_session_owned(session_id: str, current: User) -> mobile_scan.ScanSessio
     if assessment_routes._store is None:
         raise HTTPException(503, "assessment module not initialized")
     return require_school_owns_scan_session(session, assessment_routes._store, current)
+
+
+def _get_session_to_process(session_id: str, current: User) -> mobile_scan.ScanSession:
+    """_get_session_owned, plus the student's parental consent (DPDP Act
+    2023 s.9; authz.require_consent). For every route that adds to or
+    changes a session: a page photo, OCR and scoring, a review decision, the
+    finalize into mastery. Consent is checked on each one, not only at
+    creation, so a withdrawal mid-session stops the rest of it. The read
+    routes (review queue, page image, PDFs) use _get_session_owned alone:
+    looking at what was captured while consent held is not new processing."""
+    session = _get_session_owned(session_id, current)
+    require_consent(_consents(), current.school_id, session.student_id)
+    return session
+
+
+def _consents():
+    from . import pillar_routes
+    return pillar_routes._consents()
+
+
+def _log_read(session: mobile_scan.ScanSession, current: User, what: str) -> None:
+    """Log that `current` read this session's student's work: the review
+    queue (every transcribed answer and its marks), a photo of the
+    handwriting itself, or an exported PDF (docs/compliance.md box 2; see
+    pillar_routes._log_read). Called once the data is found and before it
+    is returned."""
+    from . import pillar_routes
+    pillar_routes._log_read(current, what, student_id=session.student_id,
+                            assessment_id=session.assessment_id,
+                            scanSessionId=session.id)
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1")
@@ -79,15 +109,19 @@ def _session_response(session: mobile_scan.ScanSession) -> ScanSessionResponse:
 
 @router.post("/scan/sessions", response_model=ScanSessionResponse)
 def create_scan_session(
-    req: CreateScanSessionRequest, current: User = Depends(get_current_user),
+    req: CreateScanSessionRequest, current: User = Depends(require_staff),
 ) -> ScanSessionResponse:
-    assessment = assessment_routes._store.get(req.assessment_id) if assessment_routes._store else None
-    if assessment is not None and assessment.school_id != current.school_id:
-        raise HTTPException(403, "this assessment belongs to a different school")
-    subject = assessment.subject if assessment else "Science"
-    grade = assessment.grade if assessment else 10
+    if assessment_routes._store is None:
+        raise HTTPException(503, "assessment module not initialized")
+    # An unknown assessment used to become a Science class 10 session. Every later
+    # route on it 404s through require_school_owns_scan_session, so it could never
+    # be processed; refusing here reports the mistake where it is made.
+    assessment = require_school_owns_assessment(assessment_routes._store, req.assessment_id, current)
+    # DPDP: no scanning of a named student's work without recorded parental consent.
+    require_consent(_consents(), current.school_id, req.student_id)
     session = mobile_scan.create_session(req.assessment_id, req.student_id, req.student_name,
-                                         subject=subject, grade=grade, school_id=current.school_id)
+                                         subject=assessment.subject, grade=assessment.grade,
+                                         school_id=current.school_id)
     return _session_response(session)
 
 
@@ -100,9 +134,9 @@ class CapturedPageResponse(Camel):
 
 @router.post("/scan/sessions/{session_id}/pages", response_model=CapturedPageResponse)
 async def upload_scan_page(
-    session_id: str, file: UploadFile = File(...), current: User = Depends(get_current_user),
+    session_id: str, file: UploadFile = File(...), current: User = Depends(require_staff),
 ) -> CapturedPageResponse:
-    session = _get_session_owned(session_id, current)
+    session = _get_session_to_process(session_id, current)
     image_bytes = await file.read()
     if not image_bytes:
         raise HTTPException(400, "empty file upload")
@@ -153,8 +187,8 @@ class ProcessSessionResponse(Camel):
 
 
 @router.post("/scan/sessions/{session_id}/process", response_model=ProcessSessionResponse)
-def process_scan_session(session_id: str, current: User = Depends(get_current_user)) -> ProcessSessionResponse:
-    session = _get_session_owned(session_id, current)
+def process_scan_session(session_id: str, current: User = Depends(require_staff)) -> ProcessSessionResponse:
+    session = _get_session_to_process(session_id, current)
 
     papers = assessment_routes._require_papers()
     paper = papers.get(session.assessment_id)
@@ -182,8 +216,9 @@ def process_scan_session(session_id: str, current: User = Depends(get_current_us
 
 
 @router.get("/scan/sessions/{session_id}/review", response_model=ProcessSessionResponse)
-def get_scan_review(session_id: str, current: User = Depends(get_current_user)) -> ProcessSessionResponse:
+def get_scan_review(session_id: str, current: User = Depends(require_staff)) -> ProcessSessionResponse:
     session = _get_session_owned(session_id, current)
+    _log_read(session, current, "scan_review")
     return ProcessSessionResponse(items=[_item_response(session_id, i) for i in session.review])
 
 
@@ -198,7 +233,7 @@ class ReviewDecisionRequest(Camel):
 @router.post("/scan/sessions/{session_id}/review/{question_id}", response_model=ReviewItemResponse)
 def submit_review_decision(session_id: str, question_id: str,
                            req: ReviewDecisionRequest,
-                           current: User = Depends(get_current_user),
+                           current: User = Depends(require_staff),
                            ) -> ReviewItemResponse:
     """Requires a real logged-in caller from the session's own school (fixed
     2026-09-15: auth used to be optional here -- get_current_user_optional
@@ -208,7 +243,7 @@ def submit_review_decision(session_id: str, question_id: str,
     "gated" examples in this whole module). reviewer_id is always the real
     authenticated identity now; the request field stays on the wire schema
     only so an older client that still sends it doesn't 422."""
-    session = _get_session_owned(session_id, current)
+    session = _get_session_to_process(session_id, current)
     cfg, _ = assessment_routes._require()
     reviewer_id = current.id
     try:
@@ -231,13 +266,24 @@ class FinalizeResponse(Camel):
 
 
 @router.post("/scan/sessions/{session_id}/finalize", response_model=FinalizeResponse)
-def finalize_scan_session(session_id: str, current: User = Depends(get_current_user)) -> FinalizeResponse:
-    session = _get_session_owned(session_id, current)
+def finalize_scan_session(session_id: str, current: User = Depends(require_staff)) -> FinalizeResponse:
+    session = _get_session_to_process(session_id, current)
     if not session.review:
         raise HTTPException(409, "nothing to finalize — process the session first")
 
     from . import pillar_routes
+    from .grade_lock import FINALIZED_ACTION, is_finalized
+    from .knowledge import sheet_source
     cfg, knowledge, templates = pillar_routes._require()
+    # This route overwrites the graded sheet for the same assessment and
+    # student, and it takes no reason. A sheet that is already finalized is
+    # refused before any export or write. Corrections go through the review
+    # or award routes, which take a reason (grade_lock.py, audit item 8.5).
+    audit = pillar_routes._audit()
+    if is_finalized(audit, session.assessment_id, session.student_id):
+        raise HTTPException(
+            409, f"the sheet for student {session.student_id} is already finalized; "
+                 "correct individual marks through review or award with a reason")
     template = templates.default_for("school_1")
 
     mobile_scan.export_raw_booklet_pdf(session, cfg.data_root / "exports")
@@ -277,8 +323,19 @@ def finalize_scan_session(session_id: str, current: User = Depends(get_current_u
         )
         graded.append((question, evaluation))
     if graded:
+        # The same finalize entry and mastery tag the sheet route writes, so
+        # this sheet is locked from now on too, and a correction re-finalized
+        # through the sheet route replaces these answers in mastery instead of
+        # adding a second copy (knowledge.KnowledgeStore.record_sheet).
+        mastery_source = sheet_source(session.assessment_id, session.student_id)
+        audit.append(FINALIZED_ACTION, assessment_id=session.assessment_id,
+                     student_id=session.student_id, actor=current.id,
+                     details={"totalAwarded": awarded, "totalMax": maximum,
+                              "questionCount": len(graded), "source": "scan",
+                              "scanSessionId": session.id,
+                              "masterySource": mastery_source, "refinalized": False})
         pillar_routes._require_graded().save(session.assessment_id, session.student_id, graded)
-        knowledge.record_evaluations(session.student_id, graded)
+        knowledge.record_sheet(session.student_id, graded, mastery_source)
 
     return FinalizeResponse(
         total_awarded=awarded, total_max=maximum,
@@ -288,7 +345,7 @@ def finalize_scan_session(session_id: str, current: User = Depends(get_current_u
 
 
 @router.get("/scan/sessions/{session_id}/pages/{page_no}/image")
-def get_page_image(session_id: str, page_no: int, current: User = Depends(get_current_user)):
+def get_page_image(session_id: str, page_no: int, current: User = Depends(require_staff)):
     """Serves the processed (cropped/lit) photo of one captured page — lets the
     review UI show a teacher the actual handwriting an answer was read from,
     instead of asking them to trust the transcription blind.
@@ -305,35 +362,41 @@ def get_page_image(session_id: str, page_no: int, current: User = Depends(get_cu
         raise HTTPException(404, f"no page {page_no} in this session")
     path = page.processed_path if page.processed_path.exists() else page.raw_path
     if path.exists():
+        _log_read(session, current, "scan_page_image")
         return FileResponse(str(path), media_type="image/jpeg")
     data = mobile_scan.fetch_storage_bytes(page.processed_storage_key) \
         or mobile_scan.fetch_storage_bytes(page.raw_storage_key)
     if data is None:
         raise HTTPException(404, "page image not found on disk or in storage")
+    _log_read(session, current, "scan_page_image")
     return Response(content=data, media_type="image/jpeg")
 
 
 @router.get("/scan/sessions/{session_id}/raw-pdf")
-def get_raw_pdf(session_id: str, current: User = Depends(get_current_user)):
+def get_raw_pdf(session_id: str, current: User = Depends(require_staff)):
     session = _get_session_owned(session_id, current)
     if session.raw_pdf_path is not None and session.raw_pdf_path.exists():
+        _log_read(session, current, "scan_raw_pdf")
         return FileResponse(str(session.raw_pdf_path), media_type="application/pdf",
                             filename=session.raw_pdf_path.name)
     data = mobile_scan.fetch_storage_bytes(session.raw_pdf_storage_key)
     if data is None:
         raise HTTPException(404, "raw booklet PDF not generated yet — finalize the session first")
+    _log_read(session, current, "scan_raw_pdf")
     return Response(content=data, media_type="application/pdf",
                     headers={"Content-Disposition": f'inline; filename="{session_id}_raw.pdf"'})
 
 
 @router.get("/scan/sessions/{session_id}/corrected-pdf")
-def get_corrected_pdf(session_id: str, current: User = Depends(get_current_user)):
+def get_corrected_pdf(session_id: str, current: User = Depends(require_staff)):
     session = _get_session_owned(session_id, current)
     if session.corrected_pdf_path is not None and session.corrected_pdf_path.exists():
+        _log_read(session, current, "scan_corrected_pdf")
         return FileResponse(str(session.corrected_pdf_path), media_type="application/pdf",
                             filename=session.corrected_pdf_path.name)
     data = mobile_scan.fetch_storage_bytes(session.corrected_pdf_storage_key)
     if data is None:
         raise HTTPException(404, "corrected PDF not generated yet — finalize the session first")
+    _log_read(session, current, "scan_corrected_pdf")
     return Response(content=data, media_type="application/pdf",
                     headers={"Content-Disposition": f'inline; filename="{session_id}_corrected.pdf"'})

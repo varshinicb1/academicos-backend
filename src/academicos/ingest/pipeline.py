@@ -64,8 +64,15 @@ class IngestionPipeline:
                     with fitz.open(sf.path) as doc:
                         first = doc[0].get_text()[:2000] if doc.page_count else ""
                         sf.doc_type = classify_from_text(sf, first)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Was `pass`. A failed probe left doc_type as it stood, so
+                    # the document was ingested UNCLASSIFIED with nothing
+                    # recording why. Classification drives downstream routing,
+                    # so this is a real degradation rather than cosmetic.
+                    logger.warning(
+                        "doc-type probe failed for %s (%s: %s); ingesting as %s",
+                        sf.source_id, type(exc).__name__, exc,
+                        getattr(sf, "doc_type", "UNKNOWN"))
 
             key = self._store_key(sf)
             self.store.put(sf.path, key)

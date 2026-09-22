@@ -315,8 +315,12 @@ class CurriculumEstimator:
             if attrs:
                 try:
                     preds = [str(p) for p in json.loads(attrs).get("predicates", [])]
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Was `pass`. These predicates ARE the prerequisite evidence
+                    # being mined, so dropping them silently changed the graph
+                    # with nothing to explain the difference.
+                    logger.warning("unreadable edge attributes %s->%s (%s: %s)",
+                                   src, tgt, type(exc).__name__, exc)
             if prov:
                 try:
                     p = json.loads(prov)
@@ -325,8 +329,12 @@ class CurriculumEstimator:
                         for v in TEXT_SPAN_VERBS:
                             if v in words and len(v) > 3:
                                 preds.append(v)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Was `pass`. Provenance is where a mined prerequisite cites
+                    # its evidence; losing it silently means the edge survives
+                    # with no citation and no warning.
+                    logger.warning("unreadable edge provenance %s->%s (%s: %s)",
+                                   src, tgt, type(exc).__name__, exc)
             for pred in preds:
                 pl = pred.lower().strip()
                 if pl in PREREQ_VERBS:
@@ -770,5 +778,7 @@ def _connect_index(index_db):
     import sqlite3
     conn = sqlite3.connect(index_db, timeout=60)
     conn.row_factory = sqlite3.Row
+    # AGENTS.md section 3: every connection sets both pragmas.
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=60000")
     return conn

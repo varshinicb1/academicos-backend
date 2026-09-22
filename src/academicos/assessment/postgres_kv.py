@@ -206,8 +206,8 @@ def reset_pools() -> None:
 class PostgresTable:
     """Cloud SQL equivalent of :class:`SupabaseTable`.
 
-    Same public surface -- ``enabled``, ``select``, ``upsert``, ``update``,
-    ``delete`` -- so a store can be switched between backends by changing
+    Same public surface -- ``enabled``, ``select``, ``insert``, ``upsert``,
+    ``update``, ``delete`` -- so a store can be switched between backends by changing
     only the constructor call.
     """
 
@@ -297,6 +297,19 @@ class PostgresTable:
                    f"ON CONFLICT ({target}) DO NOTHING")
 
         self._execute("upsert", sql, tuple(_coerce(v) for v in row.values()))
+
+    def insert(self, row: dict[str, Any]) -> None:
+        """Plain INSERT, no ON CONFLICT: a duplicate key raises
+        PostgresUnavailable wrapping SQLSTATE 23505 (see
+        supabase_kv.is_unique_violation). Same contract as
+        SupabaseTable.insert, for append-only tables."""
+        cols = [_check_ident(c, "column") for c in row]
+        if not cols:
+            raise ValueError("insert() requires at least one column")
+        placeholders = ", ".join(["%s"] * len(cols))
+        quoted = ", ".join(f'"{c}"' for c in cols)
+        sql = f'INSERT INTO "{self.table}" ({quoted}) VALUES ({placeholders})'
+        self._execute("insert", sql, tuple(_coerce(v) for v in row.values()))
 
     def update(self, values: dict[str, Any], **eq_filters: str) -> None:
         if not values:

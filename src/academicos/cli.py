@@ -654,13 +654,20 @@ def cmd_concept_spine(args: argparse.Namespace) -> int:
                     s["occurrences"] += int(a.get("occurrences", 0))
                     for p in a.get("predicates", []):
                         s["predicates"][p] += 1
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Was `pass`. These counts are the graph statistics this
+                    # command exists to report, so a dropped row silently
+                    # understated them.
+                    logger.warning("unreadable edge attributes %s->%s (%s: %s)",
+                                   src, tgt, type(exc).__name__, exc)
             if prov:
                 try:
                     s["sources"].add(_json.loads(prov)["source"]["document_id"])
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Was `pass`. `source_docs` is derived from exactly this
+                    # set, so a failure quietly deflated a reported figure.
+                    logger.warning("unreadable edge provenance %s->%s (%s: %s)",
+                                   src, tgt, type(exc).__name__, exc)
     n_updates = 0
     for nid, s in stats.items():
         attrs = {
@@ -1079,10 +1086,18 @@ def cmd_curriculum_approve(args: argparse.Namespace) -> int:
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
+    """The container's entrypoint (Dockerfile CMD). The production guard runs
+    here first, so a misconfigured revision exits on the named problems rather
+    than on whatever a store does with a placeholder credential. Stores are
+    NOT opened here: uvicorn fires `api.main._startup`, which guards again (for
+    anything that starts the app without this command) and is the one place
+    init_runtime runs -- calling it here as well opened every store twice, the
+    first time before any guard."""
     import uvicorn
-    from .api.main import init_runtime
 
-    init_runtime()
+    from .config import enforce_production_config
+
+    enforce_production_config(Config.load())
     uvicorn.run("academicos.api.main:app", host=args.host, port=args.port, reload=False)
     return 0
 

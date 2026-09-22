@@ -26,6 +26,12 @@ class Interaction:
     affect: str | None = None      # "frustrated" | "engaged" | "tired" | ...
     duration_sec: float | None = None
     ts: str = field(default_factory=_now)
+    # What recorded this event when it must be replaceable as a unit, e.g.
+    # "sheet:<assessment>:<student>" for a finalized answer sheet. A sheet can
+    # be corrected and re-finalized, and its answers must then replace the
+    # earlier copy rather than sit beside it (KnowledgeStore.record_sheet).
+    # None for everything else, which is only ever appended.
+    source: str | None = None
 
 
 @dataclass

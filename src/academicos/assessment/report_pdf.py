@@ -168,7 +168,7 @@ def export_progress_report_pdf(student_name: str, student_id: str, subject: str,
     left = right = 18 * mm
     doc = SimpleDocTemplate(str(out_path), pagesize=A4, topMargin=16 * mm, bottomMargin=18 * mm,
                             leftMargin=left, rightMargin=right,
-                            title=f"Progress Report — {student_name}", author="AssessmentOS")
+                            title=f"Progress Report — {student_name}", author="AcademicOS")
     content_width = A4[0] - left - right
 
     story: list = _header(student_name, student_id, subject, template, styles, content_width)

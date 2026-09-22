@@ -62,6 +62,17 @@ class SupabaseUnavailable(requests.exceptions.RequestException):
         self.body = body
 
 
+def is_unique_violation(exc: BaseException) -> bool:
+    """A remote write refused by a unique index, as opposed to an outage.
+    PostgREST answers 409 for SQLSTATE 23505; Cloud SQL (PostgresUnavailable)
+    has no HTTP status, so the wrapped psycopg error's sqlstate is read.
+    Same rule as users._is_unique_violation, which predates this shared copy."""
+    if getattr(exc, "status", None) == 409:
+        return True
+    cause = exc.__cause__
+    return getattr(cause, "sqlstate", None) == "23505"
+
+
 class SupabaseTable:
     """Minimal PostgREST wrapper: upsert/select/delete against one table
     with a JSONB `payload` column. Not a general ORM."""
@@ -115,6 +126,14 @@ class SupabaseTable:
         self._request("POST", "upsert", params={"on_conflict": on_conflict},
                       json=row,
                       headers=self._headers(prefer="resolution=merge-duplicates"))
+
+    def insert(self, row: dict[str, Any]) -> None:
+        """A plain INSERT: a row whose key already exists is refused (HTTP 409),
+        never merged. For append-only tables, where `upsert` would let a replayed
+        id overwrite the original row -- the audit log's remote append was an
+        upsert until 2026-09-22 (audit item 8.5)."""
+        self._request("POST", "insert", json=row,
+                      headers=self._headers(prefer="return=minimal"))
 
     def update(self, values: dict[str, Any], **eq_filters: str) -> None:
         params = {k: f"eq.{v}" for k, v in eq_filters.items()}

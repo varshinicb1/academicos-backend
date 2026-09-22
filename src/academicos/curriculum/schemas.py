@@ -215,7 +215,15 @@ class SeedCbse10Response(Camel):
 # ---------------- academic calendar (§10, §27-29) ----------------
 
 class CreateCalendarRequest(Camel):
+    """Body of both POST (create) and PUT (correct) .../calendar. The routes
+    validate the values (calendar.normalize_weekly_off_days /
+    normalize_alternate_saturday_rule) and answer 422 naming what is
+    accepted -- plain `str` here so that message, not pydantic's, is what
+    the web admin shows."""
+    # Full weekday names, any case ("sunday"). The web client sent ints
+    # ([7]) until 2026-09-22, which 422'd every create.
     weekly_off_days: list[str] = Field(default_factory=lambda: ["sunday"])
+    # "none" | "all" | "second_fourth" | "first_third" | ordinals ("2nd,4th").
     alternate_saturday_rule: str = "none"
 
 
@@ -229,6 +237,7 @@ class CalendarResponse(Camel):
 class AddHolidayRequest(Camel):
     date: str
     label: str = Field(min_length=1)
+    # calendar.HOLIDAY_KINDS -- every kind but "event" removes teaching days.
     kind: str = "holiday"
     # Set for a real multi-day block (a 30-45 day summer break) instead of
     # entering one row per date; omitted/None means a single-day holiday.
@@ -374,7 +383,9 @@ class AdjustLessonRequest(Camel):
 
 class PushScheduleRequest(Camel):
     from_date: str
-    periods_per_week: int = Field(gt=0)
+    # Optional: omitted, PUSH uses the subject's stored
+    # SubjectPeriodAllocation (scheduling.push_lessons_after).
+    periods_per_week: Optional[int] = Field(default=None, gt=0)
     reason: str = Field(min_length=1)
 
 

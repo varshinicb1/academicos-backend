@@ -35,10 +35,12 @@ from . import imaging, llm_evaluate, scan, vision
 from .audit_log import get_audit_log
 from .scan_session_store import ScanSessionStore
 from .schemas import GeneratedQuestionSchema, QuestionSchema
-from .supabase_kv import SupabaseStorage
+from ..storage.blobs import durable_blob_store, record_upload_failure
 
 log = logging.getLogger(__name__)
-_storage = SupabaseStorage("scan-media")
+# GCS on GCP, Supabase Storage on Render, local-only otherwise -- see
+# storage/blobs.py for the precedence.
+_storage = durable_blob_store("scan-media")
 
 
 @dataclass
@@ -133,7 +135,11 @@ def _upload(session_id: str, key: str, path: Path, content_type: str) -> str:
     """Best-effort upload to Supabase Storage; returns the storage key on
     success, "" on failure or when Storage isn't configured. Never raises --
     a failed durability upload shouldn't sink a scan a teacher is mid-way
-    through, it just means that one artifact stays local-only."""
+    through, it just means that one artifact stays local-only.
+
+    Local-only on Cloud Run means gone at the next redeploy, so a failure is
+    counted for /health/storage (blobs.record_upload_failure) rather than
+    left in a log line nobody reads."""
     if not _storage.enabled:
         return ""
     full_key = f"{session_id}/{key}"
@@ -141,7 +147,9 @@ def _upload(session_id: str, key: str, path: Path, content_type: str) -> str:
         _storage.upload(full_key, path.read_bytes(), content_type)
         return full_key
     except Exception as exc:
-        log.warning("Supabase Storage upload failed for %s: %s", full_key, exc)
+        record_upload_failure("scan-media")
+        log.warning("Scan media upload failed for %s (artifact is on container "
+                    "disk only): %s", full_key, exc)
         return ""
 
 
@@ -199,7 +207,11 @@ def add_page(session: ScanSession, image_bytes: bytes, *, language: str = "en-IN
     step degrades to "keep the raw/less-processed image and flag a warning"
     rather than losing the page — one bad photo should not sink a 12-page
     booklet a teacher already captured.
+
+    No provider key is not a bad photo: OCR would fail on every page and each
+    would be stored as blank. Refused up front with LLMNotEnabled instead.
     """
+    vision.api_key()
     page_no = len(session.pages) + 1
     raw_dir = session.workdir / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -488,7 +500,7 @@ def export_corrected_pdf(session: ScanSession, output_dir: Path, *,
     awarded, maximum = finalize_totals(session)
     doc = SimpleDocTemplate(str(out_path), pagesize=A4, topMargin=16 * mm, bottomMargin=18 * mm,
                             leftMargin=18 * mm, rightMargin=18 * mm,
-                            title=f"Corrected sheet — {session.student_name}", author="AssessmentOS")
+                            title=f"Corrected sheet — {session.student_name}", author="AcademicOS")
     content_width = A4[0] - 36 * mm
 
     story: list = [

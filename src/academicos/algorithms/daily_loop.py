@@ -24,6 +24,11 @@ most recent event timestamp — every computation stays deterministic.
 """
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
+
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -467,8 +472,14 @@ class DailyLoop:
                     return order.get(b.source, len(order) + 1)
                 candidates.sort(key=lambda b: (b.kind != KIND_LEARN,
                                                pos(b), b.source))
-        except Exception:
-            pass  # never crash the loop run
+        except Exception as exc:
+            # Was `pass` under "never crash the loop run" -- the right instinct,
+            # the wrong mechanism. The sort failing means the candidates come
+            # back in an arbitrary order, and this list is what a student is told
+            # to study next. Do not crash; do not pretend it worked either.
+            logger.warning(
+                "session ordering failed, using unsorted candidates (%s: %s)",
+                type(exc).__name__, exc)
         return candidates
 
     def _focus_label(self, learn_ids: list[str]) -> str | None:

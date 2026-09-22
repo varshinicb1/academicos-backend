@@ -176,7 +176,9 @@ class Calendar:
     id: str
     academic_year_id: str
     weekly_off_days: list[str] = field(default_factory=lambda: ["sunday"])
-    alternate_saturday_rule: str = "none"   # "2nd,4th" | "all" | "none"
+    # "none" | "all" | "second_fourth" | "first_third" | ordinals like "2nd,4th"
+    # -- see calendar.parse_alternate_saturday_rule
+    alternate_saturday_rule: str = "none"
 
 
 @dataclass
@@ -185,7 +187,9 @@ class Holiday:
     calendar_id: str
     date: str                # ISO date -- start date for a multi-day block
     label: str
-    kind: str = "holiday"    # holiday | event | unexpected_closure
+    # calendar.HOLIDAY_KINDS: holiday | public | school | emergency |
+    # unexpected_closure close the school; event marks a day that still teaches
+    kind: str = "holiday"
     # None means a single-day holiday (the common case: a national holiday,
     # Annual Day). Set for a real multi-day block -- a 30-45 day summer
     # break -- so it doesn't require one row per date; inclusive of both

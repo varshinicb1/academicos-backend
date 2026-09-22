@@ -5,12 +5,15 @@ grows past what fits in memory.
 """
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import logging
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 from ..config import Config
@@ -18,7 +21,7 @@ from ..extract.academic import extract_questions
 from ..models.academic import Question
 from ..models.document import ParsedDocument
 from ..models.enums import DocType
-from . import notation
+from . import grades, notation
 from .chapters import chapter_name, tag_chapter
 from .embedding_chapter_tagger import ChapterTagCache, tag_questions
 
@@ -35,7 +38,7 @@ _FIGURE_DEPENDENT = (
     "shown in option", "in the given figure", "in the figure given", "given diagram",
     "following diagram", "figure shown", "in the diagram", "shown in the graph",
     "given circuit", "following circuit diagram", "in the given map", "given table",
-    "following table", "shown below",
+    "following table", "shown below", "figure given below",
 )
 
 
@@ -302,6 +305,10 @@ class PoolQuestion:
     correct_option: str | None = None
     answer_text: str = ""
     value_points: list[str] = field(default_factory=list)
+    # The served-bank record this came from, when it came from the baked bank.
+    # Kept whole because that record already IS the API wire shape; rebuilding
+    # it from the stem lost the source, the parts and every SQP MCQ's key.
+    record: dict | None = None
 
     @property
     def id(self) -> str:
@@ -334,9 +341,8 @@ class QuestionPool:
 
 
 def _grade_matches(pool_grade: str, requested_grade: str) -> bool:
-    """Compares e.g. pool grade 'X' against requested grade '10' or '10th'."""
-    roman = {"10": "X", "10th": "X", "x": "X"}
-    return pool_grade.upper() == roman.get(requested_grade.strip().lower(), requested_grade.strip().upper())
+    """Same grade, whatever form each side is in -- 'IX', '9', '9th'. See grades.py."""
+    return grades.matches(pool_grade, requested_grade)
 
 
 def _normalize(text: str) -> str:
@@ -363,6 +369,100 @@ def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
     if not inter:
         return 0.0
     return inter / len(a | b)
+
+
+# Normalised-text similarity (difflib ratio) at or above which two stems are
+# one question on a printed paper. Measured on the served bank (class 10,
+# 2026-09-22): Science has no keyed pair at or above 0.9, Mathematics 26 --
+# the same MCQ in two board papers (cbse:q:src:f319c93abeb1185b0864d200:9 /
+# cbse:q:src:b23bc2e537566a04afbf4415:15), but also "prove that root 5 / root
+# 3 is irrational" and an assertion vs its reason, which `near_duplicate` now
+# tells apart by their numbers and polarity (`_same_exact_tokens`). Just below
+# it sit different questions that share a template: a concave lens vs a
+# concave mirror problem (0.873), LCM of 576 and 512 vs HCF of 660 and 704
+# (0.851).
+STEM_SIMILARITY_THRESHOLD = 0.9
+
+
+# What a board paper's page adds to a question the extractor ran on into:
+# the footer ("5| P a g e", "# 17| P a g e"), "P.T.O." and a trailing page
+# number ("... (D) 24 ´ 53 15-"). Removed before the numbers are read, or the
+# same MCQ from pages 5 and 9 would count as two questions.
+_PAGE_NOISE = re.compile(
+    r"#?\s*\d+\s*\|\s*p\s*a\s*g\s*e|p\.\s*t\.\s*o\.?|\b\d+\s*-\s*$")
+# The tokens that make two otherwise identical sentences different questions,
+# kept in the order they appear: numbers ("root 5" vs "root 3"), function
+# names ("= sec A - tan A" vs "= cot A"; LCM vs HCF), polarity ("leap" vs
+# "non-leap") and an assertion-reason item's role.
+_EXACT_TOKENS = re.compile(
+    r"\d+(?:\.\d+)?"
+    r"|\b(?:sin|cos|tan|cot|sec|cosec|log|lcm|hcf)\b"
+    r"|\b(?:not|non|no|never|cannot)\b"
+    r"|\b(?:assertion|reason)(?=\s*\()")
+
+
+def _exact_tokens(norm: str) -> tuple[str, ...]:
+    return tuple(_EXACT_TOKENS.findall(_PAGE_NOISE.sub(" ", norm)))
+
+
+def _same_exact_tokens(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
+    """Equal, or one a prefix of the other: extraction cuts a question short
+    at the end ("(D) 2x + x 3 =" in one paper, "... = 5" in the other), it
+    does not change a number in the middle. A stem with none of them against
+    one with some is not a cut copy: "Prove that is an irrational number"
+    lost its radicand, and matched both "root 5" and "root 3" otherwise."""
+    short, long_ = (a, b) if len(a) <= len(b) else (b, a)
+    if not short:
+        return not long_
+    return long_[:len(short)] == short
+
+
+@lru_cache(maxsize=16384)
+def _stem_key(text: str) -> tuple[str, frozenset[str], Counter, tuple[str, ...]]:
+    """Normalised text, content-word signature, character counts and exact
+    tokens, once per stem. The counts are difflib's `quick_ratio` bound
+    precomputed: building them per pair was 90% of a swap's time on the
+    class 10 Science bank."""
+    norm = _normalize(text)
+    return norm, _signature(text), Counter(norm), _exact_tokens(norm)
+
+
+def near_duplicate(a: str, b: str) -> bool:
+    """Would a teacher see these two stems as the same question on one paper?
+
+    The pool's own gate (content-word Jaccard >= NEAR_DUPLICATE_THRESHOLD)
+    counts, and so does the whole normalised text: the gate skips stems with
+    fewer than four content words, which is most of a mathematics paper
+    ("Which of the following is not a quadratic equation ? (A) (x - 2)^2 ..."
+    has three), so two copies of one MCQ passed it and could print as Q3 and
+    Q9. The cheap upper bounds on the ratio run first, so most pairs never
+    reach the full comparison.
+
+    Words alone over-flag: over every pair in the class 10 Mathematics pool
+    (645 questions) they flagged 28, among them "If 3/2 is a root of kx^2 -
+    x - 2 = 0, find k" vs "If 2/1 is a root of x^2 + kx - 4/5 = 0, find k",
+    "root 5" vs "root 3 is irrational" and an assertion about leap years vs
+    its reason about non-leap years. So the numbers, function names and
+    polarity must also agree (`_same_exact_tokens`). Re-measured with it
+    (2026-09-22): Mathematics 17 pairs, every one the same question as it
+    prints (an MCQ in two papers, a page footer or a cut copy apart);
+    Science 0 of 408 questions."""
+    na, sa, ca, xa = _stem_key(a)
+    nb, sb, cb, xb = _stem_key(b)
+    if na == nb:
+        return True
+    if not _same_exact_tokens(xa, xb):
+        return False
+    if len(sa) >= 4 and len(sb) >= 4 and _jaccard(sa, sb) >= NEAR_DUPLICATE_THRESHOLD:
+        return True
+    t = STEM_SIMILARITY_THRESHOLD
+    total = len(na) + len(nb)
+    # difflib's real_quick_ratio and quick_ratio, both upper bounds on ratio.
+    if 2 * min(len(na), len(nb)) < t * total:
+        return False
+    if 2 * sum((ca & cb).values()) < t * total:
+        return False
+    return difflib.SequenceMatcher(None, na, nb, autojunk=False).ratio() >= t
 
 
 class _NearDuplicateIndex:
@@ -398,7 +498,65 @@ class _NearDuplicateIndex:
         return False
 
 
-def build_pool(cfg: Config, *, subject: str = "Science", grade: str = "X") -> QuestionPool:
+def _registry_paper_rows(cfg: Config, subject: str, grade: str) -> list:
+    """The registry's question papers for (subject, grade), whatever spelling
+    the registry used for the grade.
+
+    sources.grade holds '6'..'9' for classes 6-9 but 'X' and 'XII' for 10 and
+    12 (registry.sqlite, 2026-09-21), so a raw `grade=?` against the pool's
+    roman key would miss a class 8 paper stored as '8'. Fetch the subject's
+    papers and compare grades through grades.py instead -- at most ~70 rows.
+    """
+    import sqlite3
+
+    if not cfg.registry_db.exists():
+        return []
+    try:
+        reg = sqlite3.connect(cfg.registry_db)
+        reg.row_factory = sqlite3.Row
+        # AGENTS.md section 3: every connection sets both pragmas.
+        reg.execute("PRAGMA journal_mode=WAL")
+        reg.execute("PRAGMA busy_timeout=60000")
+        rows = reg.execute(
+            "SELECT source_id, doc_type, subject, grade, academic_year FROM sources "
+            "WHERE doc_type='question_paper' AND subject=?",
+            (subject,),
+        ).fetchall()
+        reg.close()
+    except sqlite3.OperationalError:
+        # Found live 2026-09-18: this used to swallow the error into
+        # rows = [] -- indistinguishable from "no question papers exist
+        # for this subject/grade", which get_pool() then caches forever
+        # (keyed on (subject, grade), populated once). A transient lock
+        # at exactly the wrong moment silently and *permanently* zeroed
+        # out that subject/grade's question pool for the rest of the
+        # process's life, with nothing in any log to explain why. Log
+        # loudly and re-raise instead: get_pool()'s cache assignment
+        # then never runs, so the next real request retries the query
+        # instead of replaying a poisoned empty result.
+        log.error(
+            "registry query failed for subject=%s grade=%s -- refusing to "
+            "silently treat this as 'no question papers exist' (that "
+            "result would be cached forever by get_pool)", subject, grade,
+            exc_info=True,
+        )
+        raise
+    return [r for r in rows if grades.matches(r["grade"], grade)]
+
+
+def _baked_bank_paths(cfg: Config) -> list[Path]:
+    """Where the baked-in bank may live, in the order it is tried."""
+    root = Path(__file__).parents[3]
+    return [
+        root / "academicos-data" / "syllabus" / "questions.json",
+        root / "academicos-data" / "questions.json",
+        root / "frontend" / "assets" / "corpus" / "questions.json",
+        cfg.data_root / "questions.json",
+        cfg.data_root / "syllabus" / "questions.json",
+    ]
+
+
+def build_pool(cfg: Config, *, subject: str = "Science", grade: str) -> QuestionPool:
     """Loads every parsed question_paper for (subject, grade) from the registry,
     extracts + chapter-tags its questions, dedupes near-identical stems.
 
@@ -413,7 +571,7 @@ def build_pool(cfg: Config, *, subject: str = "Science", grade: str = "X") -> Qu
     failed ~40-50% of batches for Social Science's longer (21-chapter)
     candidate list, where embeddings have no generation step to fail at all
     -- see embedding_chapter_tagger.py's docstring for the full comparison."""
-    import sqlite3
+    grade = grades.to_roman(grade)   # idempotent; direct callers get the same check as get_pool
 
     pool = QuestionPool()
     seen_hashes: set[str] = set()
@@ -422,22 +580,10 @@ def build_pool(cfg: Config, *, subject: str = "Science", grade: str = "X") -> Qu
     skipped_near_dup = 0
     skipped_truncated = 0
     skipped_broken_options = 0
+    skipped_invalid = 0
     near_dupes = _NearDuplicateIndex()
 
-    rows = []
-    if cfg.registry_db.exists():
-        try:
-            reg = sqlite3.connect(cfg.registry_db)
-            reg.row_factory = sqlite3.Row
-            reg.execute("PRAGMA busy_timeout=60000")
-            rows = reg.execute(
-                "SELECT source_id, doc_type, subject, grade, academic_year FROM sources "
-                "WHERE doc_type='question_paper' AND subject=? AND grade=?",
-                (subject, grade),
-            ).fetchall()
-            reg.close()
-        except sqlite3.OperationalError:
-            rows = []
+    rows = _registry_paper_rows(cfg, subject, grade)
 
     # Official answers, if the marking schemes have been parsed. Absent store =
     # questions still load, they just cannot be auto-scored.
@@ -502,7 +648,10 @@ def build_pool(cfg: Config, *, subject: str = "Science", grade: str = "X") -> Qu
             pq = PoolQuestion(
                 question=q,
                 subject=row["subject"] or subject,
-                grade=row["grade"] or grade,
+                # The pool key, not row["grade"]: the registry spells classes
+                # 6-9 as '8' where the key and the baked path say 'VIII', and
+                # this label is the grade keys.lookup matches on below.
+                grade=grade,
                 academic_year=row["academic_year"],
                 chapter_id=cid,
                 chapter_name=chapter_name(cid),
@@ -552,25 +701,57 @@ def build_pool(cfg: Config, *, subject: str = "Science", grade: str = "X") -> Qu
 
     if not pool.questions:
         if "PYTEST_CURRENT_TEST" not in os.environ or getattr(cfg, "_load_baked_questions", False):
-            candidates_paths = [
-                Path(__file__).parents[3] / "academicos-data" / "syllabus" / "questions.json",
-                Path(__file__).parents[3] / "academicos-data" / "questions.json",
-                Path(__file__).parents[3] / "frontend" / "assets" / "corpus" / "questions.json",
-                cfg.data_root / "questions.json",
-                cfg.data_root / "syllabus" / "questions.json",
-            ]
-            for p in candidates_paths:
+            for p in _baked_bank_paths(cfg):
                 if p.exists():
                     try:
                         data = json.loads(p.read_text(encoding="utf-8"))
-                        raw_qs = data.get("questions", [])
+                        # Board papers first, stably, and *before* the gates: the
+                        # near-duplicate gate keeps whichever copy it sees first,
+                        # and SQPs reuse board questions. A class 10/12 paper that
+                        # composes today must not be silently re-composed from the
+                        # SQP and CBE items the merged bank adds -- whatever order
+                        # the file happens to hold them in.
+                        raw_qs = sorted(
+                            data.get("questions", []),
+                            key=lambda it: 0 if it.get("source") == "cbse_board_paper" else 1)
+                        from .schemas import QuestionSchema
                         for item in raw_qs:
                             item_subject = item.get("subject", "")
-                            item_grade_int = item.get("grade", 10)
-                            item_grade_roman = "X" if item_grade_int == 10 else ("XII" if item_grade_int == 12 else str(item_grade_int))
+                            try:
+                                item_grade_roman = grades.to_roman(item.get("grade"))
+                            except ValueError:
+                                continue  # a record with no readable grade cannot be served to any class
                             if subject and item_subject.strip().lower() != subject.strip().lower():
                                 continue
-                            if grade and not _grade_matches(item_grade_roman, grade):
+                            if not _grade_matches(item_grade_roman, grade):
+                                continue
+                            # The same gates the registry path applies above: a
+                            # served record is no more exempt from printing a
+                            # figure it lacks, or options that never arrived.
+                            stem = item["stem"]
+                            if has_broken_options(stem):
+                                skipped_broken_options += 1
+                                continue
+                            if needs_missing_figure(stem):
+                                skipped_figure += 1
+                                continue
+                            if looks_truncated(stem):
+                                skipped_truncated += 1
+                                continue
+                            # The record is served as-is (mapping.to_question_schema),
+                            # so it must be a valid QuestionSchema. The phone contract
+                            # bank_merge checks is a separate check; a record that
+                            # passes it but not this would otherwise raise inside
+                            # every paper request for this subject and grade.
+                            try:
+                                QuestionSchema.model_validate(item)
+                            except ValueError as err:
+                                skipped_invalid += 1
+                                log.warning("baked bank record %s is not a valid QuestionSchema, "
+                                            "skipped: %s", item.get("id"), err)
+                                continue
+                            if near_dupes.is_duplicate(stem):
+                                skipped_near_dup += 1
                                 continue
                             q = Question(
                                 canonical_id=item["id"],
@@ -590,6 +771,7 @@ def build_pool(cfg: Config, *, subject: str = "Science", grade: str = "X") -> Qu
                                 text_hash=hashlib.sha256(item["stem"].encode("utf-8")).hexdigest()[:16],
                                 paper_code="",
                                 answer_text=item.get("answerScheme", {}).get("modelAnswer", ""),
+                                record=item,
                             )
                             pool.questions.append(pq)
                         if pool.questions:
@@ -600,23 +782,30 @@ def build_pool(cfg: Config, *, subject: str = "Science", grade: str = "X") -> Qu
 
     log.info("question pool built: %d questions from %d papers, %d with official answers "
              "(skipped: %d need a figure, %d unreadable Hindi, %d near-duplicates, "
-             "%d truncated/missing options, %d broken option lists)",
+             "%d truncated/missing options, %d broken option lists, %d invalid records)",
              len(pool.questions), len(rows), keyed, skipped_figure, skipped_mangled,
-             skipped_near_dup, skipped_truncated, skipped_broken_options)
+             skipped_near_dup, skipped_truncated, skipped_broken_options, skipped_invalid)
     return pool
 
 
-# Paper code as printed on a board paper ("31/1/1"), used to find its marking
-# scheme. Only the first page is searched: later pages repeat it in a running
-# header, but question text can contain look-alike numbers.
-_PAPER_CODE_RE = re.compile(r"\b(\d{2,3})\s*[/-]\s*(\d)\s*[/-]\s*(\d)\b")
-
-
 def _paper_code_of(doc: ParsedDocument) -> str:
+    """The paper code printed on a board paper ("31/1/1", "1/4/1").
+
+    Only the first page is searched: later pages repeat the code in a running
+    header, but question text can contain look-alike numbers.
+
+    This used to carry its own regex -- a third copy of the pattern, alongside
+    `answer_key.normalize_paper_code` and `question_bank._CODE_HINT`. All three
+    required a two-or-three digit series, so none could read an English paper
+    (`1/4/1`), and fixing the other two left this one -- the copy paper
+    generation actually uses -- still returning "". Delegating to the canonical
+    normaliser means a corpus shape only has to be taught once.
+    """
     if not doc.pages:
         return ""
-    m = _PAPER_CODE_RE.search(doc.pages[0].text[:1500])
-    return f"{m.group(1)}/{m.group(2)}/{m.group(3)}" if m else ""
+    from .answer_key import normalize_paper_code
+
+    return normalize_paper_code(doc.pages[0].text[:1500])
 
 
 def _open_answer_keys(cfg: Config):
@@ -634,7 +823,8 @@ def _open_answer_keys(cfg: Config):
 _CACHE: dict[tuple[str, str], QuestionPool] = {}
 
 
-def get_pool(cfg: Config, *, subject: str = "Science", grade: str = "X") -> QuestionPool:
+def get_pool(cfg: Config, *, subject: str = "Science", grade: str) -> QuestionPool:
+    grade = grades.to_roman(grade)   # 'X', '10', '10th' are one pool, built once; raises on junk
     key = (subject, grade)
     if key not in _CACHE:
         _CACHE[key] = build_pool(cfg, subject=subject, grade=grade)

@@ -1,0 +1,4961 @@
+{
+ "notice": "Strand-level topics INFERRED from the CBSE CBE learning-ladder codes by nearest-centroid. Not authored by CBSE. Precision is cross-validated on CBE items and is an upper bound on accuracy for board-paper questions.",
+ "method": "cbe_strand_centroid_v1",
+ "minPrecision": 0.8,
+ "builtAt": "2026-09-21T03:25:18.642824+00:00",
+ "count": 619,
+ "topics": {
+  "cbse:q:src:7e81f931984b4c9a12e55b2c:1": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2767,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:7e81f931984b4c9a12e55b2c:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.317,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:7e81f931984b4c9a12e55b2c:5": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1111,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:7e81f931984b4c9a12e55b2c:6": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.3",
+   "score": 0.209,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:7e81f931984b4c9a12e55b2c:7": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.136,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:7e81f931984b4c9a12e55b2c:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.0545,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:7e81f931984b4c9a12e55b2c:9": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.0867,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:7e81f931984b4c9a12e55b2c:10": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.0578,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:51b5fbd0310e6ff1425bbdb7:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2632,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:51b5fbd0310e6ff1425bbdb7:5": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1219,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:51b5fbd0310e6ff1425bbdb7:6": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.3",
+   "score": 0.3401,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:938304a8dd9b8a8f38ec7744:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2269,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:938304a8dd9b8a8f38ec7744:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.0684,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:938304a8dd9b8a8f38ec7744:9": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1735,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:938304a8dd9b8a8f38ec7744:10": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1349,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:938304a8dd9b8a8f38ec7744:11": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.0952,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:fe4c78a7b352f66d136e348a:1": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2149,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:fe4c78a7b352f66d136e348a:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2883,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:fe4c78a7b352f66d136e348a:6": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2036,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:fe4c78a7b352f66d136e348a:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1235,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:fe4c78a7b352f66d136e348a:10": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.3",
+   "score": 0.211,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:5044e5fac895775650f8de93:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2253,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:5044e5fac895775650f8de93:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1676,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:5044e5fac895775650f8de93:11": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1465,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:bf00770c7933b671b0489c85:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.3103,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:bf00770c7933b671b0489c85:5": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.0731,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:bf00770c7933b671b0489c85:7": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1467,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:bf00770c7933b671b0489c85:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1566,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:c53f84b1d87a8e5a1b43e495:1": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.0887,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:c53f84b1d87a8e5a1b43e495:2": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.0993,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:c53f84b1d87a8e5a1b43e495:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2166,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:c53f84b1d87a8e5a1b43e495:6": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.3",
+   "score": 0.1657,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:c53f84b1d87a8e5a1b43e495:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1566,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:c53f84b1d87a8e5a1b43e495:9": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1415,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:c53f84b1d87a8e5a1b43e495:10": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1111,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:c53f84b1d87a8e5a1b43e495:11": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1665,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:53888230b65ff3f59b83b153:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.255,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:53888230b65ff3f59b83b153:5": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.0883,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:53888230b65ff3f59b83b153:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.3",
+   "score": 0.1719,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:53888230b65ff3f59b83b153:11": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1111,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:b89fdb992df7c3a55b0544de:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2708,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:b89fdb992df7c3a55b0544de:7": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1749,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:9c6a63a580b400ef4e21cac3:1": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.0805,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:9c6a63a580b400ef4e21cac3:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.3095,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:9c6a63a580b400ef4e21cac3:6": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1804,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:9c6a63a580b400ef4e21cac3:7": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2195,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:9c6a63a580b400ef4e21cac3:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1282,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:9c6a63a580b400ef4e21cac3:9": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1314,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:9c6a63a580b400ef4e21cac3:10": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2033,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:4e405c53d0caa1367704baf8:5": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1716,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:4e405c53d0caa1367704baf8:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.3",
+   "score": 0.11,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:027f3bafc21069bf05c91c9d:5": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1837,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:027f3bafc21069bf05c91c9d:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1018,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:027f3bafc21069bf05c91c9d:9": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.0974,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:813436fcf425e48b0518601f:1": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1811,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:813436fcf425e48b0518601f:3": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2303,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:813436fcf425e48b0518601f:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1714,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:813436fcf425e48b0518601f:6": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.0732,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:813436fcf425e48b0518601f:9": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1897,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:813436fcf425e48b0518601f:10": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1319,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:a94336a990794968c619d2f5:2": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1228,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:a94336a990794968c619d2f5:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1716,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:a94336a990794968c619d2f5:5": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1078,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:a94336a990794968c619d2f5:7": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.0974,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:a94336a990794968c619d2f5:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.3",
+   "score": 0.3208,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:a94336a990794968c619d2f5:9": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2954,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:a94336a990794968c619d2f5:10": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2645,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:a94336a990794968c619d2f5:11": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.3",
+   "score": 0.2141,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:eb9c83ce3fe8550e0dbe4afc:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.3",
+   "score": 0.2975,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:811e64d537a3e542ecc85db4:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.0273,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:2885ce3bdbf8bed376608474:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1407,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:2885ce3bdbf8bed376608474:5": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1108,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:2885ce3bdbf8bed376608474:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.116,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:2885ce3bdbf8bed376608474:9": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.0941,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:2885ce3bdbf8bed376608474:10": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2116,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:2885ce3bdbf8bed376608474:11": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1059,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:bb811bfcf094b1190637d6cd:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2299,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:bb811bfcf094b1190637d6cd:5": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.147,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:bb811bfcf094b1190637d6cd:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1097,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:437dc259b6f036c024374d17:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2185,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:437dc259b6f036c024374d17:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.132,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:5b264d90783245ffde0e1c98:1": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.3",
+   "score": 0.1319,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:5b264d90783245ffde0e1c98:2": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1535,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:5b264d90783245ffde0e1c98:3": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2204,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:5b264d90783245ffde0e1c98:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1841,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:5b264d90783245ffde0e1c98:5": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1443,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:5b264d90783245ffde0e1c98:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.3",
+   "score": 0.2891,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:5b264d90783245ffde0e1c98:9": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2125,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:5b264d90783245ffde0e1c98:10": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1637,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:5b264d90783245ffde0e1c98:11": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2098,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:271d9e8edcd765fa3693ca4a:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1937,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:271d9e8edcd765fa3693ca4a:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.3",
+   "score": 0.2544,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:271d9e8edcd765fa3693ca4a:11": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1103,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:b3cbfa4b76d130c5e93b6fbe:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2005,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:b3cbfa4b76d130c5e93b6fbe:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.3",
+   "score": 0.3023,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:b3cbfa4b76d130c5e93b6fbe:11": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.0867,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:b4bdd3a5880168f325b77269:1": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1692,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:b4bdd3a5880168f325b77269:5": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1384,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:b4bdd3a5880168f325b77269:2": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1007,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:b4bdd3a5880168f325b77269:3": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1018,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:b4bdd3a5880168f325b77269:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1512,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:b4bdd3a5880168f325b77269:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.3",
+   "score": 0.2793,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:b4bdd3a5880168f325b77269:9": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2003,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:b4bdd3a5880168f325b77269:10": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.0867,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:b4bdd3a5880168f325b77269:11": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1388,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:d583fde5e056ca76aea6557a:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1627,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:d583fde5e056ca76aea6557a:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.3",
+   "score": 0.2895,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:d583fde5e056ca76aea6557a:11": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1469,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:506dfdcaf2f1dbc975615e43:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1642,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:506dfdcaf2f1dbc975615e43:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2647,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:deb9514d798039c81599197c:1": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2047,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:deb9514d798039c81599197c:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2729,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:deb9514d798039c81599197c:5": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1254,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:deb9514d798039c81599197c:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1617,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:deb9514d798039c81599197c:9": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.2143,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:deb9514d798039c81599197c:10": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.3",
+   "score": 0.2747,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:deb9514d798039c81599197c:11": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1506,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:50203e1a89badcdc1ca3b1ff:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.281,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:50203e1a89badcdc1ca3b1ff:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.3",
+   "score": 0.2829,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:50203e1a89badcdc1ca3b1ff:11": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1709,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:1873c987bde65d203deacc5a:4": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.276,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:1873c987bde65d203deacc5a:8": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.3",
+   "score": 0.2875,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:1873c987bde65d203deacc5a:11": {
+   "subject": "English",
+   "grade": 10,
+   "strand": "ENG10.7",
+   "score": 0.1803,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.8824
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:2": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1251,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:3": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0704,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:5": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.3496,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:13": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.3831,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:19": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1222,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:20": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.2104,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:22": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.1137,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:23": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.0623,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:24": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1007,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:25": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.2621,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.4028,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:28": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.3522,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:30": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1267,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:31": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1253,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1714,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.3297,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.4408,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:35": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2056,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1366,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:37": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1499,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:85449ce85a86819f9e62c27e:38": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1637,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b5505b090dc8158d606b0db8:16": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2012,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b5505b090dc8158d606b0db8:22": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.17,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b5505b090dc8158d606b0db8:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.3142,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b466182365b987f1ee8d2b9e:9": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1148,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b466182365b987f1ee8d2b9e:10": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1351,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b466182365b987f1ee8d2b9e:18": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1202,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b466182365b987f1ee8d2b9e:21": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.0942,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b466182365b987f1ee8d2b9e:22": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.1433,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b466182365b987f1ee8d2b9e:26": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.0604,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b466182365b987f1ee8d2b9e:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2098,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:5721c3bd4e1e643b325287b8:3": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.2428,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:5721c3bd4e1e643b325287b8:4": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.4598,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:5721c3bd4e1e643b325287b8:21": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2225,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:5721c3bd4e1e643b325287b8:25": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1556,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:5721c3bd4e1e643b325287b8:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1039,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b278027fa2b7e5972ad67c83:4": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2682,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b278027fa2b7e5972ad67c83:5": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.187,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b278027fa2b7e5972ad67c83:6": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1613,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b278027fa2b7e5972ad67c83:13": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.2732,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b278027fa2b7e5972ad67c83:28": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.3117,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:2c09e1e42cd59fc18b295610:26": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1644,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:94cb306f384779a2121f9f55:3": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.1937,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:94cb306f384779a2121f9f55:9": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0242,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:94cb306f384779a2121f9f55:15": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.2347,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:94cb306f384779a2121f9f55:16": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2006,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:94cb306f384779a2121f9f55:19": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.1213,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:94cb306f384779a2121f9f55:1": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.2032,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:94cb306f384779a2121f9f55:20": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1584,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:94cb306f384779a2121f9f55:21": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.1065,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:94cb306f384779a2121f9f55:24": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.0158,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:94cb306f384779a2121f9f55:25": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2233,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:94cb306f384779a2121f9f55:29": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1914,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:94cb306f384779a2121f9f55:30": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1878,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:94cb306f384779a2121f9f55:31": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2409,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:94cb306f384779a2121f9f55:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1425,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:94cb306f384779a2121f9f55:35": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.0672,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:94cb306f384779a2121f9f55:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.0469,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0b3c7b807dcc7e88fd1809df:6": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1522,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0b3c7b807dcc7e88fd1809df:15": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "9C",
+   "score": 0.2724,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0b3c7b807dcc7e88fd1809df:17": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1212,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0b3c7b807dcc7e88fd1809df:24": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.1065,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0b3c7b807dcc7e88fd1809df:28": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.0843,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0b3c7b807dcc7e88fd1809df:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.2898,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0b3c7b807dcc7e88fd1809df:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1545,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0b3c7b807dcc7e88fd1809df:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1947,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0b3c7b807dcc7e88fd1809df:37": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.1149,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b0b79d201a9ea39624d5f13c:16": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2327,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b0b79d201a9ea39624d5f13c:29": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.0558,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b0b79d201a9ea39624d5f13c:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.0765,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:2": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.25,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:6": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2883,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:7": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.2221,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:9": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.0793,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:11": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.1098,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:14": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.0876,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:19": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.4751,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:20": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1787,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:22": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1765,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:23": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1395,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:24": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1802,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:26": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.1817,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2322,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:28": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0885,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:29": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1425,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:30": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2372,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1665,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1863,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.2649,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:35": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1614,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1471,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fa1dc4cb28f4b304ea8e618c:37": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1785,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4307cd4f11dbb20857852097:5": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.0595,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4307cd4f11dbb20857852097:15": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.3319,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4307cd4f11dbb20857852097:20": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.3432,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4307cd4f11dbb20857852097:25": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.3094,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4307cd4f11dbb20857852097:26": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2136,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4307cd4f11dbb20857852097:31": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1639,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4307cd4f11dbb20857852097:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1223,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4307cd4f11dbb20857852097:35": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1691,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:21678520eebf643d7dfe26ef:6": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1077,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:21678520eebf643d7dfe26ef:8": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.0475,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:21678520eebf643d7dfe26ef:26": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2338,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:21678520eebf643d7dfe26ef:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2881,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:21678520eebf643d7dfe26ef:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.1378,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:21678520eebf643d7dfe26ef:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.0872,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f516dfe29cfec4ac6d74feec:1": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.2636,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f516dfe29cfec4ac6d74feec:2": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1238,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f516dfe29cfec4ac6d74feec:5": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1478,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f516dfe29cfec4ac6d74feec:12": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1146,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f516dfe29cfec4ac6d74feec:16": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.0579,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f516dfe29cfec4ac6d74feec:19": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0935,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f516dfe29cfec4ac6d74feec:7": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.076,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f516dfe29cfec4ac6d74feec:24": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.1139,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f516dfe29cfec4ac6d74feec:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.3523,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f516dfe29cfec4ac6d74feec:28": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.3553,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f516dfe29cfec4ac6d74feec:29": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2097,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f516dfe29cfec4ac6d74feec:30": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2092,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f516dfe29cfec4ac6d74feec:31": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2391,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f516dfe29cfec4ac6d74feec:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1745,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f516dfe29cfec4ac6d74feec:38": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1406,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e5b18498717709257f60167:12": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.398,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e5b18498717709257f60167:17": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.3075,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e5b18498717709257f60167:23": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1134,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e5b18498717709257f60167:29": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2566,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e5b18498717709257f60167:30": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.3523,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e5b18498717709257f60167:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1477,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e5b18498717709257f60167:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1203,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:cab234f4942dcb652271a122:18": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1588,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:cab234f4942dcb652271a122:22": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1781,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:cab234f4942dcb652271a122:23": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.1028,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:cab234f4942dcb652271a122:26": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1175,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:cab234f4942dcb652271a122:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.3833,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:cab234f4942dcb652271a122:29": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2108,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:cab234f4942dcb652271a122:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1785,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:cab234f4942dcb652271a122:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.2429,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e3aa3f07a84ad1eacbe1210:1": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1099,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e3aa3f07a84ad1eacbe1210:2": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2672,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e3aa3f07a84ad1eacbe1210:9": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1064,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e3aa3f07a84ad1eacbe1210:12": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0594,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e3aa3f07a84ad1eacbe1210:19": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.249,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e3aa3f07a84ad1eacbe1210:20": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.3665,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e3aa3f07a84ad1eacbe1210:21": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1824,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e3aa3f07a84ad1eacbe1210:23": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.1415,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e3aa3f07a84ad1eacbe1210:25": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2256,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e3aa3f07a84ad1eacbe1210:26": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.3523,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e3aa3f07a84ad1eacbe1210:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1664,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e3aa3f07a84ad1eacbe1210:29": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.1517,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e3aa3f07a84ad1eacbe1210:30": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0805,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e3aa3f07a84ad1eacbe1210:31": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.1697,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e3aa3f07a84ad1eacbe1210:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2135,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e3aa3f07a84ad1eacbe1210:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2771,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e3aa3f07a84ad1eacbe1210:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.084,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e3aa3f07a84ad1eacbe1210:35": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.0925,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:9e3aa3f07a84ad1eacbe1210:37": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.0791,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:837d7f1d45f8441d8232ec8a:4": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.1121,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:837d7f1d45f8441d8232ec8a:11": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.205,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:837d7f1d45f8441d8232ec8a:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.3959,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:837d7f1d45f8441d8232ec8a:30": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.263,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:837d7f1d45f8441d8232ec8a:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2825,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dc461f55cf4ed552279ae64a:7": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.3394,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dc461f55cf4ed552279ae64a:13": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2333,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dc461f55cf4ed552279ae64a:21": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.2849,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dc461f55cf4ed552279ae64a:24": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2717,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dc461f55cf4ed552279ae64a:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.0172,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dc461f55cf4ed552279ae64a:31": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2264,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dc461f55cf4ed552279ae64a:2": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1982,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:65748f3234748ff3e1745dcf:11": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2845,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:65748f3234748ff3e1745dcf:17": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.299,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:65748f3234748ff3e1745dcf:18": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.238,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:65748f3234748ff3e1745dcf:19": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1116,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:65748f3234748ff3e1745dcf:2": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.1823,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:65748f3234748ff3e1745dcf:21": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.4026,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:65748f3234748ff3e1745dcf:22": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.1602,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:65748f3234748ff3e1745dcf:23": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0983,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:65748f3234748ff3e1745dcf:25": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.0925,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:65748f3234748ff3e1745dcf:30": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.316,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:65748f3234748ff3e1745dcf:31": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1503,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:65748f3234748ff3e1745dcf:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1946,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:65748f3234748ff3e1745dcf:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1351,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:65748f3234748ff3e1745dcf:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1052,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:65748f3234748ff3e1745dcf:38": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.3247,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c0791b53af11069dbcd68a65:5": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1729,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c0791b53af11069dbcd68a65:8": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.3103,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c0791b53af11069dbcd68a65:9": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.2691,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c0791b53af11069dbcd68a65:12": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.145,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c0791b53af11069dbcd68a65:15": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2084,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c0791b53af11069dbcd68a65:28": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.2749,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c0791b53af11069dbcd68a65:37": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.1111,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f01c7b6fd6fca7ef7d9987dc:1": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2758,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f01c7b6fd6fca7ef7d9987dc:5": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2197,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f01c7b6fd6fca7ef7d9987dc:22": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1409,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f01c7b6fd6fca7ef7d9987dc:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1507,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f01c7b6fd6fca7ef7d9987dc:29": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1643,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f01c7b6fd6fca7ef7d9987dc:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2173,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f01c7b6fd6fca7ef7d9987dc:38": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1259,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b5a6be42826a4f8e38a72950:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2865,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b5a6be42826a4f8e38a72950:38": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0329,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:3": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.0893,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:8": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1266,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:9": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1613,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:12": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1581,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:14": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.3703,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:16": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2712,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:17": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.3004,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:19": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.3172,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:20": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.2019,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:21": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.0921,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:22": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.3265,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:24": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.0978,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:25": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2243,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:26": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.3024,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2859,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:31": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1862,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:28": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2333,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:29": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.2793,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1375,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.0975,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f319c93abeb1185b0864d200:38": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.081,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b23bc2e537566a04afbf4415:15": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1613,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b23bc2e537566a04afbf4415:26": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1364,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b23bc2e537566a04afbf4415:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.2837,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b23bc2e537566a04afbf4415:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2817,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b23bc2e537566a04afbf4415:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2033,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:6ab66ce49325a1a0279d70a5:17": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1106,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:6ab66ce49325a1a0279d70a5:21": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1971,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:6ab66ce49325a1a0279d70a5:28": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1644,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:6ab66ce49325a1a0279d70a5:29": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.2274,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:6ab66ce49325a1a0279d70a5:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2622,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0916a372de696613bddff07e:6": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1706,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0916a372de696613bddff07e:7": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.1718,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0916a372de696613bddff07e:11": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2029,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0916a372de696613bddff07e:12": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2363,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0916a372de696613bddff07e:13": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1309,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0916a372de696613bddff07e:15": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1535,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0916a372de696613bddff07e:17": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.0632,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0916a372de696613bddff07e:21": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2097,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0916a372de696613bddff07e:23": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1392,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0916a372de696613bddff07e:25": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.17,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0916a372de696613bddff07e:28": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1878,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0916a372de696613bddff07e:29": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1904,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0916a372de696613bddff07e:30": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.0511,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0916a372de696613bddff07e:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1616,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0916a372de696613bddff07e:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1173,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0916a372de696613bddff07e:35": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.204,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0916a372de696613bddff07e:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1022,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0916a372de696613bddff07e:37": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "9C",
+   "score": 0.1847,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0916a372de696613bddff07e:38": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2349,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:74d29feaacad629411a49c95:18": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.1718,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:74d29feaacad629411a49c95:19": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.0338,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:74d29feaacad629411a49c95:21": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1392,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:74d29feaacad629411a49c95:22": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0754,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:74d29feaacad629411a49c95:28": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1121,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:74d29feaacad629411a49c95:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.0218,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:7bc43935e9890c40e2e44322:2": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1497,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:7bc43935e9890c40e2e44322:6": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1647,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:7bc43935e9890c40e2e44322:12": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.1718,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:7bc43935e9890c40e2e44322:14": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1931,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:7bc43935e9890c40e2e44322:30": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1857,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:7bc43935e9890c40e2e44322:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.127,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:7bc43935e9890c40e2e44322:38": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "9C",
+   "score": 0.1989,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:3": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2953,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:7": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1362,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:8": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.0929,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:11": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1681,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:13": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1023,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:14": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1716,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:15": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.0787,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:19": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1886,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:21": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.228,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:22": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1371,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:23": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.3366,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:24": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0751,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:28": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1067,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:29": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2115,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:30": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0667,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:31": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.2494,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1353,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1941,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1348,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:35": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1144,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.2829,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:37": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.0585,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:dedcd4e0ecc420290653973c:38": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.07,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:01b725295cbacd5aa28a132e:37": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0667,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:e806579d3d72a9750205eedf:38": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.2691,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f4ad950979f6015897726b0a:1": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0955,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f4ad950979f6015897726b0a:6": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2094,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f4ad950979f6015897726b0a:9": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.189,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f4ad950979f6015897726b0a:11": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1298,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f4ad950979f6015897726b0a:13": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1254,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f4ad950979f6015897726b0a:14": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "9C",
+   "score": 0.0682,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f4ad950979f6015897726b0a:15": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.221,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f4ad950979f6015897726b0a:16": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.0333,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f4ad950979f6015897726b0a:19": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2118,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f4ad950979f6015897726b0a:20": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2135,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f4ad950979f6015897726b0a:21": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.1714,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f4ad950979f6015897726b0a:22": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.06,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f4ad950979f6015897726b0a:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.1143,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f4ad950979f6015897726b0a:28": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.0858,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f4ad950979f6015897726b0a:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.203,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f4ad950979f6015897726b0a:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1672,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f4ad950979f6015897726b0a:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "9C",
+   "score": 0.0533,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f4ad950979f6015897726b0a:37": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.1489,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:f4ad950979f6015897726b0a:38": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1216,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:db88bd6abb229a30d0696aa4:3": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2516,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:db88bd6abb229a30d0696aa4:4": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1249,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:db88bd6abb229a30d0696aa4:5": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.2263,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:db88bd6abb229a30d0696aa4:17": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1527,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:db88bd6abb229a30d0696aa4:23": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.1831,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:db88bd6abb229a30d0696aa4:29": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1795,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:db88bd6abb229a30d0696aa4:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2167,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:db88bd6abb229a30d0696aa4:37": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "9C",
+   "score": 0.2289,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:ee2eb1b0c0f2716d2d269145:4": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2234,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:ee2eb1b0c0f2716d2d269145:8": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.192,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:ee2eb1b0c0f2716d2d269145:31": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.2095,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:ee2eb1b0c0f2716d2d269145:30": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.0922,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:ee2eb1b0c0f2716d2d269145:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.1058,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fc5d166768a67685f57d09e7:4": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1075,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fc5d166768a67685f57d09e7:8": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2461,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fc5d166768a67685f57d09e7:16": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2978,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fc5d166768a67685f57d09e7:18": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0968,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fc5d166768a67685f57d09e7:19": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2238,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fc5d166768a67685f57d09e7:21": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.3593,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fc5d166768a67685f57d09e7:22": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1409,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fc5d166768a67685f57d09e7:30": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.1075,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:fc5d166768a67685f57d09e7:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1016,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:80a49b071cb04186873bccda:5": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2412,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:80a49b071cb04186873bccda:17": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2215,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:80a49b071cb04186873bccda:24": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "9C",
+   "score": 0.1019,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:80a49b071cb04186873bccda:31": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.0111,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:80a49b071cb04186873bccda:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.2439,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:80a49b071cb04186873bccda:35": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.4386,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:80a49b071cb04186873bccda:37": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1788,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:80a49b071cb04186873bccda:38": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.1036,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:45485ce62b772f43006ddb40:19": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.0478,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:45485ce62b772f43006ddb40:25": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1324,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:45485ce62b772f43006ddb40:21": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.2508,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:45485ce62b772f43006ddb40:26": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1878,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:45485ce62b772f43006ddb40:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1865,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:45485ce62b772f43006ddb40:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2033,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:45485ce62b772f43006ddb40:35": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.0765,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4f6182240b214906a58eaeab:3": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.078,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4f6182240b214906a58eaeab:7": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2624,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4f6182240b214906a58eaeab:8": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1348,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4f6182240b214906a58eaeab:9": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.3555,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4f6182240b214906a58eaeab:15": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.232,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4f6182240b214906a58eaeab:20": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.2028,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4f6182240b214906a58eaeab:21": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2026,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4f6182240b214906a58eaeab:24": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.0233,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4f6182240b214906a58eaeab:22": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.076,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4f6182240b214906a58eaeab:23": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1298,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4f6182240b214906a58eaeab:26": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0177,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4f6182240b214906a58eaeab:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0675,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4f6182240b214906a58eaeab:29": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.3523,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4f6182240b214906a58eaeab:30": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1093,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4f6182240b214906a58eaeab:31": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.0877,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4f6182240b214906a58eaeab:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0164,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4f6182240b214906a58eaeab:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0329,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4f6182240b214906a58eaeab:37": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0237,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:411ab10b9f5e44bccbdb2339:14": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.2693,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:411ab10b9f5e44bccbdb2339:29": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.184,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:411ab10b9f5e44bccbdb2339:26": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1108,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:411ab10b9f5e44bccbdb2339:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.3876,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:411ab10b9f5e44bccbdb2339:30": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0177,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:411ab10b9f5e44bccbdb2339:35": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.3699,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:411ab10b9f5e44bccbdb2339:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0291,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:411ab10b9f5e44bccbdb2339:38": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0256,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:281d955eeac178f6b9b7a91b:5": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1735,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:281d955eeac178f6b9b7a91b:16": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.246,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:281d955eeac178f6b9b7a91b:18": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.2692,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:281d955eeac178f6b9b7a91b:22": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2026,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:281d955eeac178f6b9b7a91b:25": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0164,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:281d955eeac178f6b9b7a91b:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.1334,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:281d955eeac178f6b9b7a91b:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.1538,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:281d955eeac178f6b9b7a91b:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1742,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b2736b370863069266f7c4e0:1": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2412,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b2736b370863069266f7c4e0:6": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1546,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b2736b370863069266f7c4e0:9": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1511,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b2736b370863069266f7c4e0:14": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1636,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b2736b370863069266f7c4e0:24": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1025,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b2736b370863069266f7c4e0:23": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2029,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b2736b370863069266f7c4e0:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0335,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b2736b370863069266f7c4e0:29": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.116,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b2736b370863069266f7c4e0:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1976,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b2736b370863069266f7c4e0:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1904,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b2736b370863069266f7c4e0:35": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.0614,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b2736b370863069266f7c4e0:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0329,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b2736b370863069266f7c4e0:37": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.3211,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:1d136a7fdc1456e45ef248be:3": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.0825,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:1d136a7fdc1456e45ef248be:22": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0164,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:1d136a7fdc1456e45ef248be:21": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1569,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:1d136a7fdc1456e45ef248be:25": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0593,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:1d136a7fdc1456e45ef248be:26": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1601,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:1d136a7fdc1456e45ef248be:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0329,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:a2c6554ff209d161b59d1556:16": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.1565,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:a2c6554ff209d161b59d1556:26": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0392,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:a2c6554ff209d161b59d1556:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.0912,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:a2c6554ff209d161b59d1556:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2905,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:602ab71e36d4d7faa892e49d:7": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.0171,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:602ab71e36d4d7faa892e49d:11": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0164,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:602ab71e36d4d7faa892e49d:18": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1146,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:602ab71e36d4d7faa892e49d:19": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1271,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:602ab71e36d4d7faa892e49d:20": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.337,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:602ab71e36d4d7faa892e49d:21": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.06,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:602ab71e36d4d7faa892e49d:28": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0177,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:602ab71e36d4d7faa892e49d:30": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.1134,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:602ab71e36d4d7faa892e49d:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.0233,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:602ab71e36d4d7faa892e49d:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1525,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:602ab71e36d4d7faa892e49d:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2412,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:602ab71e36d4d7faa892e49d:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0329,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:602ab71e36d4d7faa892e49d:37": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0173,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:602ab71e36d4d7faa892e49d:38": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.2071,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:88532141f34ac8143c0d1b45:4": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.0171,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:88532141f34ac8143c0d1b45:7": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2426,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:88532141f34ac8143c0d1b45:11": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0164,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:88532141f34ac8143c0d1b45:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0867,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:88532141f34ac8143c0d1b45:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1112,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:88532141f34ac8143c0d1b45:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.0945,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:88532141f34ac8143c0d1b45:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0329,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:88532141f34ac8143c0d1b45:37": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.0897,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:92b328cc854ff365050638dc:3": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "9C",
+   "score": 0.1586,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:92b328cc854ff365050638dc:21": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0593,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:92b328cc854ff365050638dc:26": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.1887,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:92b328cc854ff365050638dc:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.22,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:92b328cc854ff365050638dc:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "9C",
+   "score": 0.1425,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:92b328cc854ff365050638dc:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0329,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b165af61c77d38f6eedf8980:2": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.4972,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b165af61c77d38f6eedf8980:10": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2224,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b165af61c77d38f6eedf8980:14": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.0406,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b165af61c77d38f6eedf8980:15": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1901,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b165af61c77d38f6eedf8980:20": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.188,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b165af61c77d38f6eedf8980:24": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0593,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b165af61c77d38f6eedf8980:26": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.3523,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b165af61c77d38f6eedf8980:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1371,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b165af61c77d38f6eedf8980:29": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2041,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b165af61c77d38f6eedf8980:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.2551,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b165af61c77d38f6eedf8980:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1397,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b165af61c77d38f6eedf8980:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0329,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b165af61c77d38f6eedf8980:38": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0173,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:abf68dc97d40281d455ffaa2:8": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.0406,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:abf68dc97d40281d455ffaa2:22": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0593,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:abf68dc97d40281d455ffaa2:28": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1385,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:abf68dc97d40281d455ffaa2:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.2122,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:abf68dc97d40281d455ffaa2:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0329,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4b5ce649e0b1f7311a800a68:21": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1748,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4b5ce649e0b1f7311a800a68:22": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1323,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4b5ce649e0b1f7311a800a68:25": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0593,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4b5ce649e0b1f7311a800a68:26": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2128,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4b5ce649e0b1f7311a800a68:34": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2641,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4b5ce649e0b1f7311a800a68:37": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1483,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:4b5ce649e0b1f7311a800a68:38": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1479,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c42982ff54131ed0d5b7d9b0:7": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1064,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c42982ff54131ed0d5b7d9b0:9": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.3534,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c42982ff54131ed0d5b7d9b0:12": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.1685,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c42982ff54131ed0d5b7d9b0:13": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.0752,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c42982ff54131ed0d5b7d9b0:16": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0944,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c42982ff54131ed0d5b7d9b0:19": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.2536,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c42982ff54131ed0d5b7d9b0:20": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2764,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c42982ff54131ed0d5b7d9b0:21": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0164,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c42982ff54131ed0d5b7d9b0:22": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.2501,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c42982ff54131ed0d5b7d9b0:23": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.504,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c42982ff54131ed0d5b7d9b0:31": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0329,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c42982ff54131ed0d5b7d9b0:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1925,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c42982ff54131ed0d5b7d9b0:37": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.0892,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:c42982ff54131ed0d5b7d9b0:38": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0173,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0b075a8b722f16f272c0cc4d:25": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0164,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0b075a8b722f16f272c0cc4d:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.0278,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0b075a8b722f16f272c0cc4d:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1208,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:0b075a8b722f16f272c0cc4d:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0329,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:db32b7ab98169b625243c09e:2": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1957,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:db32b7ab98169b625243c09e:24": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0164,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:db32b7ab98169b625243c09e:26": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.1203,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:2af2d7396537dc683b00f023:3": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.1926,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:2af2d7396537dc683b00f023:4": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10N",
+   "score": 0.1893,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:2af2d7396537dc683b00f023:10": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0164,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:2af2d7396537dc683b00f023:9": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.137,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:2af2d7396537dc683b00f023:14": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1903,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:2af2d7396537dc683b00f023:19": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2226,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:2af2d7396537dc683b00f023:24": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.2169,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:2af2d7396537dc683b00f023:27": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.1318,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:2af2d7396537dc683b00f023:30": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.1528,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:2af2d7396537dc683b00f023:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.0222,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:2af2d7396537dc683b00f023:32": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.0965,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:2af2d7396537dc683b00f023:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0329,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:2af2d7396537dc683b00f023:38": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0173,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:2ee8d7da708461a40ea2c937:20": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0177,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:2ee8d7da708461a40ea2c937:19": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2388,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:2ee8d7da708461a40ea2c937:33": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1407,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:2ee8d7da708461a40ea2c937:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0329,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:2ee8d7da708461a40ea2c937:37": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10G",
+   "score": 0.1276,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b50c76373821081f7b537205:9": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10A",
+   "score": 0.2067,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b50c76373821081f7b537205:19": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0734,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b50c76373821081f7b537205:31": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10T",
+   "score": 0.0593,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b50c76373821081f7b537205:35": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10M",
+   "score": 0.1264,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  },
+  "cbse:q:src:b50c76373821081f7b537205:36": {
+   "subject": "Mathematics",
+   "grade": 10,
+   "strand": "10S",
+   "score": 0.0329,
+   "method": "cbe_strand_centroid_v1",
+   "precisionAtGate": 0.95
+  }
+ }
+}
