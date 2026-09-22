@@ -1,4 +1,5 @@
-"""Swap or pick one question on a generated paper (Task 903).
+"""Swap, pick or remove one question on a generated paper (Task 903; remove
+from Task 902's builder).
 
 The builder shows the paper it just generated; a teacher replaces a question
 in one tap ("swap": the next best question for that slot) or puts a question
@@ -40,6 +41,11 @@ paper wrong: no verified answer key (Q1), marks that do not fit the slot
 (the section's total would no longer match the template), a question
 already on the paper, or a near-duplicate of one. A pick outside the
 chapters or of another kind is taken, and the note says so.
+
+**Remove** takes a printed question (with its OR) or just an OR
+alternative off the paper and every set and renumbers what follows
+(`drop_question`, `drop_alternative`). The section then prints short, and
+a removed question, like a swapped-out one, is not brought back by a swap.
 
 Speed: the class+subject bank is mapped to the wire shape and its answer
 keys checked once per pool (`bank_for`), not per request. Measured numbers
@@ -380,5 +386,84 @@ def replace_question(paper: GeneratedPaper, old_id: str, new: QuestionSchema) ->
     edited = paper.model_copy(update={
         "sections": sections, "answer_key": answer_key,
         "sets": [replace_question(s, old_id, new) for s in paper.sets]})
+    edited.formatted_content = render_text(edited)
+    return edited
+
+
+# ---- removing
+
+def printed_numbers(paper: GeneratedPaper) -> list[int]:
+    return [q.display_number for s in paper.sections for q in s.questions]
+
+
+_KEY_RE = re.compile(r"^(\d+)(_OR)?$")
+
+
+def drop_question(paper: GeneratedPaper, question_id: str) -> GeneratedPaper:
+    """The printed question whose compulsory or OR id is `question_id` taken
+    off, with its alternative, from the paper and each of its sets (a set
+    rotates questions and turns OR pairs round, so it is found by id, not
+    number). What follows is renumbered from 1 with no hole -- a printed
+    paper that jumps from Q6 to Q8 reads as a misprint -- and the answer key
+    moves with the numbers. A section left with no question is not printed;
+    the section's and the paper's marks are recounted."""
+    numbers: dict[int, int] = {}
+    sections = []
+    n = 0
+    for section in paper.sections:
+        questions = []
+        for gq in section.questions:
+            if question_id in (gq.question_id, gq.internal_choice_question_id):
+                continue
+            n += 1
+            numbers[gq.display_number] = n
+            questions.append(gq.model_copy(update={"display_number": n}))
+        if questions:
+            sections.append(section.model_copy(update={
+                "questions": questions, "total_marks": sum(q.marks for q in questions)}))
+    answer_key = {}
+    for key, value in paper.answer_key.items():
+        m = _KEY_RE.match(key)
+        if m is None:
+            answer_key[key] = value                    # not a question's entry: kept
+        elif int(m.group(1)) in numbers:
+            answer_key[f"{numbers[int(m.group(1))]}{m.group(2) or ''}"] = value
+    edited = paper.model_copy(update={
+        "sections": sections, "answer_key": answer_key,
+        "metadata": paper.metadata.model_copy(update={
+            "total_marks": sum(s.total_marks for s in sections)}),
+        "sets": [drop_question(s, question_id) for s in paper.sets]})
+    edited.formatted_content = render_text(edited)
+    return edited
+
+
+def drop_alternative(paper: GeneratedPaper, kept: GeneratedQuestionSchema,
+                     kept_key: str) -> GeneratedPaper:
+    """`kept`'s OR alternative taken off the paper and each of its sets;
+    `kept` stays, now with no choice. A set that printed the pair the other
+    way round (the alternative compulsory, `kept` as its OR) prints `kept`
+    as the compulsory question again, with its own answer-key entry
+    (`kept_key`, the paper's). Marks and numbering do not change."""
+    alt = kept.internal_choice_question_id
+    answer_key = dict(paper.answer_key)
+    sections = []
+    for section in paper.sections:
+        questions = []
+        for gq in section.questions:
+            n = gq.display_number
+            if gq.internal_choice_question_id == alt:
+                gq = gq.model_copy(update={"internal_choice_text": None,
+                                           "internal_choice_question_id": None})
+                answer_key.pop(f"{n}_OR", None)
+            elif gq.question_id == alt:
+                gq = kept.model_copy(update={"display_number": n, "internal_choice_text": None,
+                                             "internal_choice_question_id": None})
+                answer_key[str(n)] = kept_key
+                answer_key.pop(f"{n}_OR", None)
+            questions.append(gq)
+        sections.append(section.model_copy(update={"questions": questions}))
+    edited = paper.model_copy(update={
+        "sections": sections, "answer_key": answer_key,
+        "sets": [drop_alternative(s, kept, kept_key) for s in paper.sets]})
     edited.formatted_content = render_text(edited)
     return edited

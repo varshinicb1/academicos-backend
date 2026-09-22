@@ -120,6 +120,11 @@ class GenerateFromTemplateRequest(Camel):
     # the bank cannot fill is a 409 carrying the gaps.
     allow_gaps: bool = False
     fill_from_outside_scope: bool = False
+    # "Make another like this": the last paper's questions, printed again
+    # only where the bank has nothing else (`paper_templates.plan`'s
+    # `stale`). Without it the generator is deterministic and the same
+    # template and chapters print the same paper.
+    avoid_question_ids: list[str] = Field(default_factory=list, max_length=500)
 
 
 class TemplatePaperResponse(Camel):
@@ -321,7 +326,8 @@ def _candidates(cfg: Config, template: PaperTemplateDraft) -> list[QuestionSchem
 
 
 def _plan(template: PaperTemplate, scope: Optional[TemplateScope], *,
-          fill_from_outside_scope: bool = False) -> tuple[AvailabilityReport, list[SectionPlan]]:
+          fill_from_outside_scope: bool = False,
+          stale: frozenset[str] = frozenset()) -> tuple[AvailabilityReport, list[SectionPlan]]:
     cfg, _ = _require()
     if scope is not None:
         template = template.model_copy(update={"scope": scope})
@@ -333,7 +339,7 @@ def _plan(template: PaperTemplate, scope: Optional[TemplateScope], *,
 
     scope_filter = build_scope_filter(template.scope, candidates, subtopic_questions)
     return plan(template, template.id, candidates, scope_filter,
-                fill_from_outside_scope=fill_from_outside_scope)
+                fill_from_outside_scope=fill_from_outside_scope, stale=stale)
 
 
 @router.post("/schools/{school_id}/teacher-templates/{template_id}/availability",
@@ -368,7 +374,8 @@ def generate_from_template(
     if req.scope is not None:
         _checked_scope(req.scope)
         template = template.model_copy(update={"scope": req.scope})
-    report, plans = _plan(template, None, fill_from_outside_scope=req.fill_from_outside_scope)
+    report, plans = _plan(template, None, fill_from_outside_scope=req.fill_from_outside_scope,
+                          stale=frozenset(req.avoid_question_ids))
 
     # The gaps are the availability report's own: one plan run decides both.
     gaps: list[SectionAvailability] = [p.availability for p in plans if p.availability.shortfall]
@@ -601,6 +608,73 @@ def pick_paper_question(paper_id: str, slot: str, req: PickRequest,
     no verified answer key (rule Q1) or marks that do not fit the slot, 409
     for one already on the paper or a near-duplicate of one."""
     return _edit_question(paper_id, slot, current, pick=req.question_id)
+
+
+class PaperRemoveResponse(Camel):
+    paper: GeneratedPaper
+    slot: str
+    # The question taken off, then its OR alternative when "N" had one.
+    removed_question_ids: list[str]
+
+
+@router.delete("/papers/{paper_id}/questions/{slot}", response_model=PaperRemoveResponse)
+def remove_paper_question(paper_id: str, slot: str,
+                          current: User = Depends(require_staff)) -> PaperRemoveResponse:
+    """Take a question off the paper and every set: "7" removes question 7
+    with its OR alternative and renumbers what follows; "7_OR" removes only
+    the alternative. The section and the paper lose its marks -- the
+    builder shows the section as short until the teacher is content with it.
+    409 for the paper's last question (a paper with none is not a paper)."""
+    from .routes import _require_editable
+
+    _require_staff(current)
+    cfg, _ = _require()
+    if _assessments is None or _papers is None:
+        raise HTTPException(503, "paper template module not initialized")
+    paper = require_school_owns_paper(_papers, _assessments, paper_id, current)
+    asm = _assessments.get(paper.assessment_id)
+    _require_editable(asm)
+    try:
+        slot = paper_edit.find_slot(paper, slot)
+        if not slot.alternative and len(paper_edit.printed_numbers(paper)) <= 1:
+            raise paper_edit.EditError(409, f"{slot.label} is the last question on this paper; "
+                                            "swap it or pick another instead of removing it.")
+    except paper_edit.EditError as err:
+        raise HTTPException(err.status, err.detail) from err
+
+    q = slot.question
+    removed = ([q.internal_choice_question_id] if slot.alternative
+               else [q.question_id, *([q.internal_choice_question_id]
+                                      if q.internal_choice_question_id else [])])
+    family = _papers.family(paper.id)
+    if not any(m.id == paper.id for m in family):
+        family.append(paper)
+    edited = paper
+    for member in family:
+        if slot.alternative:
+            updated = paper_edit.drop_alternative(member, q, paper.answer_key.get(str(q.display_number), ""))
+        else:
+            updated = paper_edit.drop_question(member, q.question_id)
+        _papers.save(updated, _papers.get_template(member.id), school_id=asm.school_id)
+        _forget_pdfs(cfg, member.id)
+        if member.id == paper.id:
+            edited = updated
+
+    edits = dict(asm.metadata.get("paperEdits") or {})
+    # A removed question is not brought back by a swap (a pick can).
+    edits["removed"] = sorted(set(edits.get("removed") or []) | set(removed))
+    edits["log"] = [*(edits.get("log") or []), {
+        "kind": "remove", "slot": slot.key, "from": removed[0], "to": None,
+        "by": current.id, "at": _now().isoformat()}]
+    _assessments.save(asm.model_copy(update={
+        "selected_question_ids": [i for i in asm.selected_question_ids if i not in removed],
+        "metadata": {**asm.metadata, "paperEdits": edits},
+        "updated_at": _now()}))
+    get_audit_log(cfg.data_root).append(
+        "paper_question_remove", assessment_id=asm.id,
+        details={"paperId": paper.id, "slot": slot.key, "removed": removed,
+                 "userId": current.id, "schoolId": current.school_id})
+    return PaperRemoveResponse(paper=edited, slot=slot.key, removed_question_ids=removed)
 
 
 def _edit_question(paper_id: str, slot_key: str, current: User, *,

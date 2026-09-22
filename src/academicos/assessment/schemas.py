@@ -546,6 +546,10 @@ class GeneratedPaper(Camel):
     # hand-picked questions that look like the same question. Empty on a
     # stored paper.
     warnings: list[str] = Field(default_factory=list)
+    # The pairs those warnings name, as [earlier id, later id], so a client
+    # can offer "swap one" on the later question without parsing ids back out
+    # of the sentence. Empty on a stored paper.
+    similar_pairs: list[list[str]] = Field(default_factory=list)
 
 
 class QuickPaperRequest(Camel):

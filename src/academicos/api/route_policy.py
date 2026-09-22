@@ -179,6 +179,7 @@ ROUTE_POLICY: dict[tuple[str, str], Policy] = {
     ("POST", "/api/v1/papers/generate-from-template"): _p(STAFF),
     ("POST", "/api/v1/papers/{paper_id}/questions/{slot}/swap"): _p(STAFF, "edits the teacher's own saved paper"),
     ("POST", "/api/v1/papers/{paper_id}/questions/{slot}"): _p(STAFF, "edits the teacher's own saved paper"),
+    ("DELETE", "/api/v1/papers/{paper_id}/questions/{slot}"): _p(STAFF, "removes a question from the teacher's own saved paper"),
     # ---- curriculum/routes.py ----
     # Classified from the dependencies the file has today; this stream does
     # not edit it (the calendar stream owns it). Unauthenticated reads are

@@ -453,6 +453,7 @@ def _left_out(section: TemplateSection, pool: list[QuestionSchema]) -> _LeftOut:
 
 def plan(template: PaperTemplateDraft, template_id: str, candidates: list[QuestionSchema],
          scope: ScopeFilter, *, fill_from_outside_scope: bool = False,
+         stale: frozenset[str] = frozenset(),
          ) -> tuple[AvailabilityReport, list[SectionPlan]]:
     """Walks the sections in order, each claiming its questions so a later
     section with the same mark value only counts what is left.
@@ -472,6 +473,12 @@ def plan(template: PaperTemplateDraft, template_id: str, candidates: list[Questi
 
     `candidates` is the whole class+subject bank; this function applies
     every other constraint itself so it can report each one.
+
+    `stale`: questions to print only when nothing else fits ("Make another
+    like this" passes the last paper's). They rank after every fresh
+    question and are never excluded, so a section is filled exactly as far
+    as it would be without them -- a teacher asked for a new paper, not a
+    shorter one -- and each reused question is named in a note.
     """
     keyed = [q for q in candidates if has_verified_key(q)]
     keyed_ids = {q.id for q in keyed}
@@ -503,12 +510,13 @@ def plan(template: PaperTemplateDraft, template_id: str, candidates: list[Questi
                                        and scope.in_scope(q)])
 
         needed = section.question_count
-        picked = _pick(eligible, section, needed, avoid=printed)
+        picked = _pick(eligible, section, needed, avoid=printed, stale=stale)
         printed.extend(picked)
         borrowed: list[QuestionSchema] = []
         notes: list[str] = []
         if len(picked) < needed and fill_from_outside_scope and outside:
-            borrowed = _pick(outside, section, needed - len(picked), avoid=printed)
+            borrowed = _pick(outside, section, needed - len(picked), avoid=printed,
+                             stale=stale)
             printed.extend(borrowed)
             notes.append(
                 f"{section.title}: {len(borrowed)} question(s) taken from outside the "
@@ -533,7 +541,7 @@ def plan(template: PaperTemplateDraft, template_id: str, candidates: list[Questi
             section, picked + borrowed,
             [q for q in eligible if q.id not in claimed],
             [q for q in outside if q.id not in claimed] if fill_from_outside_scope else [],
-            avoid=printed)
+            avoid=printed, stale=stale)
         claimed.update(q.id for q in alternatives.values())
         printed.extend(alternatives.values())
         mix_notes, mix_fixes = _mix_notes(section, picked + borrowed, left_out)
@@ -543,6 +551,12 @@ def plan(template: PaperTemplateDraft, template_id: str, candidates: list[Questi
                                                    printed_later=printed_later)
         notes.extend(choice_notes)
         notes.extend(_content_notes(section))
+        reused = [q.id for q in [*picked, *borrowed, *alternatives.values()] if q.id in stale]
+        if reused:
+            notes.append(
+                f"{section.title}: {len(reused)} question(s) repeat your last paper "
+                f"({', '.join(reused)}) -- the bank has no other question in these "
+                "chapters that fits the section's marks, kind and difficulty mix.")
 
         filled = len(picked) + len(borrowed)
         needed = section.question_count
@@ -611,6 +625,7 @@ def _merge_fixes(first: list[SectionFix], then: list[SectionFix]) -> list[Sectio
 def _pair_choices(section: TemplateSection, printed: list[QuestionSchema],
                   pool: list[QuestionSchema], outside: list[QuestionSchema], *,
                   avoid: Optional[list[QuestionSchema]] = None,
+                  stale: frozenset[str] = frozenset(),
                   ) -> dict[str, QuestionSchema]:
     """An OR alternative for `choice_count` of the printed questions.
 
@@ -628,16 +643,17 @@ def _pair_choices(section: TemplateSection, printed: list[QuestionSchema],
     if want <= 0:
         return {}
     on_paper = list(avoid or [])
-    left = _order(pool) + _order(outside)
+    left = _order(pool, stale) + _order(outside, stale)
     pairs: dict[str, QuestionSchema] = {}
     for primary in printed[len(printed) - want:]:
         chapters = set(primary.chapter_ids)
         cbq = _is_competency(primary)
-        # First best by (same chapter, same competency-ness), ties to the
-        # better-ordered question -- `left` is already best first. Only the
-        # candidates actually reached are compared with the paper.
+        # First best by (fresh, same chapter, same competency-ness), ties to
+        # the better-ordered question -- `left` is already best first. Only
+        # the candidates actually reached are compared with the paper.
         ranked = sorted(range(len(left)), key=lambda i: (
-            not chapters & set(left[i].chapter_ids), _is_competency(left[i]) != cbq, i))
+            left[i].id in stale, not chapters & set(left[i].chapter_ids),
+            _is_competency(left[i]) != cbq, i))
         alt = next((left[i] for i in ranked if not clashes(left[i], on_paper)), None)
         if alt is None:
             break
@@ -675,9 +691,11 @@ def _choice_notes(section: TemplateSection, printed: list[QuestionSchema],
     return notes, fixes
 
 
-def _order(pool: list[QuestionSchema]) -> list[QuestionSchema]:
-    """Best first, deterministic: the same bank and template give the same paper."""
-    return sorted(pool, key=lambda q: (-q.quality_score, q.id))
+def _order(pool: list[QuestionSchema],
+           stale: frozenset[str] = frozenset()) -> list[QuestionSchema]:
+    """Best first, deterministic: the same bank and template give the same
+    paper. `stale` questions (see `plan`) go after every other one."""
+    return sorted(pool, key=lambda q: (q.id in stale, -q.quality_score, q.id))
 
 
 def clashes(q: QuestionSchema, printed: list[QuestionSchema]) -> Optional[QuestionSchema]:
@@ -693,7 +711,8 @@ def clashes(q: QuestionSchema, printed: list[QuestionSchema]) -> Optional[Questi
 
 
 def _pick(pool: list[QuestionSchema], section: TemplateSection, n: int, *,
-          avoid: Optional[list[QuestionSchema]] = None) -> list[QuestionSchema]:
+          avoid: Optional[list[QuestionSchema]] = None,
+          stale: frozenset[str] = frozenset()) -> list[QuestionSchema]:
     """Up to `n` questions honouring the section's difficulty mix and
     competency share as far as the pool allows. When a difficulty runs out,
     the slot goes to the nearest other difficulty rather than staying empty:
@@ -704,7 +723,7 @@ def _pick(pool: list[QuestionSchema], section: TemplateSection, n: int, *,
         return []
 
     printed = list(avoid or [])
-    remaining = _order(pool)
+    remaining = _order(pool, stale)
     targets = _difficulty_targets(section.difficulty_mix, n)
     cbq_target = round((section.competency_share or 0.0) * n)
     picked: list[QuestionSchema] = []

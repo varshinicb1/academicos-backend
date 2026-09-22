@@ -263,10 +263,12 @@ def optimize_questions(request: QuestionOptimizationRequest,
 # ---- Papers ----
 
 def _similar_question_warnings(selected: list[QuestionSchema], *,
-                               reject_similar: bool) -> list[str]:
+                               reject_similar: bool) -> tuple[list[str], list[list[str]]]:
     """One warning per pair of questions this paper would print that restate
-    each other; 422 for the same question id twice, and for a similar pair
-    when the client set `rejectSimilar`.
+    each other, and the same pairs as [earlier id, later id] (the client's
+    "swap one" needs the ids, not a sentence to parse them back out of); 422
+    for the same question id twice, and for a similar pair when the client
+    set `rejectSimilar`.
 
     POST /papers/generate and /papers/generate-from-ids print what the
     teacher chose; they do not run selection.optimize, so the near-duplicate
@@ -288,6 +290,7 @@ def _similar_question_warnings(selected: list[QuestionSchema], *,
         if pid and pstem:
             printed.append((pid, pstem))
     warnings: list[str] = []
+    pairs: list[list[str]] = []
     for i, (aid, astem) in enumerate(printed):
         for bid, bstem in printed[:i]:
             if aid == bid:
@@ -305,7 +308,33 @@ def _similar_question_warnings(selected: list[QuestionSchema], *,
             warnings.append(
                 f"questions {bid} and {aid} look like the same question -- "
                 f"keep both, or swap one")
-    return warnings
+            pairs.append([bid, aid])
+    return warnings, pairs
+
+
+def _shortfall_warnings(paper: GeneratedPaper, blueprint: Blueprint) -> list[str]:
+    """What a paper holding fewer marks than its blueprint asked for says
+    about it: the total first, then each section that prints short, in
+    selection.optimize's gap wording.
+
+    The live release returned these papers with `warnings` empty (re-audit,
+    2026-09-22): English 10 asked for 80 marks and held 20, Hindi 10 held 2,
+    Computer Applications 27, Biology 12 48. A teacher looking at a paper
+    with a full-looking header would not notice until the exam. Empty when
+    the paper is full."""
+    held = paper.metadata.total_marks
+    if held >= blueprint.total_marks:
+        return []
+    out = [f"This paper holds {held} of the {blueprint.total_marks} marks asked for; "
+           f"the sections below print short. Its header prints Maximum Marks: {held}."]
+    printed = {s.section_id: len(s.questions) for s in paper.sections}
+    for section in blueprint.sections or []:
+        got = printed.get(section.id, 0)
+        if got < section.question_count:
+            out.append(
+                f"Section {section.label} ({section.name}): only {got} of "
+                f"{section.question_count} questions; the section prints short.")
+    return out
 
 
 @router.post("/papers/generate", response_model=GeneratedPaper)
@@ -328,8 +357,8 @@ def generate_paper_endpoint(
             "chapters/filters matched no real questions in the corpus; "
             "widen the chapter selection or check the subject/grade",
         )
-    warnings = _similar_question_warnings(request.selected_questions,
-                                          reject_similar=request.reject_similar)
+    warnings, pairs = _similar_question_warnings(request.selected_questions,
+                                                 reject_similar=request.reject_similar)
     assessment = store.get(request.assessment_id)
     if assessment is not None:
         if assessment.school_id != current.school_id:
@@ -362,7 +391,8 @@ def generate_paper_endpoint(
         assessment.updated_at = _now()
         store.save(assessment)
     # Set after saving: the warning is about this request, not the paper.
-    paper.warnings = warnings
+    paper.warnings = _shortfall_warnings(paper, request.blueprint) + warnings
+    paper.similar_pairs = pairs
     return paper
 
 
@@ -482,7 +512,8 @@ def quick_generate_paper(request: QuickPaperRequest, current: User = Depends(req
             "questionCount": len(paper.questions) if hasattr(paper, "questions") else 0,
         },
     )
-
+    # After saving, like the other generate routes: about this request.
+    paper.warnings = _shortfall_warnings(paper, bp)
     return paper
 
 
@@ -505,8 +536,8 @@ def generate_from_ids(request: GenerateFromIdsRequest, current: User = Depends(r
     # The Flutter client's curated path builds the paper straight from these
     # ids and never runs optimize, so the near-duplicate guard has to run here
     # too -- warned (or refused on rejectSimilar), exactly like /papers/generate.
-    warnings = _similar_question_warnings(found_questions,
-                                          reject_similar=request.reject_similar)
+    warnings, pairs = _similar_question_warnings(found_questions,
+                                                 reject_similar=request.reject_similar)
 
     by_marks: dict[int, list[QuestionSchema]] = {}
     for q in found_questions:
@@ -605,7 +636,8 @@ def generate_from_ids(request: GenerateFromIdsRequest, current: User = Depends(r
             "generationSeconds": round(time.perf_counter() - _started_ids, 3),
         },
     )
-    paper.warnings = warnings   # after saving: about this request, not the paper
+    # After saving: about this request, not the paper.
+    paper.warnings, paper.similar_pairs = warnings, pairs
     return paper
 
 
@@ -641,9 +673,17 @@ def export_paper(paper_id: str, fmt: str, current: User = Depends(require_staff)
     out_dir = cfg.artifacts_dir / "papers"
     template = _require_papers().get_template(paper_id)
     if template is None:
+        # The paper's own school's default branding, found through its
+        # assessment -- never another school's. This used to read
+        # default_for("school_1"), so school_2's PDF printed school_1's name,
+        # logo and tagline (re-audit, 2026-09-22). A school with no branding
+        # configured gets default_for's placeholder (id "default"), which is
+        # not branding: it gets the neutral header instead.
         from .school_templates import TemplateStore
-        store = TemplateStore(cfg.data_root / "templates" / "templates.sqlite")
-        template = store.default_for("school_1")
+        owner = store.get(paper.assessment_id)
+        t_store = TemplateStore(cfg.data_root / "templates" / "templates.sqlite")
+        configured = t_store.default_for(owner.school_id) if owner is not None else None
+        template = configured if configured is not None and configured.id != "default" else None
     # Every export gets a unique, audit-logged watermark ID stamped into the
     # footer -- if a printed/exported copy of an unreleased paper leaks, it's
     # traceable to exactly which export request produced it, not just "the

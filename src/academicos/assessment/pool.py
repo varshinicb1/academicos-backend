@@ -15,6 +15,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
+from typing import NamedTuple
 
 from ..config import Config
 from ..extract.academic import extract_questions
@@ -390,35 +391,104 @@ STEM_SIMILARITY_THRESHOLD = 0.9
 # same MCQ from pages 5 and 9 would count as two questions.
 _PAGE_NOISE = re.compile(
     r"#?\s*\d+\s*\|\s*p\s*a\s*g\s*e|p\.\s*t\.\s*o\.?|\b\d+\s*-\s*$")
+# Superscript and subscript digits as ASCII, and every dash extraction
+# produces as '-': the served stems carry "(x – 2)₂" and "x²", which `\d`
+# does not read, so "x² + 7x" and "x³ + 7x" had the same numbers.
+_TOKEN_FOLD = str.maketrans({
+    **{c: str(i) for i, c in enumerate("⁰¹²³⁴⁵⁶⁷⁸⁹")},
+    **{c: str(i) for i, c in enumerate("₀₁₂₃₄₅₆₇₈₉")},
+    "–": "-", "—": "-", "−": "-", "‐": "-", "‑": "-",
+})
 # The tokens that make two otherwise identical sentences different questions,
-# kept in the order they appear: numbers ("root 5" vs "root 3"), function
-# names ("= sec A - tan A" vs "= cot A"; LCM vs HCF), polarity ("leap" vs
-# "non-leap") and an assertion-reason item's role.
+# kept in the order they appear: numbers ("root 5" vs "root 3"), signs and
+# relations ("x2 + 7x" vs "x2 - 7x"; a hyphen inside a word such as
+# "non-leap" is not a sign), function names ("= sec A - tan A" vs "= cot A";
+# LCM vs HCF), polarity ("leap" vs "non-leap") and an assertion-reason item's
+# role.
 _EXACT_TOKENS = re.compile(
     r"\d+(?:\.\d+)?"
+    r"|[+=<>≤≥]|(?<![a-z])-|-(?![a-z])"
     r"|\b(?:sin|cos|tan|cot|sec|cosec|log|lcm|hcf)\b"
     r"|\b(?:not|non|no|never|cannot)\b"
     r"|\b(?:assertion|reason)(?=\s*\()")
 
 
-def _exact_tokens(norm: str) -> tuple[str, ...]:
-    return tuple(_EXACT_TOKENS.findall(_PAGE_NOISE.sub(" ", norm)))
+class _ExactTokens(NamedTuple):
+    """A stem's exact tokens with where each sits in its page-stripped text,
+    so a shorter copy can be checked to be the longer one cut short."""
+
+    tokens: tuple[str, ...]
+    starts: tuple[int, ...]
+    ends: tuple[int, ...]
+    text: str
 
 
-def _same_exact_tokens(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
-    """Equal, or one a prefix of the other: extraction cuts a question short
+def _exact_tokens(norm: str) -> _ExactTokens:
+    text = _PAGE_NOISE.sub(" ", norm.translate(_TOKEN_FOLD))
+    found = list(_EXACT_TOKENS.finditer(text))
+    return _ExactTokens(tuple(m.group() for m in found),
+                        tuple(m.start() for m in found),
+                        tuple(m.end() for m in found), text)
+
+
+# How many exact tokens the shorter stem needs before one extra token in the
+# middle of the longer is read as extraction noise. The different questions
+# the measure must keep apart differ by one to three tokens out of at most
+# eight (RADICAL: 1 against 4; ROOT_K: 8 against 8); the one real duplicate
+# differing mid-stem shares 39.
+_MIDDLE_INSERT_MIN_TOKENS = 10
+
+
+def _one_insertion(short: tuple[str, ...], long_: tuple[str, ...]) -> bool:
+    """`long_` is `short` with one stray NUMBER added somewhere.
+
+    Only a number: that is what extraction noise mid-stem looks like (a stray
+    "12" in the Hindi-medium case study). A sign, relation, function name,
+    polarity word or assertion/reason label changes the question --
+    "2x - 4y = 24" and "= -24" are different (Task 906's review)."""
+    i = next((k for k, (x, y) in enumerate(zip(short, long_)) if x != y), len(short))
+    return short[i:] == long_[i + 1:] and long_[i][:1].isdigit()
+
+
+def _same_exact_tokens(a: _ExactTokens, b: _ExactTokens) -> bool:
+    """Equal, or one the other cut short: extraction cuts a question short
     at the end ("(D) 2x + x 3 =" in one paper, "... = 5" in the other), it
-    does not change a number in the middle. A stem with none of them against
-    one with some is not a cut copy: "Prove that is an irrational number"
-    lost its radicand, and matched both "root 5" and "root 3" otherwise."""
-    short, long_ = (a, b) if len(a) <= len(b) else (b, a)
-    if not short:
-        return not long_
-    return long_[:len(short)] == short
+    does not change a number in the middle. So the shorter's tokens must
+    open the longer's, and the shorter's text past its last token must be
+    what the longer has before its first extra token: "Prove that 3 is an
+    irrational number." against "Prove that 3 + 2 5 is an irrational
+    number." (root 3 against 3 + 2 root 5, the radicals lost) shares its
+    first number, but its text runs on where the other has "+ 2 5", so the
+    extra numbers sit in the middle, not after a cut. A stem with none of
+    them against one with some is not a cut copy either: "Prove that is an
+    irrational number" lost its radicand, and matched both "root 5" and
+    "root 3" otherwise.
+
+    One stray token in the middle of a long run is a copy too: the
+    Hindi-medium frequency-table case study, its words lost, reads "... 20
+    -24 1 x y 12 x y" in one paper and "... 20 -24 1 x y x y" in two others
+    (Task 906's code review). 39 tokens agreeing in order but one is
+    extraction noise, not a different question; one token against four
+    ("3" against "3 + 2 5") is. So the exception needs the shorter to carry
+    `_MIDDLE_INSERT_MIN_TOKENS` and the longer exactly one more."""
+    short, long_ = (a, b) if len(a.tokens) <= len(b.tokens) else (b, a)
+    n = len(short.tokens)
+    if not n:
+        return not long_.tokens
+    if (n >= _MIDDLE_INSERT_MIN_TOKENS and len(long_.tokens) == n + 1
+            and _one_insertion(short.tokens, long_.tokens)):
+        return True
+    if long_.tokens[:n] != short.tokens:
+        return False
+    if n == len(long_.tokens):
+        return True
+    tail = short.text[short.ends[-1]:].strip()
+    gap = long_.text[long_.ends[n - 1]:long_.starts[n]].strip()
+    return gap.startswith(tail)
 
 
 @lru_cache(maxsize=16384)
-def _stem_key(text: str) -> tuple[str, frozenset[str], Counter, tuple[str, ...]]:
+def _stem_key(text: str) -> tuple[str, frozenset[str], Counter, _ExactTokens]:
     """Normalised text, content-word signature, character counts and exact
     tokens, once per stem. The counts are difflib's `quick_ratio` bound
     precomputed: building them per pair was 90% of a swap's time on the
@@ -446,7 +516,14 @@ def near_duplicate(a: str, b: str) -> bool:
     polarity must also agree (`_same_exact_tokens`). Re-measured with it
     (2026-09-22): Mathematics 17 pairs, every one the same question as it
     prints (an MCQ in two papers, a page footer or a cut copy apart);
-    Science 0 of 408 questions."""
+    Science 0 of 408 questions. With signs, folded superscripts and the
+    cut-at-the-end check: Mathematics 15, Science 0, which let one
+    Hindi-medium frequency-table question print twice (a stray "12" in the
+    middle of one copy). With one mid-stem token allowed in a long run
+    (`_MIDDLE_INSERT_MIN_TOKENS`): Mathematics 17 (the
+    15 plus that question against its two other copies,
+    0b075a8b722f16f272c0cc4d:34 against db32b7ab98169b625243c09e:32 and
+    c42982ff54131ed0d5b7d9b0:35, and nothing else), Science 0."""
     na, sa, ca, xa = _stem_key(a)
     nb, sb, cb, xb = _stem_key(b)
     if na == nb:

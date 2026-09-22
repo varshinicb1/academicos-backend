@@ -63,8 +63,15 @@ def generate_paper(*, paper_id: str, assessment_id: str, assessment_title: str,
             else printed,
         ))
 
+    # Maximum Marks is what the paper holds, never more than was asked for.
+    # A bank too thin for a section leaves it short: the live release printed
+    # "Maximum Marks: 80" on an English 10 paper holding 20 (re-audit,
+    # 2026-09-22), and a student cannot score marks that were never printed.
+    # min() keeps a template whose sections add up to more than its stated
+    # total at that total.
+    total_marks = min(blueprint.total_marks, sum(s.total_marks for s in gen_sections))
     formatted = _render_text(assessment_title, subject, grade, blueprint.duration_minutes,
-                             blueprint.total_marks, gen_sections, set_label)
+                             total_marks, gen_sections, set_label)
 
     return GeneratedPaper(
         id=paper_id,
@@ -76,7 +83,7 @@ def generate_paper(*, paper_id: str, assessment_id: str, assessment_title: str,
             assessment_title=assessment_title,
             subject=subject,
             grade=grade,
-            total_marks=blueprint.total_marks,
+            total_marks=total_marks,
             duration_minutes=blueprint.duration_minutes,
             generated_at=datetime.now(timezone.utc),
         ),
