@@ -360,16 +360,28 @@ def _core(option: str) -> list[str]:
     return toks
 
 
-def _named_options(text: str, options: dict[str, str]) -> list[str]:
+def _named_options(text: str, options: dict[str, str], *,
+                   labelled_words: bool = False) -> list[str]:
     """The options whose words open `text`, once any "(B) /" label is cut.
 
     An option with no letter or digit left names nothing: 30/3/2 Q6 extracts
     its four options as "-, -" and "-,", and "– 3x2 – x – 6" (another
-    question's polynomial) opens with a dash."""
+    question's polynomial) opens with a dash.
+
+    `labelled_words` also reads `text` with its opening kept, for an option
+    that opens with a word the label rule cuts: the article in "a rational
+    number" (cbe:q:Maths9SM2) and "A shoe box" (exemplar:q:6:science:11:-:6),
+    the statement letter in "B and G" or "A is true but R is false". Cut, they
+    named no option: 45 of the 67 served CBE, SQP and Exemplar keys the relink
+    removed at 8e92ed9 (`question_bank.builder_key_reason` has the rest).
+    It is for a key from the item's own builder only (`trust_letter`); a
+    board row that now named an option this way would be a pick no one has
+    judged."""
     body = tokens(_KEY_LABEL.sub("", text))
+    bodies = [body, tokens(text)] if labelled_words else [body]
     return [k for k, v in options.items()
             if (core := _core(v)) and any(re.search(r"[^\W_]", t) for t in core)
-            and body[:len(core)] == core]
+            and any(b[:len(core)] == core for b in bodies)]
 
 
 def _bare_letter(answer: str) -> bool:
@@ -408,10 +420,10 @@ def _option_verdict(options: dict[str, str], answer: str, option: str | None, *,
         if bare:
             return Verdict(score=1.0, option=letter) if trust_letter else Verdict(
                 "unverifiable-letter")
-        if letter in _named_options(answer, options):
+        if letter in _named_options(answer, options, labelled_words=trust_letter):
             return Verdict(score=1.0, option=letter)
         return Verdict("option-mismatch")
-    named = _named_options(answer, options)
+    named = _named_options(answer, options, labelled_words=trust_letter)
     letter = correct_letter([answer], options) or (named[0] if len(named) == 1 else None)
     if not letter:
         return Verdict("option-mismatch")
@@ -425,7 +437,7 @@ def _option_verdict(options: dict[str, str], answer: str, option: str | None, *,
 # --------------------------------------------------------------------------- #
 
 def verify(record: dict, answer: str, option: str | None = None, *,
-           judge_content: bool = True) -> Verdict:
+           judge_content: bool = True, options: dict[str, str] | None = None) -> Verdict:
     """Accept `answer` (and its option letter, if the key has one) as the
     answer to `record`, or reject it with one of `REASONS`.
 
@@ -437,9 +449,14 @@ def verify(record: dict, answer: str, option: str | None = None, *,
     answers would all fail it. For the same reason such a scheme's bare
     option letter is trusted, where a board row's is unverifiable-letter.
     Every other check still applies.
+
+    `options`, when given, are the options the item's own builder resolved
+    (`question_bank.builder_key_reason`), read instead of the record: {} for
+    an item its builder did not make an MCQ.
     """
     answer = (answer or "").strip()
-    options = question_options(record)
+    if options is None:
+        options = question_options(record)
     if not options and (option or _ASSERTION_REASON.search(str(record.get("stem") or ""))):
         # A letter for a stem with no readable options: nothing ties it to
         # this question. 2 of the 3 checked by hand keyed the wrong verdict

@@ -18,6 +18,14 @@ from pathlib import Path
 from typing import NamedTuple
 
 from ..config import Config
+# The stem gates live with the served bank's composition, so the web registry
+# path and questions.json are held to one implementation (Task 16).
+from ..corpus.bank_merge import (
+    has_broken_options,
+    looks_mangled,
+    looks_truncated,
+    needs_missing_figure,
+)
 from ..extract.academic import extract_questions
 from ..models.academic import Question
 from ..models.document import ParsedDocument
@@ -31,66 +39,15 @@ log = logging.getLogger(__name__)
 _MIN_QUESTION_CHARS = 25
 _ADMIN_MARKERS = ("general instructions", "candidates must", "read the following instructions")
 
-# Phrases meaning "the answer lives in a picture we did not extract". Including
-# such a question in a generated paper produces something a student cannot
-# answer, so they are excluded from the selectable pool until a diagram library
-# exists to carry the figure through.
-_FIGURE_DEPENDENT = (
-    "shown in option", "in the given figure", "in the figure given", "given diagram",
-    "following diagram", "figure shown", "in the diagram", "shown in the graph",
-    "given circuit", "following circuit diagram", "in the given map", "given table",
-    "following table", "shown below", "figure given below",
-)
-
-
-def needs_missing_figure(text: str) -> bool:
-    """True when the stem refers to a figure/diagram that was not extracted."""
-    low = text.lower()
-    if not any(marker in low for marker in _FIGURE_DEPENDENT):
-        return False
-    # If the options themselves are present as text, the question is self-contained.
-    has_options = low.count("(a)") and low.count("(b)") and low.count("(c)")
-    return not has_options
-
-
-# A stem that trails off into a colon is an MCQ whose options never made it
-# through extraction (they were a table or an image). Printing it gives the
-# student a 1-mark question with nothing to choose from.
-_DANGLING_LEAD_IN = re.compile(
-    r"(?:\bis|\bare|\bfollowing|respectively|option|options|correct|statements?)\s*[:\-–]\s*$",
-    re.I)
-_TRAILING_COLON = re.compile(r"[:\-–]\s*$")
-
-
-# Phrases that promise a list of choices. If they appear and no (A)-(D) options
-# survived extraction, the choices were a table or an image and the question is
-# unanswerable as printed.
-_MCQ_LEAD_IN = re.compile(
-    r"\b(?:select the correct option|which (?:one )?of the following|"
-    r"the correct (?:option|answer)|choose the correct|"
-    r"from the following\s*:|the appropriate term)", re.I)
-
-
-def looks_truncated(text: str) -> bool:
-    """True when the stem promises options/content that are not present."""
-    has_options = bool(text.count("(A)")) or (text.count("(a)") and text.count("(b)"))
-    if has_options:
-        return False
-    if _MCQ_LEAD_IN.search(text):
-        return True
-    if not _TRAILING_COLON.search(text):
-        return False
-    return bool(_DANGLING_LEAD_IN.search(text))
-
-
 # Fractions and roots in MCQ options are laid out in the source PDF as a
 # numerator over a denominator ("50" over "√3"); flat text extraction turns
 # that into the two numbers on their own lines with the bar and radical lost.
 # `clean_question_text` drops bare-number lines as page-furniture noise, which
 # is right for page numbers but destroys these values, leaving e.g. option
 # (a) as an empty stub. Two or more such lines inside an options block means
-# the numeric content is gone, not just reformatted.
-_OPTION_ORDER = ("(a)", "(b)", "(c)", "(d)")
+# the numeric content is gone, not just reformatted. It reads the raw text
+# before `clean_question_text`, so it is the registry path's alone; the gates
+# on the cleaned text are bank_merge's, shared with the served bank.
 
 
 def has_broken_fraction_options(raw: str) -> bool:
@@ -99,45 +56,6 @@ def has_broken_fraction_options(raw: str) -> bool:
         return False
     bare_lines = sum(1 for line in raw.splitlines() if _BARE_NUMBER.match(line.strip()))
     return bare_lines >= 2
-
-
-_OPTION_MARKER_RE = re.compile(r"\(([a-dA-D])\)")
-# An option marker with nothing real after it ("(D) " followed straight by
-# the next marker, or the end of the stem) — a shorter, non-fraction sibling
-# of the stacked-fraction case: the value was a single token that got dropped
-# entirely rather than split across lines.
-_MIN_OPTION_CONTENT_CHARS = 2
-
-
-def has_broken_options(text: str) -> bool:
-    """True when the cleaned stem carries a *partial* or *empty* option list.
-
-    A legitimate CBSE "(a) ... OR (b) ..." internal choice always survives
-    cleaning as a lone leading "(a)" (the OR split keeps only the first
-    alternative), so that case must stay allowed. What must not: any option
-    letter appearing without every letter before it also present — that
-    ordering is physically impossible in the source and only happens when
-    extraction destroyed the earlier options (see `has_broken_fraction_options`)
-    — or an option marker present but immediately followed by the next marker
-    (or the end of the stem) with no content in between.
-    """
-    low = text.lower()
-    present = [m for m in _OPTION_ORDER if m in low]
-    if not present:
-        return False
-    expected = _OPTION_ORDER[: _OPTION_ORDER.index(present[-1]) + 1]
-    if any(m not in low for m in expected):
-        return True
-
-    matches = list(_OPTION_MARKER_RE.finditer(text))
-    if len(matches) < 2:
-        return False
-    for i, m in enumerate(matches):
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        content = text[m.end():end].strip(" .:;")
-        if len(content) < _MIN_OPTION_CONTENT_CHARS:
-            return True
-    return False
 
 
 def _is_mostly_non_latin(text: str) -> bool:
@@ -150,42 +68,6 @@ def _is_mostly_non_latin(text: str) -> bool:
         return False
     non_latin = sum(1 for c in letters if ord(c) > 0x2FF)
     return non_latin / len(letters) > 0.3
-
-
-# Characters that belong in ordinary English question text. Anything outside
-# this set is "noise" for the purposes of the mangled-encoding check below.
-_CLEAN_CHARS = set(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    " .,;:'\"()[]/-–—+=%°?!*&#\n\t→×÷±≤≥√∞²³"
-)
-# Sigils that show up constantly in legacy-font Devanagari but almost never in
-# real English prose: `{H$gr Xn©U`, `à{H«$`m`, `_hmoX`.
-_MANGLE_SIGILS = set("${}|~^\\`©¡«»¥¤§¨ª¬¯µ¶·¸¹º½¾")
-
-
-def looks_mangled(text: str) -> bool:
-    """True for Devanagari rendered through a legacy 8-bit font.
-
-    Those PDFs encode Hindi in a custom Latin mapping, so the extracted string
-    is ASCII/Latin-1 and slips past `_is_mostly_non_latin` — but it is unreadable
-    and must never reach a generated paper.
-    """
-    if not text:
-        return True
-    sample = text[:600]
-    noise = sum(1 for c in sample if c not in _CLEAN_CHARS)
-    if noise / len(sample) > 0.15:
-        return True
-    sigils = sum(1 for c in sample if c in _MANGLE_SIGILS)
-    if sigils / len(sample) > 0.03:
-        return True
-    # Real English has few tokens containing $ or { ; mangled Hindi is full of them.
-    tokens = sample.split()
-    if tokens:
-        odd = sum(1 for t in tokens if any(ch in t for ch in "${}|"))
-        if odd / len(tokens) > 0.08:
-            return True
-    return False
 
 
 _DEVANAGARI = re.compile(r"[ऀ-ॿ]")

@@ -96,19 +96,25 @@ def generate_paper_sets(*, paper_id: str, assessment_id: str, assessment_title: 
                         selected_questions: list[QuestionSchema],
                         set_count: int = 1,
                         rotation_groups: list[list[QuestionSchema]] | None = None,
+                        alternatives_pool: list[QuestionSchema] | None = None,
                         ) -> GeneratedPaper:
     """Generate parallel equivalent question paper sets (Sets A, B, C...) with strictly invariant difficulty.
 
-    Each later set rotates questions within a group. By default a group is
-    every question of one mark value, which is right when each mark value is
-    one section. A teacher's template can have several sections at the same
-    mark (reading, grammar, extract), each with its own type and difficulty
-    rules; rotating across all of them moved questions into the wrong
-    section in set B. `rotation_groups` -- one list per section, in section
-    order, together exactly `selected_questions` -- keeps each question in
-    its own section: `generate_paper` takes same-mark sections in order, so
-    concatenating the rotated groups in order refills each section from its
-    own group."""
+    With `alternatives_pool`, set B onwards print different questions of the
+    same marks and type (selection.alternative_sets), and `set_overlap` says
+    how many each shares with an earlier set. That is the first choice: real
+    alternatives beat any reordering.
+
+    Without a pool there is nothing to draw alternatives from, and later sets
+    are set A rotated within a group. By default a group is every question of
+    one mark value, which is right when each mark value is one section. A
+    teacher's template can have several sections at the same mark (reading,
+    grammar, extract), each with its own type and difficulty rules; rotating
+    across all of them moved questions into the wrong section in set B.
+    `rotation_groups` -- one list per section, in section order, together
+    exactly `selected_questions` -- keeps each question in its own section:
+    `generate_paper` takes same-mark sections in order, so concatenating the
+    rotated groups in order refills each section from its own group."""
     if set_count <= 1:
         return generate_paper(
             paper_id=paper_id,
@@ -126,10 +132,23 @@ def generate_paper_sets(*, paper_id: str, assessment_id: str, assessment_title: 
         labels = [f"Set {i + 1}" for i in range(set_count)]
 
     paper_sets: list[GeneratedPaper] = []
+    alternatives: list[list[QuestionSchema]] | None = None
+    overlaps: list[int] = []
+    if alternatives_pool is not None:
+        from .selection import alternative_sets
+        from .templates import default_sections
+        sections = blueprint.sections or default_sections(blueprint.total_marks)
+        alternatives, overlaps = alternative_sets(selected_questions, alternatives_pool, set_count,
+                                                  sections)
 
     for idx, label in enumerate(labels):
         variant_questions: list[QuestionSchema] = []
-        if rotation_groups is not None:
+        groups: list[list[QuestionSchema]]
+        if alternatives is not None:
+            # Each set already holds its own questions: nothing to rotate.
+            groups = []
+            variant_questions = [q.model_copy(deep=True) for q in alternatives[idx]]
+        elif rotation_groups is not None:
             groups = rotation_groups
         else:
             by_marks: dict[int, list[QuestionSchema]] = {}
@@ -177,6 +196,8 @@ def generate_paper_sets(*, paper_id: str, assessment_id: str, assessment_title: 
     primary_paper = paper_sets[0].model_copy(deep=True)
     primary_paper.set_label = labels[0]
     primary_paper.sets = [s.model_copy(deep=True, update={"sets": []}) for s in paper_sets]
+    if alternatives is not None:
+        primary_paper.set_overlap = dict(zip(labels, overlaps))
     return primary_paper
 
 

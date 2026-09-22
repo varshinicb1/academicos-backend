@@ -24,10 +24,33 @@ cannot accidentally build a paper it cannot mark.
 the older board-paper corpus has no attached scheme, and the honest thing is to
 report that number rather than quietly serve the subset that does.
 
+One bank, resolved the way everything else resolves it
+------------------------------------------------------
+This read three corpora (CBE + SQP + served, 5,840 records) where the HTTP API
+and paper generation read only the served bank (3,286), so the two surfaces
+could not agree on what the bank contained -- rule Q5's exact failure. Since
+the merge (`corpus/bank_merge.py`) the served bank CONTAINS the eligible CBE
+and SQP records, so reading them separately would both double-count them and
+serve records the merge deliberately excluded. It now reads the served bank
+alone, at `$ACOS_DATA_ROOT/syllabus/questions.json` -- the path was
+cwd-relative, so running the server from anywhere but the repo root silently
+served an empty bank.
+
+Authentication
+--------------
+`stdio` is unauthenticated by construction: the client launches this process
+and owns both ends of the pipe, so there is no network peer to authenticate
+and no way for a desktop host to hold a key. The network transports (`sse`,
+`streamable-http`) take the SAME scoped API key as the HTTP surface -- same
+store, same scope vocabulary, same quota counter (`assessment/api_keys.py`) --
+because the same product must not be key-gated on one port and open on
+another.
+
 Run
 ---
     python -m academicos.mcp.qbank_server                  # stdio
-    python -m academicos.mcp.qbank_server --transport sse  # for a web client
+    python -m academicos.mcp.qbank_server --transport sse --port 8081
+                                                           # a web client, key required
     python -m academicos.mcp.qbank_server --bank PATH      # a specific corpus
 """
 from __future__ import annotations
@@ -38,12 +61,22 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Mapping, Optional
+
+if TYPE_CHECKING:  # the SDK and the key store are both optional at import time
+    from ..assessment.api_keys import ApiKey, ApiKeyStore
 
 log = logging.getLogger(__name__)
 
-DEFAULT_BANK = Path("academicos-data") / "syllabus" / "questions.json"
-CBE_BANK = Path("academicos-data") / "corpus" / "cbse-cbe" / "questions.json"
+# Relative to the data root, never to the working directory.
+SERVED_BANK = Path("syllabus") / "questions.json"
+DEFAULT_DATA_ROOT = Path("academicos-data")
+KEY_DB = Path("assessment") / "api_keys.sqlite"
+
+# The scope a network MCP client needs. `search_questions` and `get_question`
+# return question text and marking schemes, so this is the questions scope the
+# HTTP surface requires for exactly the same data.
+TRANSPORT_SCOPE = "questions:read"
 
 
 # --------------------------------------------------------------------------- #
@@ -64,19 +97,22 @@ class Corpus:
         self.records = self._bank.records
 
     @classmethod
-    def load(cls, paths: list[Path]) -> "Corpus":
-        seen: dict[str, dict] = {}
-        for p in paths:
-            if not p.exists():
-                log.warning("bank not found, skipping: %s", p)
-                continue
-            payload = json.loads(p.read_text(encoding="utf-8"))
-            for rec in payload.get("questions") or []:
-                rid = str(rec.get("id") or "")
-                if rid and rid not in seen:
-                    seen[rid] = rec
-            log.info("loaded %d records from %s", len(payload.get("questions") or []), p)
-        return cls(list(seen.values()))
+    def load(cls, path: Path | str) -> "Corpus":
+        """Load one bank file -- the served bank (Q5), not a union of corpora.
+
+        A missing file is a warning and an empty corpus rather than a crash,
+        for the same reason `qbank_routes.init` tolerates it: the bank is a
+        data file, and an empty bank reports itself honestly through
+        `coverage_report`.
+        """
+        p = Path(path)
+        if not p.exists():
+            log.warning("served bank not found at %s; serving an empty corpus", p)
+            return cls([])
+        payload = json.loads(p.read_text(encoding="utf-8"))
+        records = payload.get("questions") or []
+        log.info("loaded %d records from %s", len(records), p)
+        return cls(records)
 
     def __len__(self) -> int:
         return len(self.records)
@@ -204,29 +240,14 @@ class Corpus:
         return out
 
     def coverage(self) -> dict[str, Any]:
-        """The honest state of the bank. Reported, never implied."""
-        total = len(self.records)
-        with_key = sum(1 for r in self.records if self.has_answer_key(r))
-        official = sum(1 for r in self.records
-                       if (r.get("answerScheme") or {}).get("provenance") == "cbse_marking_scheme")
-        by_subject: dict[str, dict[str, int]] = {}
-        for r in self.records:
-            s = str(r.get("subject") or "unknown")
-            d = by_subject.setdefault(s, {"total": 0, "withAnswerKey": 0})
-            d["total"] += 1
-            if self.has_answer_key(r):
-                d["withAnswerKey"] += 1
-        return {
-            "questions": total,
-            "withAnswerKey": with_key,
-            "withOfficialCbseScheme": official,
-            "answerKeyCoverage": round(with_key / total, 4) if total else 0.0,
-            "subjects": dict(sorted(by_subject.items())),
-            "grades": sorted({int(r.get("grade") or 0) for r in self.records}),
-            "note": ("Questions without an answer key are excluded from every "
-                     "search by default. They exist in the corpus and are "
-                     "reported here rather than hidden."),
-        }
+        """The honest state of the bank. Reported, never implied.
+
+        Delegates, like `has_answer_key` does: this was a second computation,
+        and `GET /v1/coverage` returning a different number from
+        `coverage_report` over the same records is precisely the divergence Q5
+        exists to prevent.
+        """
+        return self._bank.coverage()
 
 
 def _topics_of(rec: dict[str, Any]) -> list[str]:
@@ -484,8 +505,11 @@ def _brief(rec: dict[str, Any]) -> dict[str, Any]:
         "difficulty": rec.get("difficulty"),
         "stem": rec.get("stem"),
         "topics": _topics_of(rec),
-        "hasAnswerKey": bool((rec.get("answerScheme") or {}).get("markingPoints"))
-                       or bool(((rec.get("answerScheme") or {}).get("modelAnswer") or "").strip()),
+        # The shared rule, not a third inline copy of it: this one counted a
+        # marking-points list of empty descriptions as an answer key, so a
+        # record the search had already excluded would have been reported
+        # answerable if it ever reached here by id.
+        "hasAnswerKey": Corpus.has_answer_key(rec),
         "answerScheme": rec.get("answerScheme") or {},
         "provenance": rec.get("provenance") or {},
     }
@@ -495,29 +519,111 @@ def _brief(rec: dict[str, Any]) -> dict[str, Any]:
 # entry point
 # --------------------------------------------------------------------------- #
 
+def data_root() -> Path:
+    """`ACOS_DATA_ROOT`, like every other module resolves it."""
+    return Path(os.environ.get("ACOS_DATA_ROOT") or DEFAULT_DATA_ROOT)
+
+
 def load_corpus(bank: str | None = None) -> Corpus:
-    root = Path(os.environ.get("ACOS_DATA_ROOT", "academicos-data"))
+    """The served bank, and only the served bank (Q5)."""
+    return Corpus.load(Path(bank) if bank else data_root() / SERVED_BANK)
 
-    def _opt(relative: str) -> Path | None:
-        p = root / relative
-        return p if p.exists() else None
 
-    paths = [Path(bank)] if bank else [
-        CBE_BANK if (root / "corpus" / "cbse-cbe").exists() else None,
-        # Sample-paper items, joined to the marking scheme CBSE publishes
-        # alongside each paper. This is the only source that carries Social
-        # Science -- the CBE item banks are Maths, Science and English only.
-        _opt("corpus/cbse-sqp/questions.json"),
-        root / "syllabus" / "questions.json",
-    ]
-    return Corpus.load([p for p in paths if p])
+# --------------------------------------------------------------------------- #
+# authentication for the network transports
+# --------------------------------------------------------------------------- #
 
+def needs_transport_auth(transport: str) -> bool:
+    """stdio is local by construction; a network peer must present a key."""
+    return transport != "stdio"
+
+
+class TransportAuth:
+    """The HTTP surface's key gate, in front of a network MCP transport.
+
+    Holds an `ApiKeyStore` and defers every decision to
+    `qbank_routes.authorize`, so "which keys work, which scopes they need and
+    how much quota they spend" has one answer for both surfaces of the
+    product rather than two implementations that drift.
+    """
+
+    def __init__(self, store: "ApiKeyStore", scope: str = TRANSPORT_SCOPE) -> None:
+        self.store = store
+        self.scope = scope
+
+    def authenticate(self, headers: Mapping[str, str]) -> "ApiKey":
+        """Return the authenticated key, or raise `qbank_routes.AuthFailure`."""
+        from ..assessment.qbank_routes import authorize, presented_key
+
+        presented = presented_key(headers.get("authorization"),
+                                  headers.get("x-api-key"))
+        return authorize(self.store, presented, self.scope)
+
+
+class ApiKeyMiddleware:
+    """Pure-ASGI gate: no request reaches the MCP app without a valid key.
+
+    ASGI rather than the SDK's OAuth `TokenVerifier` because the credential
+    this product issues is a scoped API key, not an OAuth token, and the
+    refusal must be the same 401/403/429 the HTTP surface gives for the same
+    key. Non-HTTP scopes (`lifespan`, `websocket`) pass through untouched --
+    the session manager's lifespan has to run for the transport to work at
+    all.
+    """
+
+    def __init__(self, app, auth: TransportAuth) -> None:
+        self.app = app
+        self.auth = auth
+
+    async def __call__(self, scope, receive, send) -> None:
+        from ..assessment.qbank_routes import AuthFailure
+
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                   for k, v in scope.get("headers") or []}
+        try:
+            self.auth.authenticate(headers)
+        except AuthFailure as refused:
+            await _send_refusal(send, refused)
+            return
+        await self.app(scope, receive, send)
+
+
+async def _send_refusal(send, failure) -> None:
+    body = json.dumps({"error": failure.detail, "status": failure.status}).encode()
+    headers = [(b"content-type", b"application/json"),
+               (b"content-length", str(len(body)).encode())]
+    headers += [(k.lower().encode("latin-1"), v.encode("latin-1"))
+                for k, v in (failure.headers or {}).items()]
+    await send({"type": "http.response.start", "status": failure.status,
+                "headers": headers})
+    await send({"type": "http.response.body", "body": body})
+
+
+def transport_app(mcp, auth: TransportAuth, *, transport: str,
+                  host: str = "127.0.0.1"):
+    """The transport's ASGI app, wrapped in the key gate."""
+    app = (mcp.streamable_http_app(host=host) if transport == "streamable-http"
+           else mcp.sse_app(host=host))
+    return ApiKeyMiddleware(app, auth)
+
+
+# --------------------------------------------------------------------------- #
+# entry point
+# --------------------------------------------------------------------------- #
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="AcademicOS question-bank MCP server")
     ap.add_argument("--transport", default="stdio",
                     choices=["stdio", "sse", "streamable-http"])
     ap.add_argument("--bank", default=None, help="a specific bank JSON to serve")
+    ap.add_argument("--keys", default=None,
+                    help="the API-key store the network transports authenticate "
+                         "against (default $ACOS_DATA_ROOT/assessment/api_keys.sqlite)")
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--list-tools", action="store_true", help="print tools and exit")
     args = ap.parse_args(argv)
 
@@ -533,8 +639,28 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {t.name:<22} {t.description.splitlines()[0][:70]}")
         return 0
 
-    print(f"serving {len(corpus)} questions over {args.transport}", file=sys.stderr)
-    mcp.run(transport=args.transport)
+    if not needs_transport_auth(args.transport):
+        print(f"serving {len(corpus)} questions over stdio", file=sys.stderr)
+        mcp.run(transport="stdio")
+        return 0
+
+    # A network transport. Fail closed: an absent key store authenticates
+    # nobody, which is the right answer for a port -- the alternative, serving
+    # the corpus unauthenticated, is the audit finding this replaces.
+    import uvicorn
+
+    from ..assessment.api_keys import ApiKeyStore
+
+    db = Path(args.keys) if args.keys else data_root() / KEY_DB
+    if not db.exists():
+        log.warning("no API-key store at %s; every network request will be "
+                    "refused until a key is minted there", db)
+    db.parent.mkdir(parents=True, exist_ok=True)
+    auth = TransportAuth(ApiKeyStore(db))
+    app = transport_app(mcp, auth, transport=args.transport, host=args.host)
+    print(f"serving {len(corpus)} questions over {args.transport} on "
+          f"{args.host}:{args.port}, API key required", file=sys.stderr)
+    uvicorn.run(app, host=args.host, port=args.port)
     return 0
 
 

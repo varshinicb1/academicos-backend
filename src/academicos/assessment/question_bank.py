@@ -247,6 +247,28 @@ def verify_answer(record: dict[str, Any], answer: OfficialAnswer) -> Verdict:
 # answer: since Task 151 (user decision 2026-09-22, correctness first) an
 # unverified scheme is not served at all.
 UNBACKED_KEY = "unbacked-key"
+# A scheme without the official label that verifies but names another answer
+# than the join's accepted pick. It is no key, so the official replaces it;
+# it goes to review whole rather than being counted as the record's own
+# scheme verified (Task 152's review).
+SUPERSEDED_BY_OFFICIAL = "superseded-by-official"
+
+# Where a record withheld for conflicting official keys keeps its own key:
+# `answerScheme.metadata.conflictingKeys.existing`, the whole scheme. Without
+# it the next relink sees a record with no scheme, nothing to compare, and
+# serves the join's pick as newly attached -- and the pipeline's own order
+# (enrich, merge, enrich) runs the relink twice (Task 152's review). Nested,
+# never the top-level `correctOption` the scorers read.
+CONFLICT_HELD = "conflictingKeys"
+
+# The verifier a relink ran, stamped on the bank it wrote (`schemeVerifier`,
+# written by scripts/enrich_question_bank.py). merge_question_banks.py serves
+# the board records this relink verified, so it refuses a served bank without
+# this stamp: merged before the relink, it would serve labels no verifier has
+# seen (Task 151's pipeline-order concern). Change it whenever `verify`,
+# `join_verdict`, `AnswerKeyIndex.choose` or the relink's own rules change
+# what is served, so a bank relinked under the old rules is refused too.
+SCHEME_VERIFIER = "scheme-verify/content-join/conflicting-keys-held 2026-09-22"
 
 
 def row_code(stored: str, source: str) -> str:
@@ -657,6 +679,31 @@ class RelinkReport:
     quarantined: Counter = field(default_factory=Counter)
     rejected: Counter = field(default_factory=Counter)
     quarantine: list[dict[str, Any]] = field(default_factory=list)
+    # Records whose own official (cbse_marking_scheme) scheme verified while
+    # the content join accepted a DIFFERENT answer: two official keys, nothing
+    # to say which is right, so
+    # neither is served (both are in `quarantine` as conflicting-keys). Each
+    # entry names the record and both answers, for a person to settle.
+    conflicting_keys: int = 0
+    conflicts: list[dict[str, Any]] = field(default_factory=list)
+    # Of those, conflicts an earlier relink found and held on the record
+    # (`CONFLICT_HELD`): still two answers, still neither served.
+    conflicts_held: int = 0
+    # Records whose unlabelled scheme verified but named another answer than
+    # the join's accepted pick: quarantined as superseded-by-official, the
+    # official served in its place (counted in replaced_after_quarantine).
+    # Each entry names the record and both answers.
+    superseded: list[dict[str, Any]] = field(default_factory=list)
+    # Records whose scheme held a Symbol-font code point the answer-key store
+    # carries and `_restore_scheme_symbols` turned back into the character it
+    # stands for -- the merge's `symbol-font-restored`, applied to the scheme
+    # the relink writes rather than to the record the merge read.
+    symbol_font_restored: int = 0
+    # And the other half: records whose scheme still holds a private-use
+    # character the table CANNOT name, in a field a scorer reads. Nothing here
+    # guesses it, and nothing downstream sees it until the next merge withholds
+    # the whole question as private-use-glyph -- so the run reports it.
+    symbol_font_unnameable: int = 0
 
     @property
     def verified(self) -> int:
@@ -684,6 +731,11 @@ class RelinkReport:
                 self.replaced_after_quarantine),
             "  its scheme quarantined, nothing in its place: {:,}".format(
                 self.existing_scheme_removed),
+            "    conflicting official keys (neither served): {:,}".format(
+                self.conflicting_keys),
+            "      (held from an earlier relink: {:,})".format(self.conflicts_held),
+            "    its unlabelled scheme named another answer, superseded by the official: {:,}"
+            .format(len(self.superseded)),
             "verified official attached new : {:,}".format(self.newly_attached),
             "  (verified officials found away from the question's own number: {:,})".format(
                 self.recovered_elsewhere),
@@ -692,6 +744,10 @@ class RelinkReport:
             "with a VERIFIED official scheme: {:,}  ({:.1f}%)".format(
                 self.verified, self.coverage()),
             "with any scheme                : {:,}".format(self.with_scheme),
+            "symbol-font code points restored in the scheme: {:,}".format(
+                self.symbol_font_restored),
+            "  schemes left holding a symbol the table cannot name: {:,}".format(
+                self.symbol_font_unnameable),
             "",
             "quarantined (scheme removed from the record): {:,}".format(
                 sum(self.quarantined.values())),
@@ -820,6 +876,39 @@ def _scheme_content(scheme: dict[str, Any]) -> tuple[str, str | None]:
     return " ".join(p for p in parts if p), None
 
 
+def builder_key_reason(rec: dict[str, Any]) -> str | None:
+    """Why the relink removes a non-board record's own scheme, or None.
+
+    One rule for both ends of the pipeline: `relink_answer_schemes` applies
+    it to every record with no board-paper id, and the merge
+    (`bank_merge.compose`) refuses a CBE, SQP or Exemplar record it fails as
+    key-rejected. Before, the merge served keys the relink after it removed --
+    67 at 8e92ed9, left served with no key.
+
+    The options are the ones the builder resolved when it wrote an objective
+    scheme (`metadata.options`, `bank_merge._objective_scheme`), not the
+    record re-read: the verifier's own reader takes the numbered statements
+    before cbe:q:Science10MS2's (A)-(D) for its options. A scheme that is not
+    objective, on a record not typed mcq, has no options to name: its
+    builder did not make it an MCQ, and read as one, the "(a) ... (b) ..."
+    blanks of exemplar:q:6:mathematics:1:-:99 were four options its key named
+    none of. A record with no scheme content is not this rule's to judge.
+    """
+    scheme = rec.get("answerScheme") or {}
+    if not _has_content(scheme):
+        return None
+    text, letter = _scheme_content(scheme)
+    meta = scheme.get("metadata") or {}
+    resolved = meta.get("options") if letter else None
+    if isinstance(resolved, dict) and resolved:
+        options: dict[str, str] | None = {str(k): str(v) for k, v in resolved.items()}
+    elif not letter and rec.get("type") != "mcq":
+        options = {}
+    else:
+        options = None
+    return verify(rec, text, option=letter, judge_content=False, options=options).reason
+
+
 def _source_row(scheme: dict[str, Any],
                 rejected: list[tuple[OfficialAnswer, Verdict]]) -> Verdict | None:
     """The rejection of the index row a record's scheme was built from, if
@@ -843,7 +932,7 @@ def _has_content(scheme: dict[str, Any]) -> bool:
 
 
 def _quarantine(rec: dict[str, Any], report: RelinkReport, reason: str, text: str,
-                code: str, q_no: int | None) -> None:
+                code: str, q_no: int | None, **extra: Any) -> None:
     """Remove a rejected scheme from the record and log it for review.
 
     Removed, not merely unlabelled: another question's answer in the record
@@ -863,9 +952,138 @@ def _quarantine(rec: dict[str, Any], report: RelinkReport, reason: str, text: st
         "correctOption": meta.get("correctOption"),
         "schemeSource": meta.get("schemeSource") or "",
         "scheme": removed,
+        **extra,
     })
     rec["answerScheme"] = AnswerSchemeSchema(
         total_marks=int(rec.get("marks") or 0)).model_dump(mode="json", by_alias=True)
+
+
+def _answer_of(scheme: dict[str, Any]) -> dict[str, Any]:
+    """What a scheme says the answer is, and which scheme file says it."""
+    text, letter = _scheme_content(scheme)
+    meta = scheme.get("metadata") or {}
+    return {"option": letter, "text": text, "source": meta.get("schemeSource") or "",
+            "code": meta.get("schemeCode") or "", "qNo": meta.get("schemeQNo")}
+
+
+def _agreeable(text: str) -> str:
+    """One answer's text as it compares with another's.
+
+    Whitespace collapsed, case folded, and the symbol-font code points the
+    merge restores (corpus/symbol_font.py) read as the characters they stand
+    for: the served bank carries cbse:q:src:784bd959b5f48fd5620f57e6:27 as
+    "2⋅4 g/litre" and the answer-key store still holds the extraction's
+    "2<U+F0D7>4 g/litre". They are one answer, and a short key whose only
+    difference is the symbol shares too few words for the share rule below to
+    decide -- it would read as a conflict and the record would lose its key.
+    A private-use character the table cannot name is left as it is: nothing
+    knows what it was, so it stays a difference.
+    """
+    # Imported here, not at the top: corpus imports this module.
+    from ..corpus.symbol_font import restore_symbol_font
+
+    return restore_symbol_font(_collapse(text or "")).casefold()
+
+
+def _same_answer(ours: dict[str, Any], pick: dict[str, Any],
+                 options: dict[str, str]) -> bool:
+    """Two schemes name the same answer, by the join's own tests.
+
+    An objective answer is its option: the scheme's letter, or for a scheme
+    built without one the option its words are (`outright_option` -- a
+    pre-Task-15 scheme keeps "(B)/ Amorphous, colloidal ..." as text). Two
+    letters agree when they are the same letter. Otherwise two texts agree
+    when they are editions of one answer, which is what `choose` calls a row
+    sharing `AGREE_SHARE` of the pick's join terms: two sets of a series
+    print one descriptive answer in different words and layout. On the
+    served bank at 7747f7f exact text found 20 disagreements, 7 of them one
+    answer (57/5/2 Q9 "(B)/ Amorphous, ..." against B; five descriptive
+    editions such as 67/1/1 Q22 against 67/1/2 Q21); this rule finds 13."""
+    a, b = _answer_of(ours), _answer_of(pick)
+    letters = [str(x["option"] or outright_option(x["text"], options) or "").strip().upper()
+               for x in (a, b)]
+    if all(letters):
+        return letters[0] == letters[1]
+    if _agreeable(a["text"]) == _agreeable(b["text"]):
+        return True
+    ta, tb = row_text(a["text"]), row_text(b["text"])
+    # Share is blind to what flips an answer: `join_terms` drops "not", "no",
+    # "yes" and single digits, so "It is a rational number" and "It is not a
+    # rational number" share every term. Editions of one answer keep the
+    # same polarity words and the same numbers; anything else is a conflict,
+    # which fails closed.
+    if _polarity(ta) != _polarity(tb) or _all_numbers(ta) != _all_numbers(tb):
+        return False
+    return share(join_terms(ta), join_terms(tb)) >= AGREE_SHARE
+
+
+# Words that turn one answer into its opposite, each mapped to its sense so
+# "isn't" and "not", "increases" and "increased" count alike.
+_POLARITY_WORD = re.compile(
+    r"\b(not|no|never|none|nor|neither|cannot|yes|true|false|"
+    r"increas\w*|decreas\w*|higher|lower|more|less|positive|negative)\b"
+    r"|n['’]t\b", re.I)
+_POLARITY_SENSE = {"never": "not", "none": "not", "nor": "not", "neither": "not",
+                   "cannot": "not", "n't": "not", "n’t": "not"}
+
+
+def _polarity(text: str) -> frozenset[str]:
+    senses = set()
+    for m in _POLARITY_WORD.finditer(text or ""):
+        w = m.group(0).casefold()
+        if w.startswith("increas"):
+            w = "increase"
+        elif w.startswith("decreas"):
+            w = "decrease"
+        senses.add(_POLARITY_SENSE.get(w, w))
+    return frozenset(senses)
+
+
+_ANY_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _all_numbers(text: str) -> frozenset[str]:
+    """Every number, single digits too (`join_terms` keeps two characters up)."""
+    return frozenset(n.lstrip("0") or "0" for n in _ANY_NUMBER.findall(text or ""))
+
+
+def _serve_neither(rec: dict[str, Any], report: RelinkReport, pick: dict[str, Any],
+                   code: str, q_no: int | None) -> None:
+    """The record's own verified official scheme and the join's accepted
+    pick name different answers. Both passed the verifier, so the verifier cannot say
+    which is the board's; serving either would be a coin toss labelled
+    official. Until Task 152 the join's pick simply overwrote the record's
+    scheme and was counted verified_existing_scheme. On the served bank at
+    7747f7f 13 of those 53 records name two answers: 11 option letters
+    (30/5/2 Q17 A '90°' against D '30°', 430/2/3 Q6 C '60°' against A '30°',
+    nine MCQs of 66/1/1 such as Q16 'Personal selling' against 'Sales
+    promotion') and 2 descriptive keys whose join row restates the question
+    first (430/5/1 Q24, 430/5/2 Q28) -- likely one answer, but `_same_answer`
+    cannot tell, and a conflict fails closed. A 14th since `_same_answer`
+    also requires the same polarity words and numbers: 5884c691 Q31 (lens of
+    +4D), whose join row is cut to "Focal length of lens, f(m) =" against our
+    "... Real and inverted Magnification = -1". Both schemes are quarantined
+    whole, each naming the other, and the record keeps no scheme (the merge
+    withholds it as no-verified-key) -- only its own key, held under
+    `metadata.conflictingKeys` for the next relink to compare again."""
+    whole = dict(rec.get("answerScheme") or {})
+    ours = _answer_of(whole)
+    theirs = _answer_of(pick)
+    report.conflicting_keys += 1
+    report.conflicts.append({"id": rec.get("id"), "code": code, "q_no": q_no,
+                             "existing": ours, "join": theirs})
+    _quarantine(rec, report, CONFLICTING_KEYS, ours["text"], code, q_no,
+                conflictsWith=theirs)
+    # Held on the record, so the next relink compares the two again rather
+    # than finding no scheme and serving the pick.
+    rec["answerScheme"]["metadata"] = {CONFLICT_HELD: {"existing": whole, "join": theirs}}
+    # The pick was never on the record: a refused candidate, kept for review.
+    report.rejected[CONFLICTING_KEYS] += 1
+    report.quarantine.append({
+        "id": rec.get("id"), "code": code, "q_no": q_no, "reason": CONFLICTING_KEYS,
+        "text": theirs["text"], "correctOption": theirs["option"],
+        "schemeSource": theirs["source"], "scheme": pick, "conflictsWith": ours,
+    })
 
 
 def relink_answer_schemes(
@@ -889,6 +1107,14 @@ def relink_answer_schemes(
     is asked for the family row that answers the question (`AnswerKeyIndex.
     choose`); only an accepted one is labelled official. A record with no
     accepted row keeps no scheme at all: an unverified scheme is not served.
+    A record whose own verified cbse_marking_scheme names another answer
+    than the accepted row keeps none either: two official keys that disagree
+    are a conflict, not an overwrite (`_serve_neither`), and the record holds
+    its own key (`CONFLICT_HELD`) so every later relink compares the two
+    again; it is served only when the join's pick agrees with it. An
+    unlabelled scheme is no key, so the accepted row replaces it: kept as
+    verified when it names the same answer, quarantined as
+    superseded-by-official and reported when it names another.
     """
     report = RelinkReport(total=len(records))
     sources: dict[str, ParsedSource | None] = {}
@@ -912,14 +1138,32 @@ def relink_answer_schemes(
 
         scheme = rec.get("answerScheme") or {}
         had_scheme = _has_content(scheme)
+        held = None
+        if not had_scheme and parsed_id is not None:
+            held = ((scheme.get("metadata") or {}).get(CONFLICT_HELD) or {}).get("existing")
+            if isinstance(held, dict) and _has_content(held):
+                # An earlier relink withheld this record for two disagreeing
+                # official keys. Its own key is compared again, as it was:
+                # re-verified first, so a key the verifier now rejects goes
+                # to review and no longer blocks the join's pick.
+                text, letter = _scheme_content(held)
+                verdict = verify(rec, text, option=letter, judge_content=True)
+                if not verdict.accepted:
+                    rec["answerScheme"] = held
+                    _quarantine(rec, report, verdict.reason, text, code, q_no)
+                    held = None
+            else:
+                held = None
         kept = had_scheme
         if had_scheme:
             text, letter = _scheme_content(scheme)
-            # A CBE/SQP scheme came from its own item, so there is no key to
-            # misalign; the content rule is for board rows (see `verify`).
-            verdict = verify(rec, text, option=letter, judge_content=parsed_id is not None)
-            if not verdict.accepted:
-                _quarantine(rec, report, verdict.reason, text, code, q_no)
+            # A CBE/SQP/Exemplar scheme came from its own item, so there is no
+            # key to misalign; the content rule is for board rows (see
+            # `verify`), and the options are the ones its builder resolved.
+            reason = (builder_key_reason(rec) if parsed_id is None else
+                      verify(rec, text, option=letter, judge_content=True).reason)
+            if reason is not None:
+                _quarantine(rec, report, reason, text, code, q_no)
                 kept = False
         labelled = kept and scheme.get("provenance") == "cbse_marking_scheme"
 
@@ -996,14 +1240,36 @@ def relink_answer_schemes(
 
         report.found += 1
         stem = str(rec.get("stem") or "")
-        rec["answerScheme"] = build_official_scheme(
+        options = question_options(rec) or parse_options(stem)
+        pick = build_official_scheme(
             choice.best,
             marks=int(rec.get("marks") or 0),
             question_id=str(rec.get("id")),
             code=code,
             document_id=source.document_id,
-            options=question_options(rec) or parse_options(stem),
+            options=options,
         ).model_dump(mode="json", by_alias=True)
+        if held is not None:
+            if not _same_answer(held, pick, options):
+                rec["answerScheme"] = held
+                report.conflicts_held += 1
+                _serve_neither(rec, report, pick, code, q_no)
+                continue
+        elif labelled and not _same_answer(scheme, pick, options):
+            _serve_neither(rec, report, pick, code, q_no)
+            continue
+        elif kept and not _same_answer(scheme, pick, options):
+            # An unlabelled scheme is no key: the official replaces it. But
+            # it names another answer, so it is not the record's own scheme
+            # verified -- it goes to review whole, and is reported.
+            ours = _answer_of(scheme)
+            theirs = _answer_of(pick)
+            report.superseded.append({"id": rec.get("id"), "code": code, "q_no": q_no,
+                                      "existing": ours, "join": theirs})
+            _quarantine(rec, report, SUPERSEDED_BY_OFFICIAL, ours["text"], code, q_no,
+                        conflictsWith=theirs)
+            kept = False
+        rec["answerScheme"] = pick
         if (choice.best.code, choice.best.q_no) != (normalize_paper_code(code) or code, q_no):
             report.recovered_elsewhere += 1
         if not had_scheme:
@@ -1013,9 +1279,82 @@ def relink_answer_schemes(
         else:
             report.replaced_after_quarantine += 1
 
+    for rec in records:
+        restored, unnameable = _restore_scheme_symbols(rec)
+        report.symbol_font_restored += restored
+        report.symbol_font_unnameable += unnameable
     report.existing_scheme_removed = sum(
         not _has_content(r.get("answerScheme") or {}) for r in had_before)
     return report
+
+
+def _restore_scheme_symbols(rec: dict[str, Any]) -> tuple[bool, bool]:
+    """Restore the Symbol-font code points in the scheme the relink just wrote,
+    in place; whether it changed anything, and whether a private-use character
+    the table CANNOT name is left in a field a scorer reads.
+
+    The merge repairs a record's text before it serves it
+    (`bank_merge.repair_symbol_font`), but the scheme the relink writes does
+    not come from the record -- it is built from the answer-key store's own
+    rows (`build_official_scheme`), which hold the text as the marking-scheme
+    PDF was extracted, symbol-font code points and all. Task 11's runbook runs
+    the relink AFTER the merge (plans/2026-09-21-question-bank-merge.md, step 3
+    merge, step 4 enrich), so without this the documented pipeline puts the
+    holes straight back: on the bank at 64dd21a it reverted three served
+    records -- cbse:q:src:f01c7b6fd6fca7ef7d9987dc:27's "x cm ∴ altitude" to
+    "x cm  altitude", 6df8d2b3a2f6c8cce1428573:31's "• Deriving the
+    expression" to " Deriving...", and 784bd959b5f48fd5620f57e6:27's
+    "2⋅4 g/litre" to "24 g/litre" -- with no gate to catch it, since the
+    private-use gate only runs inside `compose`.
+
+    The quarantine entries and the `conflictingKeys` hold are left raw: they
+    are provenance, a copy of what was removed as it was removed, and a person
+    reviewing one needs the characters the extractor actually produced. They
+    are not counted as unnameable either, for the same reason the merge's gate
+    does not read them (`bank_merge.printed_scheme`): nobody scores them.
+
+    What the table cannot name is not guessed and not dropped -- it is
+    REPORTED. `restore_symbol_font` covers the codes Adobe's Symbol encoding
+    names and leaves the rest, and 46 of the 15,605 rows in answer_keys.db
+    carry one it cannot (U+F09F x17, U+F0A7 x16, U+F0E7 x4, U+F076 x3,
+    U+F0BE x2, U+F0F8 x2, U+F0FB, U+F0E0). A scheme built from such a row goes
+    into a served record's `modelAnswer` as a hole a scorer reads, and the only
+    thing that would ever notice is the NEXT merge -- which then withholds the
+    whole question rather than just its key. A wrong answer shipped silently is
+    worse than an error, so the run says so: `RelinkReport.symbol_font_
+    unnameable`, printed beside the restored count.
+    """
+    from ..corpus.symbol_font import private_use_glyph, restore_symbol_font
+
+    changed = False
+
+    def fix(value: Any) -> Any:
+        nonlocal changed
+        if isinstance(value, str):
+            out = restore_symbol_font(value)
+            changed = changed or out != value
+            return out
+        if isinstance(value, dict):
+            return {k: (v if k == CONFLICT_HELD else fix(v)) for k, v in value.items()}
+        if isinstance(value, list):
+            return [fix(v) for v in value]
+        return value
+
+    def unnameable(value: Any) -> bool:
+        if isinstance(value, str):
+            return private_use_glyph(value) is not None
+        if isinstance(value, dict):
+            return any(unnameable(v) for k, v in value.items() if k != CONFLICT_HELD)
+        if isinstance(value, list):
+            return any(unnameable(v) for v in value)
+        return False
+
+    scheme = rec.get("answerScheme")
+    if not isinstance(scheme, dict):
+        return False, False
+    scheme = fix(scheme)
+    rec["answerScheme"] = scheme
+    return changed, unnameable(scheme)
 
 
 def _siblings(records: list[dict[str, Any]], located) -> dict[int, list[tuple[str, int]]]:

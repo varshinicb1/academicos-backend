@@ -9,15 +9,20 @@ It is composed from:
   cbe    academicos-data/corpus/cbse-cbe/questions.json   (classes 6-10)
   sqp    academicos-data/corpus/cbse-sqp/questions.json   (classes 10, 12)
 
-Board records pass through untouched: they already decode on the phone and
-render on the web, and this module must not be the thing that breaks them.
-One gate applies to them, no-verified-key: a board record is served only with
-a marking scheme the relink verified. A board record the gate withholds is kept
-WHOLE in board_withheld.json (`hold`), which every run adds to and none
-overwrites, and read back as a board source on the next run: the served file is
-both this module's board input and its output, so a record left out of it would
-otherwise leave the pipeline for good, and a later, better relink could never
-re-attach its key.
+A board record is served only with a marking scheme the relink verified
+(no-verified-key), and only if a student can answer it as printed: it goes
+through the same `exclusion_reason` as CBE and SQP, after `repair_board` has
+made the repairs that are certain -- page furniture stripped, lowercase or
+mark-prefixed options reprinted "(A) ... (D)" inline, the four standard
+assertion-reason options appended, the correct option always the verified
+one. A hand check of 30 served stems (audit 3.6, 2026-09-21) found 18 that
+could not be answered as printed, and the web path's own filters (moved here
+from pool.py) never ran on the served file. Every board record not served,
+whatever the reason, is kept WHOLE in board_withheld.json (`hold`), which every
+run adds to and none overwrites, and read back as a board source on the next
+run: the served file is both this module's board input and its output, so a
+record left out of it would otherwise leave the pipeline for good, and a
+later, better relink or repair could never bring it back.
 CBE and SQP records are normalised to the phone's contract and then gated.
 
 Why the contract is the phone's and not the API's
@@ -41,7 +46,9 @@ What is excluded, and why
 -------------------------
 Nothing is dropped silently; every exclusion is returned with its reason.
 
-  figure-unavailable     no surface can resolve a `cbe-figure:` asset
+  figure-unavailable     no surface can resolve a `cbe-figure:` asset; for a
+                         board record, a stem that points at a figure, map,
+                         graph or table and carries no asset id
   passage-unavailable    a comprehension question with no passage to read
   header-as-stem         the "question" is a page header
   stem-too-short         no question text to speak of
@@ -54,6 +61,20 @@ Nothing is dropped silently; every exclusion is returned with its reason.
   figure-referenced      the stem points at a figure, graph, map or a table
                          "above" that was not extracted with it
   garbled-script         legacy-font extraction produced text nobody can read
+                         -- on a board stem, anywhere in it (`_legacy_font`)
+  symbol-loss            a math symbol the extraction dropped or misread:
+                         "(Use = 3·14)", "(a ¹ b)", "c c b b a a = = ."
+  private-use-glyph      a symbol-font character nothing can name (corpus/
+                         symbol_font.py): the ones the Adobe Symbol encoding
+                         covers are restored (symbol-font-restored), and a
+                         record still holding one prints a hole where a symbol
+                         belongs
+  options-missing        an objective stem -- typed MCQ, ending in a colon, or
+                         a 1-mark "which of the following" -- with no options
+  case-study-without-question  a case study, or a stem announcing a text,
+                         that asks nothing
+  page-furniture         a board stem that is nothing once its page furniture
+                         ("# 14| P a g e", "666 -11 6 of") is stripped
   mcq-marks-implausible  an MCQ carrying more than 2 marks: a sub-part holding
                          its whole group's marks, or not a single MCQ at all
   mcq-part-of-group      an MCQ whose stem opens "1 (a)": one part of a group
@@ -61,7 +82,9 @@ Nothing is dropped silently; every exclusion is returned with its reason.
                          them, the stem and the parts disagree about them, or a
                          student could not choose between them (empty, or two
                          read alike)
-  mcq-answer-unresolved  the correct option cannot be recovered with certainty
+  mcq-answer-unresolved  the correct option cannot be recovered with certainty;
+                         for a board record, the relink verified no letter
+                         for its options, or one they do not print
   option-labels-collide  numbered or roman options whose text names A-D -- "1.
                          A & B 2. A & C" over statements A-D -- which would read
                          "(C) B & C" once printed with the letters the key uses
@@ -72,7 +95,8 @@ Nothing is dropped silently; every exclusion is returned with its reason.
   stem-fragment          the stem starts mid-sentence or with a later part's
                          label ("ii.", "(b)"), or an MCQ's or 1-mark item's
                          stem opens with its options: the question text went
-                         elsewhere
+                         elsewhere; or a board stem kept its numbers and
+                         labels and lost its words ("21 cm 120° 1 (A) ...")
   stem-runs-on           the next question of the same paper is a stem-fragment:
                          this stem lost its ending to it or took its opening,
                          and its key is likely another question's
@@ -80,7 +104,15 @@ Nothing is dropped silently; every exclusion is returned with its reason.
                          parts, "1 (a) ... 1 (b) ...": several questions under
                          one part's mark, keyed with one part's answer
   duplicate-id           an id already served
-  duplicate-stem         already served, under a board-paper id where possible
+  duplicate-stem         already served, under a board-paper id where possible;
+                         exactly, or near-identically (`NEAR_DUPLICATE_MIN`)
+  key-rejected           a CBE, SQP or Exemplar record whose own key the
+                         relink's verifier rejects (question_bank.
+                         builder_key_reason): an assertion-reason letter for a
+                         stem that prints no options, a key in another
+                         script. The relink runs again after the merge; served,
+                         the record would lose its key there and stay served
+                         with none (17 at 8e92ed9)
   no-verified-key        a board record whose scheme the relink did not verify
                          (not cbse_marking_scheme, or no relink stamp -- see
                          `has_verified_key`): correctness first (user
@@ -150,21 +182,31 @@ import json
 import os
 import re
 import unicodedata
+from collections.abc import Iterator
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..assessment.mapping import _resolve_bloom, _resolve_difficulty, _resolve_type
-from ..assessment.question_bank import OfficialAnswer, build_official_scheme
+from ..assessment.question_bank import (CONFLICT_HELD, OfficialAnswer,
+                                         build_official_scheme, builder_key_reason)
 from .mcq_shape import (
     INSTRUCTION, LATER_PART_OPENING, LETTERS, MIN_OPTIONS, PART_LABEL_OPENING, SUB_PART,
     answerable, has_option_labels, holds_group, key_letter, names_option_letter, norm,
     options_from_parts, stem_options, tokens,
 )
+from .symbol_font import PRIVATE_USE, private_use_glyph, restore_symbol_font
 
 BOARD_SOURCE = "cbse_board_paper"
+EXEMPLAR_SOURCE = "ncert_exemplar"
 NO_VERIFIED_KEY = "no-verified-key"
+# A CBE, SQP or Exemplar key the relink would remove (question_bank.builder_key_reason).
+KEY_REJECTED = "key-rejected"
+# A key whose value points are all worth 0 marks: the paper prints every point
+# as "[0m]", so it tells a teacher nothing about how to award the marks. The
+# re-audit of 2026-09-22 found 38% of the then-live bank like this.
+SCHEME_MARKS_UNALLOCATED = "scheme-marks-unallocated"
 
 # The values each phone converter accepts (frontend/lib/domain/entities/enums.dart).
 BLOOM_LEVELS = frozenset({"remember", "understand", "apply", "analyze", "evaluate", "create"})
@@ -287,6 +329,141 @@ def contract_errors(rec: dict) -> list[str]:
         for i, rl in enumerate(scheme.get("rubricLevels") or []):
             _check(rl if isinstance(rl, dict) else {}, f"rubricLevels[{i}]", _RUBRIC, errs)
     return errs
+
+
+# --------------------------------------------------------------------------- #
+# stem gates shared with the web registry path
+# --------------------------------------------------------------------------- #
+# Moved here from assessment/pool.py (Task 16), unchanged: pool's registry path
+# and its baked-bank path call these, and so does the board gate below, so the
+# web paper and questions.json are held to one implementation of each.
+
+# Phrases meaning "the answer lives in a picture we did not extract". Including
+# such a question in a generated paper produces something a student cannot
+# answer, so they are excluded from the selectable pool until a diagram library
+# exists to carry the figure through.
+_FIGURE_DEPENDENT = (
+    "shown in option", "in the given figure", "in the figure given", "given diagram",
+    "following diagram", "figure shown", "in the diagram", "shown in the graph",
+    "given circuit", "following circuit diagram", "in the given map", "given table",
+    "following table", "shown below", "figure given below",
+)
+
+
+def needs_missing_figure(text: str) -> bool:
+    """True when the stem refers to a figure/diagram that was not extracted."""
+    low = text.lower()
+    if not any(marker in low for marker in _FIGURE_DEPENDENT):
+        return False
+    # If the options themselves are present as text, the question is self-contained.
+    has_options = low.count("(a)") and low.count("(b)") and low.count("(c)")
+    return not has_options
+
+
+# A stem that trails off into a colon is an MCQ whose options never made it
+# through extraction (they were a table or an image). Printing it gives the
+# student a 1-mark question with nothing to choose from.
+_DANGLING_LEAD_IN = re.compile(
+    r"(?:\bis|\bare|\bfollowing|respectively|option|options|correct|statements?)\s*[:\-–]\s*$",
+    re.I)
+_TRAILING_COLON = re.compile(r"[:\-–]\s*$")
+
+
+# Phrases that promise a list of choices. If they appear and no (A)-(D) options
+# survived extraction, the choices were a table or an image and the question is
+# unanswerable as printed.
+_MCQ_LEAD_IN = re.compile(
+    r"\b(?:select the correct option|which (?:one )?of the following|"
+    r"the correct (?:option|answer)|choose the correct|"
+    r"from the following\s*:|the appropriate term)", re.I)
+
+
+def looks_truncated(text: str) -> bool:
+    """True when the stem promises options/content that are not present."""
+    has_options = bool(text.count("(A)")) or (text.count("(a)") and text.count("(b)"))
+    if has_options:
+        return False
+    if _MCQ_LEAD_IN.search(text):
+        return True
+    if not _TRAILING_COLON.search(text):
+        return False
+    return bool(_DANGLING_LEAD_IN.search(text))
+
+
+_OPTION_ORDER = ("(a)", "(b)", "(c)", "(d)")
+_OPTION_MARKER_RE = re.compile(r"\(([a-dA-D])\)")
+# An option marker with nothing real after it ("(D) " followed straight by
+# the next marker, or the end of the stem) — a shorter, non-fraction sibling
+# of the stacked-fraction case: the value was a single token that got dropped
+# entirely rather than split across lines.
+_MIN_OPTION_CONTENT_CHARS = 2
+
+
+def has_broken_options(text: str) -> bool:
+    """True when the cleaned stem carries a *partial* or *empty* option list.
+
+    A legitimate CBSE "(a) ... OR (b) ..." internal choice always survives
+    cleaning as a lone leading "(a)" (the OR split keeps only the first
+    alternative), so that case must stay allowed. What must not: any option
+    letter appearing without every letter before it also present — that
+    ordering is physically impossible in the source and only happens when
+    extraction destroyed the earlier options (see pool's `has_broken_fraction_options`)
+    — or an option marker present but immediately followed by the next marker
+    (or the end of the stem) with no content in between.
+    """
+    low = text.lower()
+    present = [m for m in _OPTION_ORDER if m in low]
+    if not present:
+        return False
+    expected = _OPTION_ORDER[: _OPTION_ORDER.index(present[-1]) + 1]
+    if any(m not in low for m in expected):
+        return True
+
+    matches = list(_OPTION_MARKER_RE.finditer(text))
+    if len(matches) < 2:
+        return False
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        content = text[m.end():end].strip(" .:;")
+        if len(content) < _MIN_OPTION_CONTENT_CHARS:
+            return True
+    return False
+
+
+# Characters that belong in ordinary English question text. Anything outside
+# this set is "noise" for the purposes of the mangled-encoding check below.
+_CLEAN_CHARS = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    " .,;:'\"()[]/-–—+=%°?!*&#\n\t→×÷±≤≥√∞²³"
+)
+# Sigils that show up constantly in legacy-font Devanagari but almost never in
+# real English prose: `{H$gr Xn©U`, `à{H«$`m`, `_hmoX`.
+_MANGLE_SIGILS = set("${}|~^\\`©¡«»¥¤§¨ª¬¯µ¶·¸¹º½¾")
+
+
+def looks_mangled(text: str) -> bool:
+    """True for Devanagari rendered through a legacy 8-bit font.
+
+    Those PDFs encode Hindi in a custom Latin mapping, so the extracted string
+    is ASCII/Latin-1 and slips past pool's `_is_mostly_non_latin` — but it is unreadable
+    and must never reach a generated paper.
+    """
+    if not text:
+        return True
+    sample = text[:600]
+    noise = sum(1 for c in sample if c not in _CLEAN_CHARS)
+    if noise / len(sample) > 0.15:
+        return True
+    sigils = sum(1 for c in sample if c in _MANGLE_SIGILS)
+    if sigils / len(sample) > 0.03:
+        return True
+    # Real English has few tokens containing $ or { ; mangled Hindi is full of them.
+    tokens = sample.split()
+    if tokens:
+        odd = sum(1 for t in tokens if any(ch in t for ch in "${}|"))
+        if odd / len(tokens) > 0.08:
+            return True
+    return False
 
 
 # --------------------------------------------------------------------------- #
@@ -456,11 +633,186 @@ def _script_garbled(rec: dict, text: str) -> bool:
     return any(_is_indic(ch) for ch in text)
 
 
+_ASSET_KEYS = ("diagramAssetId", "mapAssetId", "graphAssetId", "tableAssetId")
+# Board stems name their visual in more ways than `_FIGURE_REF` and pool's
+# `needs_missing_figure` list: "connected ... as shown in figure" (Physics XII
+# 55/1/2 Q17), "Find the area of the shaded region". 0 of the 3,286 served
+# board records carries an asset id (audit 3.6, 2026-09-21).
+_BOARD_FIGURE = re.compile(
+    r"\bshown in (?:the\s+)?(?:adjoining\s+|given\s+|following\s+)?"
+    r"(?:figure|fig\.?|diagram|graph|map|picture)\b|\bshaded region\b", re.I)
+
+# Signatures of a math symbol the extraction dropped or read as another
+# character, each measured on the served board records (2026-09-22, 3,286
+# records; ids are the paper hash and question number):
+#   "(Use = 3·14)", "(Use 3 = 1·732)"  pi or the root sign gone (16 stems carry
+#                   "(Use ...)"; "(Use p = 3·14)" keeps the Symbol font's pi as
+#                   p, which a student reads, and is not matched)
+#   "(a ¹ b)"       the Symbol font's not-equal read as a superscript one
+#                   (f01c7b6f:5, c0791b53:14, c0791b53:3)
+#   "= = ." / "tan A = ;"  a fraction's right side gone (f319c93a:19, f319c93a:34,
+#                   fc5d1667:19, b2736b37:23, b165af61:20)
+#   "c c b b a a"   a1/a2 = b1/b2 = c1/c2 flattened into letter pairs, and
+#                   "q q" for theta over theta (f319c93a:19, 6ab66ce4:28)
+#   "D ABC ~ D PQR" the triangle sign read as D; "Ð A" the angle sign
+#                   (f319c93a:34, 0916a372:17, dedcd4e0:22)
+#   "contains m³ of air"  the quantity before the unit gone (4f618224:30)
+_SYMBOL_LOSS = re.compile("|".join((
+    r"\(Use\s+(?:=|-?\d+\s*=)",
+    r"\S\s¹\s\S",
+    r"=\s*(?:[.;,]|=)(?=\s|$)",
+    r"\b([a-z])\s\1\b.*?\b([a-z])\s\2\b",
+    r"\bD\s?[A-Z]{3}\s*~|~\s*D\s?[A-Z]{3}\b|\b[Ii]n a D\s?[A-Z]{3}\b|Ð\s?[A-Z]\b",
+    r"\bcontains\s+(?:mm|cm|km|m)[²³]",
+)))
+
+# A stem that ends in a colon promises what follows it -- options, items to
+# classify, a list -- and one that did not arrive leaves nothing to answer:
+# "Classify the following items ... Companies Act, 2013 :" (Accountancy XII
+# 67/1/2 Q31, verified). A mark value may follow the colon.
+_ENDS_WITH_COLON = re.compile(r":\s*(?:\d{1,2}\s*)?$")
+
+# A stem that announces a text and questions on it. Not "case study" alone: a
+# section's instructions say it ("Section E consists of 3 case study based
+# questions", run on after SQP Mathematics (Standard) X 2024-25 Q35).
+_ANNOUNCES_QUESTIONS = re.compile(
+    r"\b(?:read the (?:following |given )?(?:passage|extract|source|case|text|poem|paragraph)s?"
+    r"|answer the (?:following )?questions?)\b", re.I)
+# What a question says. Read only on the text after the announcement, and only
+# its last `_CASE_TAIL` characters: a case study's questions follow its text.
+_ASKS = re.compile(
+    r"\?|\b(?:find|calculate|compute|solve|explain|state|name|write|give|identify|describe|"
+    r"determine|show|prove|list|mention|define|compare|evaluate|analy[sz]e|justify|suggest|"
+    r"how|why|what|which|who|whom|whose|when|where|draw|examine|assess|discuss|choose|"
+    r"select|complete|fill|express|obtain|derive|estimate|predict|infer|highlight|elaborate|"
+    r"distinguish|differentiate|classify|interpret|comment|enumerate|outline|illustrate|"
+    r"verify|convert|represent|construct|plot|rewrite|frame|summari[sz]e|translate)\b"
+    # A blank to fill, an assertion to judge, or a numbered sub-question --
+    # "(ii)", "(35.1)" -- is a question too; the text a case study quotes is not
+    # numbered that way, its paragraphs are "(1)", "(2)".
+    r"|_{3,}|\bAssertion\b|\((?:i{1,3}|iv|v|vi{1,3}|\d+\.\d+)\)", re.I)
+_CASE_TAIL = 250
+
+# A board stem needs two words to be a question. The Hindi-medium copy of a
+# bilingual paper arrives with its words dropped and its numbers, units and
+# point labels kept: "21 cm 120° 1 (A) 231 cm² ..." (Mathematics X 430/2/2
+# Q17, verified), ", DE || BC AD = 2.8 cm ..." (430/3/3 Q16), "ABCD AB, BC,
+# CD DA P, Q, R S AOB + COD = 180 .". So a word here has two letters or more
+# and is not all capitals (a point or line label), a unit or a roman numeral.
+# Measured on the 3,286 served board stems (2026-09-22): 278 have fewer than
+# two, and read as those do; "Prime factorisation of 424 is : (A) ..." has
+# four, where counting only words of three letters or more gave it two.
+_WORD = re.compile(r"[^\W\d_]{2,}")
+_NOT_A_WORD = re.compile(r"[ivx]+|[IVX]+|c?m|mm|km|kg|m?[lL]")
+_MIN_WORDS = 2
+
+
+def _has_asset(rec: dict) -> bool:
+    return any(str(rec.get(k) or "").strip() for k in _ASSET_KEYS)
+
+
+def _words_lost(stem: str) -> bool:
+    """Fewer than `_MIN_WORDS` words before the options, or in the whole stem
+    when it has none -- or opens with its labels: "(a) Explain ... (b)
+    Suggest ..." is a question in parts, not options."""
+    options, at, _ = stem_options(stem, other_styles=False)
+    head = stem[:at] if options is not None and at > 0 else stem
+    words = [w for w in _WORD.findall(head) if not w.isupper() and not _NOT_A_WORD.fullmatch(w)]
+    return len(words) < _MIN_WORDS
+
+
+def _legacy_font(text: str) -> bool:
+    """Legacy-font Devanagari anywhere in an English stem.
+
+    `looks_mangled` reads the first 600 characters, and a board paper prints
+    the Hindi copy AFTER the English: Physics XII 55/4/1 Q34 reads cleanly for
+    800 characters, then "(J) {ÛY«wd AmKyU© 6 10⁻⁷ C-m H$m H$moB© ...". So
+    every 300-character window is read."""
+    return any(looks_mangled(text[i:i + 300]) for i in range(0, max(len(text), 1), 300)
+               if len(text[i:i + 300].strip()) >= 60)
+
+
+def _options_missing(rec: dict, stem: str) -> bool:
+    """An objective stem with no options a student could choose from.
+
+    Objective: typed MCQ, ending in a colon, or a 1-mark item worded as an
+    MCQ ("which of the following", "choose the correct option"). A record
+    with parts carries its content there and is not read from its stem. A
+    stem with the whole label set printed has options, whether or not they
+    parse: cbe:q:Science10GK2 "1 (a) Which statement ... (A) ... (D) ..."
+    labels its sub-question too, and whether such options can be read is the
+    MCQ gates' to say, not this one's."""
+    if rec.get("parts") or stem_options(stem)[0] is not None or has_option_labels(stem):
+        return False
+    marks = rec.get("marks") if _is_num(rec.get("marks")) else 1
+    return (rec.get("type") == "mcq" or bool(_ENDS_WITH_COLON.search(stem))
+            or (marks == 1 and bool(_MCQ_LEAD_IN.search(stem))))
+
+
+def _case_without_question(rec: dict, stem: str) -> bool:
+    """A case study, or a stem announcing a text, that asks nothing.
+
+    "Read the following passage carefully : 1 Floods are not new to India ...
+    often there is very little time" (English X c53f84b1 Q1) stops inside the
+    passage; "Rainbow is an arch of colours that is visible in the sky after
+    rain" (Mathematics X 94cb306f Q36) is the case's first line and nothing
+    else. A CBE/SQP item that carries its passage apart, in metadata, is its
+    question and is not read here.
+
+    After an announcement only the last `_CASE_TAIL` characters are read: a
+    passage asks questions of its own ("Who doesn't love to sled and build
+    snowmen ?", English X 7e81f931 Q1). With none, the whole stem is: SQP
+    Geography XII 2022-23 Q17, typed case_study, asks "Which of the following
+    ...?" and ends in its options. A paper in its own script is not read: its
+    questions are not in English (SQP Persian XII 2025-26 Q5)."""
+    if str((rec.get("metadata") or {}).get("passage") or "").strip():
+        return False
+    subject = str(rec.get("subject") or "").strip().lower()
+    if re.split(r"[\s(]", subject, maxsplit=1)[0] in _SUBJECT_SCRIPTS:
+        return False
+    announced = list(_ANNOUNCES_QUESTIONS.finditer(stem))
+    if rec.get("type") != "case_study" and not announced:
+        return False
+    if stem_options(stem)[0] is not None or has_option_labels(stem):
+        return False    # an MCQ asks by its options
+    if not announced:
+        return not _ASKS.search(stem)
+    return not _ASKS.search(stem[announced[-1].end():][-_CASE_TAIL:])
+
+
 def exclusion_reason(rec: dict) -> str | None:
-    """Why this CBE/SQP record cannot be served, or None if it can."""
+    """Why this record cannot be served, or None if it can.
+
+    Every source goes through both halves: board records after `repair_board`;
+    CBE and SQP records raw, `source_reason` before `normalise` and
+    `unanswerable_reason` after it, so that `normalise`'s more specific
+    reasons -- stem-fragment, the MCQ gates -- still name what is wrong with
+    them (SQP Computer Applications X 2024-25 Q20 is a stem-fragment; it
+    also ends "answer the following questions: 3")."""
+    return source_reason(rec) or unanswerable_reason(rec)
+
+
+def unanswerable_reason(rec: dict) -> str | None:
+    """Why a student could not answer this stem as printed (Task 16): a symbol
+    the extraction lost, options that never arrived, a case study that asks
+    nothing."""
+    stem = str(rec.get("stem") or "").strip()
+    if _SYMBOL_LOSS.search(stem):
+        return "symbol-loss"
+    if _options_missing(rec, stem):
+        return "options-missing"
+    if _case_without_question(rec, stem):
+        return "case-study-without-question"
+    return None
+
+
+def source_reason(rec: dict) -> str | None:
+    """The gates read before a CBE/SQP record is normalised. A few read board
+    records only, and say why."""
     meta = rec.get("metadata") or {}
     stem = str(rec.get("stem") or "").strip()
     passage = str(meta.get("passage") or "").strip()
+    board = rec.get("source") == BOARD_SOURCE
     if meta.get("needsFigure"):
         return "figure-unavailable"
     if rec.get("source") == "cbse_question_bank" and rec.get("subject") == "English" and not passage:
@@ -472,12 +824,25 @@ def exclusion_reason(rec: dict) -> str | None:
         return "header-as-stem"
     if len(stem) < _MIN_STEM:
         return "stem-too-short"
-    if _FIGURE_REF.search(stem):
-        return "figure-referenced"
+    if _FIGURE_REF.search(stem) and not _has_asset(rec):
+        return "figure-unavailable" if board else "figure-referenced"
+    if board and (needs_missing_figure(stem) or _BOARD_FIGURE.search(stem)) and not _has_asset(rec):
+        # Board only: pool's list also names a "following table", which CBE and
+        # SQP extract inline, as text (test_a_following_table_is_inline_and_kept);
+        # the web path has refused board stems by this list since it existed.
+        return "figure-unavailable"
     answer = _answer_text(rec)
     if (_vowel_sign_runs(stem) >= _GARBLE_RUNS or _vowel_sign_runs(answer) >= _GARBLE_RUNS
             or _script_garbled(rec, f"{stem} {answer}")):
         return "garbled-script"
+    if board and not _ARTS.search(str(rec.get("subject") or "")) and _legacy_font(stem):
+        # Board only: CBE and SQP language papers are in their own scripts, and
+        # `_script_garbled` already reads them.
+        return "garbled-script"
+    if board and _words_lost(stem):
+        # Board only: CBE and SQP stems are single-language and their fragments
+        # are `_stem_after_strip_reason`'s.
+        return "stem-fragment"
     if not answer:
         return "no-answer"
     if INSTRUCTION.match(_first_answer(rec)):
@@ -510,7 +875,28 @@ def _objective_scheme(rec: dict, options: dict[str, str], letter: str) -> dict:
         document_id=str(old.get("sourceDocumentId") or ""),
         options=options,
     )
-    return scheme.model_dump(mode="json", by_alias=True)
+    out = scheme.model_dump(mode="json", by_alias=True)
+    # The builder names every objective key a CBSE marking scheme. An NCERT
+    # Exemplar key is NCERT's answer from the book (ncert_exemplar_answer), and
+    # relabelled it would read as CBSE's own; every CBE and SQP scheme already
+    # says cbse_marking_scheme, so for them this changes nothing.
+    out["provenance"] = str(old.get("provenance") or out["provenance"])
+    return out
+
+
+def _listed_options(parts: list[dict]) -> dict[str, str] | None:
+    """{'A': '4', ...} from the one part an NCERT Exemplar MCQ carries, whose
+    `options` is a list (corpus/ncert_exemplar.py): 1,583 Exemplar MCQs, all
+    four-option. More than four is not read as A-D."""
+    if len(parts) != 1:
+        return None
+    options = parts[0].get("options")
+    if not isinstance(options, list) or not 2 <= len(options) <= len(LETTERS):
+        return None
+    texts = [str(o).strip() for o in options]
+    if not all(texts):
+        return None
+    return {"ABCD"[i]: t for i, t in enumerate(texts)}
 
 
 # --------------------------------------------------------------------------- #
@@ -620,6 +1006,10 @@ def normalise(rec: dict) -> tuple[dict, str | None]:
     Values that had to be supplied are marked `metadata.<field>Inferred`, so an
     inferred Bloom level is never readable as one CBSE authored.
     """
+    # Imported here, not at the top: mapping imports pool, and pool imports
+    # this module for its stem gates.
+    from ..assessment.mapping import _resolve_bloom, _resolve_difficulty, _resolve_type
+
     r = copy.deepcopy(rec)
     meta = dict(r.get("metadata") or {})
     scheme = r.get("answerScheme") or {}
@@ -684,7 +1074,7 @@ def normalise(rec: dict) -> tuple[dict, str | None]:
         r["stem"] = f"Read the passage below and answer the question that follows.\n\n{passage}\n\n{r['stem']}"
         meta["passageInline"] = True
 
-    in_parts = options_from_parts(r["parts"])
+    in_parts = options_from_parts(r["parts"]) or _listed_options(r["parts"])
     # With option parts, the parts are the options, and only an (A)-(D) stem is
     # held against them. Read in the other styles, the stem's labels are as
     # often a matching list's rows ("Match List I with List II ... a. Kan swar
@@ -786,14 +1176,443 @@ def _mcq_reason(r: dict, in_stem: dict[str, str] | None,
 # composition
 # --------------------------------------------------------------------------- #
 
+# --------------------------------------------------------------------------- #
+# board records: repaired where the repair is certain
+# --------------------------------------------------------------------------- #
+
+# Page furniture a board paper's extraction left in a stem, each measured on
+# the served board records (2026-09-22): "# 14| P a g e" (92 stems), "# 4 of"
+# (26), "666 -11 6 of" (38), paper codes "/CD1BA/22" and "/21/BBCA2" (18),
+# "P.T.O.", "Page 28 of 32"; control characters where spaces were
+# ("Read\x01the\x01following", a493a2f3 Q36).
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]+")
+_BOARD_FURNITURE = (
+    re.compile(r"\s*#\s*\d{1,3}\s*\|\s*P\s*a\s*g\s*e\b"),
+    re.compile(r"\s*\|\s*P\s*a\s*g\s*e\b"),
+    re.compile(r"\s*\bP\.\s?T\.\s?O\.?"),
+    re.compile(r"\s*#\s*\d{1,3}\s+of\b"),
+    re.compile(r"\s*\b666\s+\d{0,4}-\d{1,2}\s+\d{1,3}\s+of\b"),
+    re.compile(r"\s*/[A-Z0-9]{4,6}/\d{2}\b"),
+    re.compile(r"\s*/\d{2}/[A-Z0-9]{4,6}\b"),
+    _PAGE,
+)
+# At the very end only: the paper's series after the last word ("Human
+# Placental Lactogen -11", Biology XII 57/1/1 Q2; "reactance 11-"), a bare
+# "/22", and a page count "... 23 of". "-11" after a word only: "(B) -11" and
+# "x = -11" are values.
+_BOARD_TRAILING = (
+    re.compile(r"(?<=[A-Za-z.?])\s+-\d{2}\s*$"),
+    re.compile(r"\s+\d{1,2}-\s*$"),
+    re.compile(r"\s+/\d{2}\s*$"),
+    re.compile(r"\s+\d{1,3}\s+of\s*$"),
+)
+
+
+def strip_board_furniture(text: str) -> str:
+    """A board stem without the page furniture its extraction left in it.
+
+    Returns the text unchanged, byte for byte, when there is none."""
+    out = _CONTROL.sub(" ", text)
+    for pattern in _BOARD_FURNITURE:
+        out = pattern.sub(" ", out)
+    before = None
+    while before != out:
+        before = out
+        for pattern in _BOARD_TRAILING:
+            out = pattern.sub("", out)
+    out = " ".join(out.split())
+    return text if out == " ".join(text.split()) else out
+
+
+# CBSE's four assertion-reason options, word for word as the Home Science X
+# 2024-25 SQP prints them (cbse:sqp:ClassX_2024_25:Home Science:17). No served
+# board stem prints them (167 of 3,286 are assertion-reason, all without), and
+# no code printed them either.
+ASSERTION_REASON_OPTIONS = {
+    "A": "Both A and R are true and R is the correct explanation of A.",
+    "B": "Both A and R are true but R is not the correct explanation of A.",
+    "C": "A is true but R is false.",
+    "D": "A is false but R is true.",
+}
+_ASSERTION_REASON = re.compile(r"\bAssertion\s*\(A\).*\bReason\s*\(R\)", re.S)
+# The mark printed between a question and its options: "... is called a 1 (A)
+# secant" (Mathematics X 430/2/2 Q12), "... detritus ? 1 (A) ..." (Biology XII
+# 57/5/2 Q9). After a word or a question mark only: "x = 1 (A) ..." is a value.
+_MARK_BEFORE_OPTIONS = re.compile(r"(?<=[A-Za-z?:])\s+[12]$")
+
+
+# The rupee sign, extracted as "<" from every commerce board paper's font:
+# "Salary @ < 15,000 per quarter" (Accountancy XII 4d332115f14c6aeeaa34b438
+# Q25), "Debtors -< 40,000" (be7fd19527d3a0bcac687817 Q22), "a purchase
+# consideration of < 40,00,000. < 20,00,000 were paid" (d4ab284479dbd2fbc3a07c7f
+# Q26), "Amount (<)" in a table's head. Measured on the 3,286 served board
+# records (2026-09-22): 414 "<" before a number in Accountancy, Business
+# Studies and Economics, and not one of them a less-than -- 14 of the 19
+# Accountancy XII records served after relinking printed amounts this way,
+# which on a paper read as "less than". Only before a number (or a blank to
+# fill, "< ______ crore"), and not after a number or a one-letter variable:
+# "Receipts < Payments" (SQP Economics XII 2024-25 Q10) is a less-than, as
+# "x < 5" would be. Commerce papers only: Mathematics X prints "withdraw
+# < 2,000" the same way, but also "f'(x) < 0".
+_COMMERCE_SUBJECTS = frozenset({"accountancy", "business studies", "economics"})
+_RUPEE_READ_AS_LT = re.compile(
+    r"<(?=\s?(?:\d|_{3,}))|(?<=\()<(?=\))"
+    # A Balance Sheet's head, "Liabilities Amount < Assets Amount <" (Accountancy
+    # XII 4d332115f14c6aeeaa34b438 Q25, be7fd19527d3a0bcac687817 Q22).
+    r"|(?<=\bLiabilities Amount )<(?= Assets Amount <)|(?<=\bLiabilities Amount < Assets Amount )<")
+# The amount itself lost, only its sign left: "It had a credit balance of
+# < Pass necessary journal entries" (Accountancy XII d4ab284479dbd2fbc3a07c7f
+# Q26), "The company had a balance of < on the same date" (4d332115f14c6aeeaa34b438
+# Q26), "agreed to pay him < share of goodwill", "Chetan brought < Profit and
+# Loss". After "of", "him" or "brought" a "<" compares nothing.
+_RUPEE_AMOUNT_LOST = re.compile(r"\b(?:of|him|brought)\s?<\s?(?=[^\W\d_])")
+_COMPARED = re.compile(r"(?:\d|(?<![^\W\d_])[^\W\d_])\s?$")
+
+
+def restore_rupee(text: str) -> str:
+    """A commerce stem with its rupee signs, where extraction printed "<"."""
+    def one(m: re.Match) -> str:
+        return m.group(0) if _COMPARED.search(text, 0, m.start()) else "₹"
+    return _RUPEE_READ_AS_LT.sub(one, text)
+
+
+# Everything a student reads or a scorer scores: the stem, the options (inline
+# in the stem, or in the parts), the answer key, and the relink's copy of the
+# options in answerScheme.metadata. A CBE passage is put in front of the stem
+# by `normalise`, so it prints too. This is the GATE's scope, not the repair's
+# (`repair_symbol_font`): a question is refused because a student would see a
+# hole, not because a provenance field carries one.
+_SYMBOL_PRINTED_FIELDS = ("stem", "stemLatex", "parts", "answerScheme")
+PRIVATE_USE_GLYPH = "private-use-glyph"
+
+
+def printed_scheme(scheme: Any) -> Any:
+    """The answer scheme as a scorer reads it: everything but the relink's
+    provenance copy of the keys a conflict withheld (`CONFLICT_HELD`).
+
+    `answerScheme` as a whole is a printed field -- the model answer and the
+    marking points are what a scorer scores -- but one nested key inside it is
+    not. When two official keys disagree the relink serves neither and keeps
+    both on the record (`question_bank._quarantine`, `CONFLICT_HELD`), as a
+    copy of what was removed AS it was removed: `_restore_scheme_symbols`
+    deliberately leaves it raw so a person settling the conflict sees the code
+    point the extractor produced. Reading it here would make the merge refuse
+    a whole question over a field nobody reads, and rewrite the copy it is the
+    point of to keep verbatim. 46 of the 15,605 rows in answer_keys.db carry a
+    private-use character the table cannot name, and a conflicting key is
+    copied verbatim from such a row.
+    """
+    if not isinstance(scheme, dict):
+        return scheme
+    meta = scheme.get("metadata")
+    if not isinstance(meta, dict) or CONFLICT_HELD not in meta:
+        return scheme
+    return {**scheme, "metadata": {k: v for k, v in meta.items() if k != CONFLICT_HELD}}
+
+
+def _strings(value: Any) -> Iterator[str]:
+    """Every string inside a record's field, however deeply nested."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+
+
+def repair_symbol_font(rec: dict) -> tuple[dict, bool, str | None]:
+    """A copy of `rec` with its symbol-font code points restored, whether any
+    were, and the first private-use character the table cannot name in a field
+    that prints.
+
+    The repair runs over EVERY string in the record, not only the printed ones.
+    An option and its key must agree -- cbe:q:Science9PS1 keys "W / ρ g", and a
+    stem repaired without its scheme would be scored against the unrepaired
+    text -- and the field a printed one has to agree with is not always printed
+    itself: 780 served SQP records carry a top-level `metadata.options` map
+    (a different field from the `answerScheme.metadata.options` the scheme
+    holds) and 313 carry `metadata.contentReference`. Repairing the stem and
+    leaving those is the same stem/key disagreement, one field further out.
+
+    The one field the walk skips is the relink's copy of a withheld conflicting
+    key (`CONFLICT_HELD`), exactly as `question_bank._restore_scheme_symbols`
+    skips it: it is provenance, a copy of what was removed as it was removed,
+    and repairing it would destroy the thing it records.
+
+    The GATE is the narrow one (`_SYMBOL_PRINTED_FIELDS` minus that same
+    provenance key, plus the passage): a private-use character the table cannot
+    name costs the record its place only where a student or a scorer would read
+    the hole.
+    """
+    restored = False
+
+    def fix(value: Any) -> Any:
+        nonlocal restored
+        if isinstance(value, str):
+            out = restore_symbol_font(value)
+            restored = restored or out != value
+            return out
+        if isinstance(value, dict):
+            return {k: (v if k == CONFLICT_HELD else fix(v)) for k, v in value.items()}
+        if isinstance(value, list):
+            return [fix(v) for v in value]
+        return value
+
+    r = fix(dict(rec))
+    printed = {k: r.get(k) for k in _SYMBOL_PRINTED_FIELDS}
+    printed["answerScheme"] = printed_scheme(printed["answerScheme"])
+    printed["passage"] = (r.get("metadata") or {}).get("passage")
+    left = next((glyph for text in _strings(printed)
+                 if (glyph := private_use_glyph(text)) is not None), None)
+    return r, restored, left
+
+
+def _board_stem_broken(stem: str) -> bool:
+    return len(stem) < _MIN_STEM or bool(_HEADER.match(stem)) or _words_lost(stem)
+
+
+def repair_board(rec: dict) -> tuple[dict, str | None, list[str], str | None]:
+    """A copy of a verified board record repaired where the repair is certain,
+    the reason it cannot be served if a repair shows one, the repairs made, and
+    the first private-use character the table cannot name in a field that
+    prints.
+
+    The glyph is RETURNED rather than made a reason here, so that `compose` can
+    file it last, after `exclusion_reason` -- as the CBE/SQP path files it
+    after `source_reason`. Filed first it claims records that are out of scope
+    for a more informative reason anyway, and `_merge_excluded.json` is what
+    decides which defects get worked next.
+
+    Options stay inline, "(A) ... (B) ... (C) ... (D) ...", as on every served
+    MCQ: the web PDF reads them only from the stem (pdf.split_stem_and_options)
+    and the phone's inline branch prints the stem as it is. The correct option
+    is the one the relink VERIFIED (answerScheme.metadata.correctOption, Tasks
+    15/151/152), never a label read here: an objective item without it is
+    mcq-answer-unresolved.
+    """
+    r = copy.deepcopy(rec)
+    repairs: list[str] = []
+    # First, so every gate below reads the symbols the paper printed rather
+    # than a font's code points.
+    r, symbols_restored, glyph = repair_symbol_font(r)
+    if symbols_restored:
+        repairs.append("symbol-font-restored")
+    stem = str(r.get("stem") or "")
+    cleaned = strip_board_furniture(stem)
+    if cleaned != stem:
+        repairs.append("page-furniture-stripped")
+        if _board_stem_broken(cleaned):
+            return r, "page-furniture", repairs, glyph
+        stem = cleaned
+    if str(r.get("subject") or "").strip().lower() in _COMMERCE_SUBJECTS:
+        restored = restore_rupee(stem)
+        if restored != stem:
+            repairs.append("rupee-sign-restored")
+            stem = restored
+        if _RUPEE_AMOUNT_LOST.search(stem):
+            return r, "symbol-loss", repairs, glyph
+    scheme = r.get("answerScheme") or {}
+    meta = scheme.setdefault("metadata", {})
+    letter = str(meta.get("correctOption") or "").strip().upper() or None
+    options, at, _ = stem_options(stem, other_styles=False)
+    # Objective as `normalise` infers it: typed MCQ, or a 1-mark short answer.
+    # A 1-mark case study numbering its questions "(i) ... (ii) ... (iii)" is
+    # a question in parts, not options.
+    objective = (r.get("type") == "mcq"
+                 or (r.get("marks") == 1 and r.get("type") in _INFERABLE_TYPES))
+    # stem_options never reads an A-R stem that prints its options: the "(A)" of
+    # "Assertion (A)" comes first, so the labels run A, A, B, C, D. has_option_labels
+    # sees them, and such a stem keeps its own four rather than gaining four more.
+    if options is None and has_option_labels(stem) and objective:
+        # Labels printed that do not parse: as for CBE and SQP in `normalise`,
+        # the MCQ cannot be printed as one. Two MCQs fused into one stem
+        # (Mathematics XII a52469d5f185d77194f532dd Q9 runs on into Q10, each
+        # with its (A)-(D)) print, through pdf.split_stem_and_options, the
+        # SECOND question's options under a letter verified for the first --
+        # the shape whose keys answered a different question (mcq_shape.
+        # has_option_labels). "A) (0, 0) B) ... C ) ..." is refused too. Only
+        # an A-R stem is read here: its four printed options, and a verified
+        # letter for them.
+        from ..assessment.pdf import split_stem_and_options  # reportlab, only when needed
+
+        if not _ASSERTION_REASON.search(stem) or len(split_stem_and_options(stem)[1]) != 4:
+            return r, "mcq-options-unresolved", repairs, glyph
+        if letter not in ASSERTION_REASON_OPTIONS:
+            return r, "mcq-answer-unresolved", repairs, glyph
+    elif options is None and _ASSERTION_REASON.search(stem) and not has_option_labels(stem):
+        if letter not in ASSERTION_REASON_OPTIONS:
+            return r, "mcq-answer-unresolved", repairs, glyph
+        stem = f"{stem.rstrip()} " + " ".join(
+            f"({k}) {v}" for k, v in ASSERTION_REASON_OPTIONS.items())
+        meta["options"] = dict(ASSERTION_REASON_OPTIONS)
+        repairs.append("assertion-reason-options")
+    elif options is not None and objective and letter is None:
+        # An objective item that prints options but has no verified letter has
+        # no answer key to print, whatever its marks (5 served board MCQs are
+        # worth 2) or option count.
+        return r, "mcq-answer-unresolved", repairs, glyph
+    elif options is not None and (letter is not None or (r.get("marks") == 1 and len(options) == 4)):
+        # A lettered list on a multi-mark item with no verified letter is its
+        # parts -- "(a) Explain ... (b) Suggest ..." -- and is left alone.
+        if len(options) < MIN_OPTIONS or not answerable(options):
+            return r, "mcq-options-unresolved", repairs, glyph
+        if letter not in options:
+            return r, "mcq-answer-unresolved", repairs, glyph
+        # Reprinted only to fix something -- lowercase labels, or a mark before
+        # them -- so the other options keep their text as the paper printed it.
+        head = stem[:at].rstrip()
+        bare = _MARK_BEFORE_OPTIONS.sub("", head)
+        if bare != head or stem[at + 1].islower():
+            stem = f"{bare} " + " ".join(f"({k}) {v}" for k, v in options.items())
+            repairs.append("options-inline")
+        if "options" in meta:
+            # The relink's copy ends as the stem did: "D": "Human Placental Lactogen -11".
+            meta["options"] = dict(options)
+    r["stem"] = stem
+    return r, None, repairs, glyph
+
+
+# --------------------------------------------------------------------------- #
+# near-duplicates
+# --------------------------------------------------------------------------- #
+
+# Two stems are one question when their words and numbers overlap this much,
+# and one is the other with words only added or dropped. Measured on the
+# served board records with the CBE and SQP sources (2026-09-22), pairs within
+# one subject and grade: at 0.9 and above the pairs are one question printed
+# twice -- "Which of the following is not a quadratic equation ?" in two papers
+# of one series, extracted with different tails; SQP Tangkhul XII Q27 in
+# 2024-25 and 2025-26, differing in "Page 6 of" -- and at 0.75-0.8 they are
+# different questions: SQP Bharatanatyam XII Q8 asks for Krishna's bow in
+# 2024-25 and Shiva's in 2025-26, with the same options and a different key.
+# Numbers count as words, or "2x+3=7" and "2x+5=7" would be one question.
+#
+# Overlap alone reads words as a set, and misses which word stands where: "a
+# bag contains 5 red, 8 white, 4 green and 7 black balls ... probability that
+# it is not green" and "... not black" share every word, and scored 1.0. So a
+# word swapped for another, or moved, makes two questions whatever the
+# overlap. Word pairs (bigrams) were tried and do not separate them: that pair
+# scores exactly 0.90 on bigrams, and a longer stem with one word swapped
+# scores higher, while real duplicates with a run-on tail (SQP Bharatanatyam
+# XII 2022-23 Q8 and 2023-24 Q7, "... Section B") fall to 0.83. Of the 83
+# pairs at word-set overlap >= 0.9 in those sources, every one whose stems
+# differ only by words added or dropped (tails, page furniture, "also") is
+# still one question.
+NEAR_DUPLICATE_MIN = 0.9
+# Below this many distinct words a stem is too short to call a duplicate by
+# overlap; exact duplicates are still `norm`'s.
+_NEAR_MIN_TOKENS = 6
+_NEAR_STOPWORDS = frozenset({
+    "the", "a", "an", "of", "in", "is", "are", "to", "and", "or", "for", "on", "at",
+    "it", "its", "this", "that", "with", "from", "by", "as", "be"})
+
+
+_POLARITY = frozenset({"not", "no", "never", "except", "incorrect", "false", "cannot",
+                       "none", "neither", "nor"})
+
+
+def _near_words(text: str) -> list[str]:
+    return [t for t in re.findall(r"[^\W_]+", text.lower()) if t not in _NEAR_STOPWORDS]
+
+
+def _words_only_added_or_dropped(a: list[str], b: list[str]) -> bool:
+    """One stem is the other with words added or dropped: none swapped for
+    another word, none moved to another place."""
+    added: set[str] = set()
+    dropped: set[str] = set()
+    for op, i1, i2, j1, j2 in SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op == "replace":
+            return False
+        if op == "equal":
+            continue
+        dropped.update(a[i1:i2])
+        added.update(b[j1:j2])
+    # "is correct" and "is not correct" ask for opposite answers: a negation
+    # added or dropped makes another question (as answer keys agree only with
+    # the same polarity).
+    if (added | dropped) & _POLARITY:
+        return False
+    return not (added & dropped)
+
+
+def near_duplicate_score(a: str, b: str) -> float:
+    """How far two stems read as one question: 0.0 to 1.0.
+
+    The overlap of their words (Jaccard), or 0.0 when a word of one was swapped
+    for another or moved: then they ask different things."""
+    wa, wb = _near_words(a), _near_words(b)
+    return _near_score(wa, frozenset(wa), wb, frozenset(wb))
+
+
+def _near_score(wa: list[str], ta: frozenset[str], wb: list[str], tb: frozenset[str]) -> float:
+    if not ta or not tb:
+        return 0.0
+    overlap = len(ta & tb) / len(ta | tb)
+    if overlap >= NEAR_DUPLICATE_MIN and not _words_only_added_or_dropped(wa, wb):
+        return 0.0
+    return overlap
+
+
+class _NearDuplicates:
+    """Stems already served, by subject and grade, compared by `near_duplicate_score`.
+
+    Only sets of comparable size are compared: two sets at Jaccard >= 0.9 have
+    sizes within 0.9 of each other."""
+
+    def __init__(self) -> None:
+        self._seen: dict[tuple, list[tuple[list[str], frozenset[str]]]] = {}
+
+    def is_duplicate(self, key: tuple, stem: str) -> bool:
+        words = _near_words(stem)
+        tokens = frozenset(words)
+        if len(tokens) < _NEAR_MIN_TOKENS:
+            return False
+        for other_words, other in self._seen.get(key, ()):
+            small, large = sorted((len(tokens), len(other)))
+            if small < NEAR_DUPLICATE_MIN * large:
+                continue
+            if _near_score(words, tokens, other_words, other) >= NEAR_DUPLICATE_MIN:
+                return True
+        return False
+
+    def add(self, key: tuple, stem: str) -> None:
+        words = _near_words(stem)
+        tokens = frozenset(words)
+        if len(tokens) >= _NEAR_MIN_TOKENS:
+            self._seen.setdefault(key, []).append((words, tokens))
+
+
 @dataclass
 class ComposeResult:
     questions: list[dict]
     excluded: list[dict] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)
-    # Board records excluded as no-verified-key, whole: `excluded` keeps 200
-    # characters of a stem, and these must survive to be relinked again.
+    # Board records excluded, whole: `excluded` keeps 200 characters of a stem,
+    # and these must survive to be relinked, or repaired, and served again.
     withheld: list[dict] = field(default_factory=list)
+    # Repairs made to the records served: page-furniture-stripped,
+    # rupee-sign-restored, options-inline, assertion-reason-options (board
+    # records only), and symbol-font-restored (every source).
+    repairs: dict[str, int] = field(default_factory=dict)
+
+
+def unallocated_marks_reason(rec: dict) -> str | None:
+    """`SCHEME_MARKS_UNALLOCATED` when the record's key allocates nothing.
+
+    A key that lists its value points but gives every one 0 marks reads, in
+    the printed answer key, as "[0m]" against each point: PRD rule Q1's "no
+    answer key, no question" applied to what the key actually says. A key
+    that allocates SOME marks is kept as the paper printed it -- only "all
+    points at zero, on a question worth marks" is refused."""
+    scheme = rec.get("answerScheme") or {}
+    points = scheme.get("markingPoints") or []
+    if not points or not (rec.get("marks") or 0):
+        return None
+    if any((p.get("marks") or 0) > 0 for p in points):
+        return None
+    return SCHEME_MARKS_UNALLOCATED
 
 
 def _excluded(rec: dict, reason: str) -> dict:
@@ -864,8 +1683,10 @@ def hold(kept: list[dict], withheld: list[dict]) -> list[dict]:
 
 WITHHELD_NAME = "board_withheld.json"
 WITHHELD_ABOUT = (
-    "Board records the merge withheld as no-verified-key, kept WHOLE so a later "
-    "relink can re-attach a verified key and the next merge serve them again. "
+    "Board records the merge withheld -- no-verified-key, or not answerable as "
+    "printed (see _merge_excluded.json for each one's reason) -- kept WHOLE and "
+    "unrepaired so a later relink or repair can bring them back and the next "
+    "merge serve them again. "
     "merge_question_banks.py and enrich_question_bank.py both read this file "
     "back; a run adds a record to it or replaces one by id, and none drops one.")
 
@@ -888,21 +1709,36 @@ def write_withheld(path: Path, records: list[dict]) -> None:
 
 
 def compose(served: list[dict], cbe: list[dict], sqp: list[dict],
-            held: list[dict] = ()) -> ComposeResult:
+            held: list[dict] = (), exemplar: list[dict] = ()) -> ComposeResult:
     """Board records from `served` and then `held` (the withheld ones an
     earlier run kept, where `served` has no record of that id), then CBE,
-    then SQP.
+    then SQP, then NCERT Exemplar.
+
+    Exemplar records go through exactly the gates CBE and SQP records do; they
+    come last so that where an Exemplar item asks what a CBSE paper already
+    asks, the CBSE copy is the one served.
 
     Non-board rows already in `served` are ignored and rebuilt from their source
     files, so running the merge twice gives the same bank. A normalised record
     that still breaks the contract raises ContractError and nothing is written.
+
+    A verified board record is repaired (`repair_board`) and then gated like
+    every other record (`exclusion_reason`, then exact and near duplicates).
+    Every board record not served -- no-verified-key or any other reason -- is
+    returned whole, unrepaired, in `withheld`.
+
+    Near-duplicates keep the record seen first, and the order is the rule
+    "keep the one with a verified scheme": verified board records come first,
+    and nothing else here carries the relink's verified stamp.
     """
     out: list[dict] = []
     excluded: list[dict] = []
     withheld: list[dict] = []
+    repairs: dict[str, int] = {}
     seen_ids: set[str] = set()
     seen_stems: set[tuple] = set()
-    counts = {"board": 0, "cbe": 0, "sqp": 0}
+    near = _NearDuplicates()
+    counts = {"board": 0, "cbe": 0, "sqp": 0, "exemplar": 0}
 
     board = [r for r in served if r.get("source") == BOARD_SOURCE]
     in_served = {r.get("id") for r in board}
@@ -912,32 +1748,80 @@ def compose(served: list[dict], cbe: list[dict], sqp: list[dict],
             excluded.append(_excluded(rec, NO_VERIFIED_KEY))
             withheld.append(rec)
             continue
-        errors = contract_errors(rec)
+        fixed, reason, made, glyph = repair_board(rec)
+        reason = reason or exclusion_reason(fixed) or unallocated_marks_reason(fixed)
+        # Last, as on the CBE/SQP path below: a record already out of scope for
+        # a more informative reason keeps that reason.
+        if reason is None and glyph is not None:
+            reason = PRIVATE_USE_GLYPH
+        group = (rec.get("subject"), rec.get("grade"))
+        key = (*group, norm(fixed["stem"]))
+        if reason is None and (key in seen_stems or near.is_duplicate(group, fixed["stem"])):
+            reason = "duplicate-stem"
+        if reason:
+            excluded.append(_excluded(rec, reason))
+            withheld.append(rec)
+            continue
+        errors = contract_errors(fixed)
         if errors:
             raise ContractError(str(rec.get("id")), errors)
-        out.append(rec)
-        seen_ids.add(rec["id"])
-        seen_stems.add((rec.get("subject"), rec.get("grade"), norm(rec.get("stem", ""))))
+        out.append(fixed)
+        seen_ids.add(fixed["id"])
+        # Both spellings: a CBE/SQP copy of the stem as the paper printed it is
+        # the same question as the repaired one.
+        seen_stems.update({key, (*group, norm(rec.get("stem", "")))})
+        near.add(group, fixed["stem"])
         counts["board"] += 1
+        for name in made:
+            repairs[name] = repairs.get(name, 0) + 1
 
-    for label, rows in (("cbe", cbe), ("sqp", sqp)):
+    for label, rows in (("cbe", cbe), ("sqp", sqp), ("exemplar", exemplar)):
         runs_on = _runs_on(rows)
         for raw in rows:
             if raw.get("id") in seen_ids:
                 excluded.append(_excluded(raw, "duplicate-id"))
                 continue
-            reason = exclusion_reason(raw)
+            # Before the gates, as for a board record: the symbols are what the
+            # paper printed, so every gate below reads the repaired text.
+            raw, symbols_restored, glyph = repair_symbol_font(raw)
+            # The glyph gate runs AFTER source_reason, not before it. Placed
+            # first it claimed records that were already out of scope for a
+            # more informative reason: of the 23 it excluded at 64dd21a, 12
+            # were answer-bleed (9), figure-referenced (2) or garbled-script
+            # (1) as well, and the --check tally read "17 SQP + 6 CBE lost to
+            # private-use-glyph" -- about twice this change's real cost, with
+            # a dozen answer-bleed records hidden behind the wrong label.
+            reason = source_reason(raw)
             if reason:
                 excluded.append(_excluded(raw, reason))
                 continue
             rec, reason = normalise(raw)
             if reason is None and raw.get("id") in runs_on:
                 reason = "stem-runs-on"
+            # Read on the normalised record: its stem is stripped of the
+            # furniture -- a next section's heading and passage, run on after
+            # SQP Home Science X 2024-25 Q14's options -- and its options are
+            # inline.
+            reason = reason or unanswerable_reason(rec)
+            # Last, on the normalised record and its normalised scheme: the
+            # relink that runs after the merge applies the same rule, so what
+            # is served here keeps its key there.
+            if reason is None and builder_key_reason(rec) is not None:
+                reason = KEY_REJECTED
+            reason = reason or unallocated_marks_reason(rec)
+            # Last, as on the board path: a record already out of scope for a
+            # more informative reason keeps that reason. Filed after
+            # `source_reason` alone, the glyph claimed three SQP records that
+            # also span two sections.
+            if reason is None and glyph is not None:
+                reason = PRIVATE_USE_GLYPH
             if reason:
                 excluded.append(_excluded(raw, reason))
                 continue
-            key = (rec.get("subject"), rec.get("grade"), norm(raw.get("stem", "")))
-            if key in seen_stems:
+            group = (rec.get("subject"), rec.get("grade"))
+            stem = str(raw.get("stem") or "")
+            key = (*group, norm(stem))
+            if key in seen_stems or near.is_duplicate(group, stem):
                 excluded.append(_excluded(raw, "duplicate-stem"))
                 continue
             errors = contract_errors(rec)
@@ -946,9 +1830,133 @@ def compose(served: list[dict], cbe: list[dict], sqp: list[dict],
             out.append(rec)
             seen_ids.add(rec["id"])
             seen_stems.add(key)
+            near.add(group, stem)
             counts[label] += 1
+            if symbols_restored:
+                repairs["symbol-font-restored"] = repairs.get("symbol-font-restored", 0) + 1
 
-    return ComposeResult(questions=out, excluded=excluded, counts=counts, withheld=withheld)
+    return ComposeResult(questions=out, excluded=excluded, counts=counts, withheld=withheld,
+                         repairs=repairs)
+
+
+def _chapter_key(name: Any) -> str:
+    """A chapter name as it compares: "Statistics & Probability" and
+    "Statistics and Probability" are one chapter, as are "Number systems" and
+    "Number Systems"."""
+    return " ".join(re.findall(r"[a-z0-9]+", str(name or "").lower().replace("&", " and ")))
+
+
+# CBSE's learning-ladder content codes, as the CBE item banks print them:
+# "10A2b" and "6N1e" (Mathematics), "9.1.6" (Science), "ENG9.5" (English).
+# The same shape tests/test_catalog_chapters.py asserts no chapter list holds.
+# Only an id of this shape has a strand to fall back on: `coarse_code` was
+# written for these codes and degenerates for anything else --
+# coarse_code("algebra"), coarse_code("acids-bases-salts") are both "A" -- so
+# two unrelated slug-shaped ids would share one strand pool, and a pool that
+# names exactly one chapter resolves every id in it to that chapter. Questions
+# filed under a chapter they do not belong to, with no signal, is the wrong
+# answer shipped silently. Every one of the 104 distinct unknown ids in the
+# pre-resolution bank is code-shaped today; one renamed syllabus id or one
+# taxonomy id leaking into `chapterIds` is all it would take.
+CONTENT_CODE = re.compile(r"(?i)^(?:eng)?\d{1,2}(?:[a-z]\d[a-z]?|(?:\.\d+)+)$")
+
+
+def _strand_chapters(records: list[dict], chapters: dict[tuple[str, int], dict[str, str]],
+                     by_name: dict[tuple[str, int], dict[str, str]],
+                     ) -> dict[tuple[tuple[str, int], str], str]:
+    """(subject, grade, CBE strand) -> the syllabus chapter its records name.
+
+    CBSE issues a content code per strand ("10A2b", "10A4a" are both the 10A
+    strand) and prints the strand's name on the records that carry a topic:
+    every 10A record that has one says "Algebra". So a coded record with no
+    name of its own takes the name its strand's siblings carry. A strand whose
+    records name two different chapters is left out -- it names neither. An id
+    that is not a content code (`CONTENT_CODE`) has no strand and is skipped.
+    """
+    from ..assessment.topic_mapper import coarse_code
+
+    found: dict[tuple[tuple[str, int], str], set[str]] = {}
+    for rec in records:
+        group = (rec.get("subject"), rec.get("grade"))
+        known = chapters.get(group)
+        if not known:
+            continue
+        for cid in rec.get("chapterIds") or []:
+            if cid in known or not CONTENT_CODE.match(str(cid)):
+                continue
+            for name in (rec.get("topic"), (rec.get("tags") or [None])[0]):
+                chapter = by_name[group].get(_chapter_key(name)) if name else None
+                if chapter:
+                    found.setdefault((group, coarse_code(cid)), set()).add(chapter)
+                    break
+    return {key: next(iter(names)) for key, names in found.items() if len(names) == 1}
+
+
+def resolve_chapter_ids(records: list[dict], chapters: dict[tuple[str, int], dict[str, str]],
+                        taxonomy_names: dict[str, str] | None = None,
+                        ) -> tuple[list[dict], dict[str, int]]:
+    """The records with every chapter id a teacher can be offered, and how many
+    ids were resolved and how many dropped.
+
+    `chapters` is {(subject, grade): {chapter id: name}} from the CBSE syllabus
+    files; `taxonomy_names` is {taxonomy chapter id: name} from the NCERT
+    taxonomy trees, for the record's `taxonomyChapterId` (Task 703's tagger).
+
+    A record whose chapter id the syllabus does not know carries a raw CBE
+    content code -- "10A2b", "9.1.6" -- which the chapter tagger could not
+    place. Both chapter pickers name a chapter by what its questions carry
+    (the web's catalog route titles the id itself, "10A2B"; the phone takes
+    the first tag), so such a code is printed to a teacher as a chapter, and
+    the same chapter is then listed several times: Mathematics 10 listed
+    "Trigonometry" three times and 17 chapters against the syllabus's 7
+    (measured at f90f42c).
+
+    So each unknown id is resolved to the syllabus chapter its own names give
+    -- CBSE's topic, the record's first tag, the taxonomy chapter, then, for a
+    content-coded id only, its strand's name (`_strand_chapters`) -- and
+    dropped when none of them names one. Dropped, the question keeps every
+    other field and is still served and searchable; it is only not offered
+    under a chapter, which is what a raw code was doing anyway. A subject with
+    no syllabus file (Home Science, the
+    SQP arts subjects) has nothing to check against and is left alone.
+    """
+    from ..assessment.topic_mapper import coarse_code
+
+    taxonomy_names = taxonomy_names or {}
+    by_name = {group: {_chapter_key(name): cid for cid, name in ids.items()}
+               for group, ids in chapters.items()}
+    strands = _strand_chapters(records, chapters, by_name)
+    counts = {"resolved": 0, "dropped": 0}
+    out: list[dict] = []
+    for rec in records:
+        group = (rec.get("subject"), rec.get("grade"))
+        known = chapters.get(group)
+        if not known or not rec.get("chapterIds"):
+            out.append(rec)
+            continue
+        resolved: list[str] = []
+        for cid in rec["chapterIds"]:
+            if cid in known:
+                chapter = cid
+            else:
+                names = [rec.get("topic"), (rec.get("tags") or [None])[0],
+                         taxonomy_names.get(rec.get("taxonomyChapterId"))]
+                strand = (strands.get((group, coarse_code(cid)))
+                          if CONTENT_CODE.match(str(cid)) else None)
+                chapter = next(
+                    (by_name[group][_chapter_key(n)] for n in names
+                     if n and _chapter_key(n) in by_name[group]),
+                    strand)
+                counts["resolved" if chapter else "dropped"] += 1
+            if chapter and chapter not in resolved:
+                resolved.append(chapter)
+        if resolved == list(rec["chapterIds"]):
+            out.append(rec)
+            continue
+        rec = dict(rec)
+        rec["chapterIds"] = resolved
+        out.append(rec)
+    return out, counts
 
 
 def apply_chapter_names(records: list[dict],

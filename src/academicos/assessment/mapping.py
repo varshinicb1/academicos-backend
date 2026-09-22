@@ -139,6 +139,13 @@ def to_question_schema(pq: PoolQuestion) -> QuestionSchema:
         created_at=now,
         updated_at=now,
     )
+    # Say which values were supplied rather than read, as bank_merge.normalise
+    # does: the difficulty always comes from marks, and the Bloom level is the
+    # "understand" default when extraction found none. selection's tier
+    # signals ignore a supplied value instead of ranking on it.
+    schema.metadata["difficultyInferred"] = True
+    if not q.cognitive:
+        schema.metadata["bloomInferred"] = True
     if pq.has_answer:
         # The official CBSE marking scheme was found for this paper — build the
         # real scheme instead of leaving the placeholder above, so the teacher

@@ -87,6 +87,7 @@ ROUTE_POLICY: dict[tuple[str, str], Policy] = {
     ("GET", "/v1/questions/{question_id}/scheme"): _p(API_KEY),
     ("GET", "/v1/subtopics/{subtopic_id}/questions"): _p(API_KEY),
     ("GET", "/v1/facets"): _p(API_KEY),
+    ("GET", "/v1/coverage"): _p(API_KEY, "aggregate answer-key coverage; no question text crosses it"),
 
     # ---- assessment/auth_routes.py ----
     ("POST", "/api/v1/auth/register"): _p(PUBLIC, "needs an invite code or the bootstrap key (Task 301)"),

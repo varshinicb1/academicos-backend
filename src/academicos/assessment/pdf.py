@@ -159,10 +159,60 @@ _PDF_MATH = (
     ("∠", "angle "), ("⇒", "=>"), ("⟹", "=>"), ("≠", "!="),
     ("≥", ">="), ("≤", "<="), ("∈", "in"), ("∞", "infinity"),
     ("∫", "integral"),
+    # DOT OPERATOR (U+22C5): Segoe UI has no glyph for it, so it printed as a
+    # notdef box, while MIDDLE DOT (U+00B7) draws the same mark and is Latin-1.
+    # The papers use it for both a decimal point and a product -- Biology XII
+    # 784bd959 Q27's "2⋅4 g/litre" -- so the mark is kept, not read.
+    ("⋅", "·"),
     ("′", "'"), ("θ", "theta"), ("π", "pi"), ("⃗", ""),
     ("̂", ""), ("₹", "Rs."), ("…", "..."),
     ("ଶ", "2"),        # an OCR artifact standing in for a superscript 2
     ("𝛼", "alpha"), ("𝜃", "theta"), ("𝜋", "pi"),
+    # Every remaining value of `symbol_font.SYMBOL` that the registered font
+    # draws as a notdef box, measured by rendering the whole table and reading
+    # it back (tests/test_assessment_pdf.py::
+    # test_every_symbol_the_repair_can_restore_reaches_the_page). The repair
+    # covers these codes, so it WILL hand the renderer these characters the
+    # day a source uses one -- 0x40 alone is already 18 occurrences across 7
+    # served records -- and a repaired symbol that prints as a box is the hole
+    # the repair set out to close, moved one stage later.
+    ("≅", "congruent"), ("∼", "~"), ("∪", "union"), ("∀", "for all "),
+    ("∃", "there exists "), ("∋", "contains"), ("∉", "not in"), ("∅", "empty set"),
+    ("⊥", "perpendicular"), ("∝", "proportional to"), ("∗", "*"), ("∇", "nabla"),
+    ("∧", "and"), ("∨", "or"), ("⊂", "subset of"), ("⊃", "superset of"),
+    ("⊄", "not a subset of"), ("⊆", "subset of or equal to"),
+    ("⊇", "superset of or equal to"), ("⊕", "(+)"), ("⊗", "(x)"),
+    ("〈", "<"), ("〉", ">"),   # Symbol 0xE1/0xF1 angle brackets
+    ("⇐", "<=="), ("⇔", "<=>"), ("⇑", "up"), ("⇓", "down"),
+    ("ℵ", "aleph"), ("ℑ", "Im"), ("ℜ", "Re"), ("℘", "P"),
+    ("↵", ""),         # Symbol 0xBF: a line break in the source, not content
+    # And every other non-ASCII character the served bank holds that the font
+    # cannot draw, from the same measurement over the bank itself.
+    ("ℎ", "h"),        # U+210E PLANCK CONSTANT, an italic h in "V = πr2ℎ"
+    # U+2218 RING OPERATOR after a number is a degree sign, not composition:
+    # SQP Mathematics X (Basic) 2024-25 Q13 prints "cos 60∘".
+    ("∘", "°"),
+    ("∛", "cbrt"), ("∜", "4th root "),
+    ("∥", "||"),
+    # U+2551 BOX DRAWINGS DOUBLE VERTICAL for "is parallel to": cbe:q:Maths9IM7
+    # prints "TS║QR". U+27D8 LARGE UP TACK for perpendicular: cbe:q:Maths10ASR11
+    # prints "QS ⟘ PR". U+2A6D CONGRUENT WITH DOT ABOVE for congruent: SQP
+    # Mathematics X (Basic) Q29 prints "𝛥𝑂𝐴𝑃⩭𝛥𝑂𝐵𝑃".
+    ("║", "||"), ("⟘", "perpendicular"), ("⩭", "congruent"),
+    ("△", "triangle "),
+    # Styled Greek outside the Latin-only Mathematical Alphanumeric range
+    # `_demathify` covers. The capital delta keeps its plain code point so the
+    # triangle/change-in rule at the end of `pdf_safe` still reads it.
+    ("𝛥", "Δ"), ("𝛴", "Σ"), ("𝛽", "β"), ("𝜀", "ε"), ("𝜇", "μ"),
+    ("𝜎", "σ"), ("𝜔", "ω"), ("𝝅", "pi"),
+    # Fullwidth forms, from a CJK font substitution in the SQP Mathematics X
+    # 2024-25 marking schemes: "（𝑥-10)(𝑥-8）=0" (Standard VIC Q27), "FBD ～ DEF".
+    ("（", "("), ("）", ")"), ("～", "~"),
+    # U+571F, the CJK ideograph for "earth", from the same substitution: it
+    # stands where a plus-minus sign belongs -- "8 - x =土4 => x = 4, 12"
+    # (Standard Q23) and "= 土 1/(cosθ - sinθ)" (Q29), both plus-minus in
+    # context and nowhere near any CJK text.
+    ("土", "±"),
 )
 # Symbol-font glyph references left by the source PDFs' OCR: no defined
 # meaning, so dropped rather than guessed.

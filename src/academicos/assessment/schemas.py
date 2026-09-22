@@ -155,7 +155,9 @@ class AnswerSchemeSchema(Camel):
     # Which official scheme this came from, if any. Without this a consumer
     # cannot tell an official CBSE value-point scheme from an empty
     # placeholder, and two thirds of the bank is the latter.
-    provenance: str = "none"          # "none" | "cbse_marking_scheme" | "teacher"
+    # "ncert_exemplar_answer": NCERT's own answer from an Exemplar book's
+    # answers file -- official, but not a CBSE value-point marking scheme.
+    provenance: str = "none"          # "none" | "cbse_marking_scheme" | "ncert_exemplar_answer" | "teacher"
     source_paper_code: str = ""        # e.g. "31/1/1"
     source_document_id: str = ""
 
@@ -248,6 +250,17 @@ class QuestionSchema(Camel):
     review_state: ReviewState = "published"
     # Set instead of deleting when a curriculum revision retires a question.
     superseded_by: Optional[str] = None
+
+    # -- taxonomy tags (academicos.syllabus.tagger) --------------------------
+    # Ids from academicos-data/syllabus/taxonomy (the NCERT textbook headings,
+    # classes 6-10). Written only where the tagger's confidence clears the
+    # gold-set threshold; below it they stay empty and the question is in
+    # taxonomy/review_queue.json. Optional: most banks do not carry them yet.
+    taxonomy_chapter_id: Optional[str] = None
+    topic_ids: list[str] = Field(default_factory=list)
+    subtopic_ids: list[str] = Field(default_factory=list)
+    tag_confidence: dict[str, Optional[float]] = Field(default_factory=dict)
+    tag_method: Optional[str] = None
 
 
 class QuestionSearchParams(Camel):
@@ -542,14 +555,25 @@ class GeneratedPaper(Camel):
     metadata: PaperMetadataSchema
     set_label: Optional[str] = None
     sets: list[GeneratedPaper] = Field(default_factory=list)
-    # About the request that made this paper, not stored with it: e.g. two
-    # hand-picked questions that look like the same question. Empty on a
-    # stored paper.
+    # About the request that made this paper, not stored with it: the
+    # optimizer's warnings (a CBQ share under target, "tiers unavailable for
+    # this subject", a short paper), and two hand-picked questions that look
+    # like the same question. Empty on a stored paper.
     warnings: list[str] = Field(default_factory=list)
     # The pairs those warnings name, as [earlier id, later id], so a client
     # can offer "swap one" on the later question without parsing ids back out
     # of the sentence. Empty on a stored paper.
     similar_pairs: list[list[str]] = Field(default_factory=list)
+    # Per set label, how many printed questions (OR alternatives included) the
+    # set shares with an earlier set: 0 unless the pool ran out of alternatives.
+    set_overlap: dict[str, int] = Field(default_factory=dict)
+    # The competency-based share of the printed questions and whether it meets
+    # the blueprint's target (CBSE: at least 50%). None on a paper stored before.
+    competency_share: Optional[float] = None
+    competency_target_met: Optional[bool] = None
+    # False when the subject's questions carry no difficulty or Bloom signal a
+    # tier could act on (selection.tier_signals). None where no optimizer ran.
+    tiers_available: Optional[bool] = None
 
 
 class QuickPaperRequest(Camel):
