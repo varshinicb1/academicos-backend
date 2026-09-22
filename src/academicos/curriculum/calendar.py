@@ -20,6 +20,7 @@ representations stay separate; only the marks-weightage idea is shared.
 """
 from __future__ import annotations
 
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Optional
@@ -239,6 +240,83 @@ def working_days_for_year(store: CurriculumStore, academic_year_id: str) -> Work
     )
 
 
+# --------------------------------------------------------------------- #
+# Teaching slots: which real periods of the year a subject gets. One rule,
+# shared by the teaching-time budget below and by scheduling.py (placing,
+# PUSH), so the budget can never promise periods the
+# scheduler does not have. Until 2026-09-22 the two used different numbers:
+# the budget was periods_per_week x calendar weeks (264 for a 6-period
+# subject) while the scheduler had 220 real slots once alternate Saturdays
+# and breaks came off -- Social Science ended the year with 35 of 193
+# subtopics undated.
+# --------------------------------------------------------------------- #
+
+def subject_teaching_slots(working_days: list[date], periods_per_week: int,
+                           periods_by_weekday: Optional[dict[int, int]] = None) -> list[date]:
+    """One entry per real teaching period, in date order; a day with a
+    double period appears twice.
+
+    With `periods_by_weekday` (the school's SubjectTimetableSlot rows,
+    counted per weekday: {Mon: 2, Tue: 1, ...}), every working day on a
+    timetable weekday contributes that many periods -- the school's actual
+    timetable. Until 2026-09-22 the timetable was reduced to a set of
+    weekdays, so a Monday double period became one lesson and Mathematics'
+    6 periods a week became 5.
+
+    Without it (no timetable entered for this subject), the deterministic
+    fallback: group the working days into ISO weeks and take the first
+    `periods_per_week` days of each, one period a day. Still a documented
+    simplification, not a claim to reproduce a school's real timetable."""
+    if periods_by_weekday:
+        return [d for d in working_days for _ in range(periods_by_weekday.get(d.weekday(), 0))]
+    by_week: dict[tuple[int, int], list[date]] = defaultdict(list)
+    for d in working_days:
+        iso_year, iso_week, _ = d.isocalendar()
+        by_week[(iso_year, iso_week)].append(d)
+    selected: list[date] = []
+    for key in sorted(by_week):
+        selected.extend(sorted(by_week[key])[:periods_per_week])
+    return selected
+
+
+def timetable_periods_by_weekday(store: CurriculumStore, academic_year_id: str,
+                                 book_id: str) -> dict[int, int]:
+    """{weekday: periods} from this book's subject's timetable; empty when
+    the school has not entered one."""
+    subject = store.subject_name_for_book(book_id)
+    if subject is None:
+        return {}
+    return dict(Counter(s.day_of_week for s in store.timetable_slots_for_subject(academic_year_id, subject)))
+
+
+def teaching_slots_for_book(store: CurriculumStore, academic_year_id: str, book_id: str,
+                            periods_per_week: int) -> list[date]:
+    """subject_teaching_slots() over the year's real working days and this
+    book's subject's timetable."""
+    wd = working_days_for_year(store, academic_year_id)
+    return subject_teaching_slots([date.fromisoformat(s) for s in wd.dates], periods_per_week,
+                                  timetable_periods_by_weekday(store, academic_year_id, book_id) or None)
+
+
+def _largest_remainder(total: int, weights: list[float]) -> list[int]:
+    """Splits `total` into integers proportional to `weights` that sum to
+    `total` exactly. Equal weights when every weight is zero."""
+    if not weights or total <= 0:
+        return [0] * len(weights)
+    if sum(weights) <= 0:
+        weights = [1.0] * len(weights)
+    wsum = sum(weights)
+    raw = [total * w / wsum for w in weights]
+    out = [int(r) for r in raw]
+    by_fraction = sorted(range(len(raw)), key=lambda i: raw[i] - out[i], reverse=True)
+    for i in by_fraction[:total - sum(out)]:
+        out[i] += 1
+    return out
+
+
+COMPUTED_ESTIMATE_METHOD = "marks_weightage_proportional"
+
+
 @dataclass(frozen=True)
 class TeachingTimeComputationResult:
     academic_year_id: str
@@ -246,46 +324,56 @@ class TeachingTimeComputationResult:
     periods_per_week: int
     period_minutes: int
     calendar_weeks: int
-    total_subject_periods: int
+    total_subject_periods: int          # the budget: real teaching periods this year
     total_instructional_minutes: int
     units_skipped_no_subtopics: tuple[str, ...]
-    estimates: tuple[TeachingTimeEstimate, ...]
+    estimates: tuple[TeachingTimeEstimate, ...]   # created (or recomputed) by this run
+    periods_allocated: int = 0          # every estimate this book's subtopics now hold
+    periods_short: int = 0              # allocated beyond the budget: the syllabus is bigger than the year
+
+    @property
+    def fits_in_year(self) -> bool:
+        return self.periods_short == 0
 
 
 def compute_teaching_time_estimates(
     store: CurriculumStore, *, academic_year_id: str, book_id: str, periods_per_week: int,
-    approved_by: Optional[str] = None,
+    approved_by: Optional[str] = None, recompute: bool = False,
 ) -> TeachingTimeComputationResult:
-    """Distributes a subject's real, calendar-grounded instructional time
-    across its real Subtopics, proportional to each Unit's real CBSE
-    marks-weightage (same signal a human HOD uses, and the same one
-    syllabus/timetable.py already applies at Unit level -- applied here to
-    curriculum_store's live Unit/Chapter/Topic/Subtopic hierarchy instead).
+    """Distributes a subject's real teaching periods for the year across its
+    real Subtopics, weighted by each Unit's real CBSE marks (same signal a
+    human HOD uses, and the one syllabus/timetable.py applies at Unit level).
 
-    `periods_per_week` is the subject's own weekly period count (e.g.
-    "Science gets 6 periods a week") -- a real per-school scheduling
-    decision this module doesn't yet persist as its own entity (no
-    `SubjectPeriodAllocation` table exists), so it's taken as an explicit
-    argument, same as syllabus/timetable.py's own `periods_per_week` param.
-    Documented here rather than silently assumed.
+    The budget is the number of real teaching periods the subject has this
+    year -- teaching_slots_for_book(): the calendar's working days (after
+    weekly offs, alternate Saturdays and every closure) x the subject's
+    periods on those days. It used to be periods_per_week x calendar weeks,
+    which ignored holidays: 264 periods for a 6-period subject whose year
+    really holds 220. `periods_per_week` still decides the no-timetable
+    fallback; with a timetable the timetable decides, exactly as it does in
+    scheduling.
 
-    `calendar_weeks` (the multiplier) comes from the real academic year's
-    date span (ceil(days/7)) rather than the raw working-day count: a
-    school's stated "N periods per week" already presumes a normal week's
-    shape, so the correct multiplier is how many such weeks the year spans,
-    not the smaller raw teaching-day count once holidays are subtracted
-    (that figure -- working_days_for_year() -- is the correct answer to a
-    *different* question, "how many real teaching days exist this year",
-    and is exposed separately rather than folded into this estimate through
-    a shakier formula).
+    The split is exact. Every subtopic gets one period (it cannot be taught
+    in none), and the rest of the budget goes to units by marks and evenly
+    across a unit's subtopics, all by largest remainder -- so the stored
+    periods sum to the budget, never above it. Until 2026-09-22 each
+    subtopic's minutes were round()-ed to periods on their own: Social
+    Science's estimates summed to 323 periods over a 288 budget. The one
+    case the sum exceeds the budget is a syllabus with more subtopics than
+    the year has periods; `periods_short` says by how much, rather than
+    quietly dropping subtopics.
 
-    Within a Unit, real CBSE curriculum only weights at unit granularity
-    (confirmed: academicos-data/syllabus/*.json carries marks per unit, not
-    per chapter/topic/subtopic) -- so a unit's periods are split evenly
-    across its subtopics, the same "no finer real signal exists, don't
-    fabricate one" stance seed_cbse10.py already takes for chapters without
-    an explicit list.
-    """
+    Idempotent per subtopic: an existing estimate is kept and its periods
+    come off the budget first (an admin's hand-set number is never
+    clobbered by a re-run). `recompute=True` replaces this function's own
+    earlier estimates (method 'marks_weightage_proportional') -- how a
+    school fixes estimates computed before a calendar change, or by the
+    pre-2026-09-22 formula -- and still keeps every other estimate.
+
+    Within a Unit, CBSE weights only at unit granularity (academicos-data/
+    syllabus/*.json carries marks per unit), so a unit's periods are split
+    evenly across its subtopics -- "no finer real signal exists, don't
+    fabricate one", as seed_cbse10.py does for chapters."""
     if periods_per_week <= 0:
         raise ValueError("periods_per_week must be positive")
 
@@ -298,65 +386,68 @@ def compute_teaching_time_estimates(
             f"academic year {academic_year_id} has no period configuration set yet -- "
             "create one first (POST .../period-configuration)")
 
-    start = _parse_date(year.start_date)
-    end = _parse_date(year.end_date)
-    calendar_weeks = max(1, -(-(end - start).days // 7))  # ceil division
-
-    total_subject_periods = periods_per_week * calendar_weeks
-    total_instructional_minutes = total_subject_periods * period_cfg.period_minutes
-
     units = store.units_for_book(book_id)
-    total_marks = sum(u.marks or 0 for u in units)
-    if total_marks <= 0:
+    if sum(u.marks or 0 for u in units) <= 0:
         raise ValueError(
             f"book {book_id} has no unit marks-weightage to distribute by -- "
             "seed real Unit.marks first")
 
-    # Largest-remainder rounding, same shape as syllabus/timetable.py's
-    # generate_timetable(), so unit minutes sum exactly to
-    # total_instructional_minutes rather than drifting.
-    raw = [(u, total_instructional_minutes * (u.marks or 0) / total_marks) for u in units]
-    floors = [(u, int(v)) for u, v in raw]
-    allocated = sum(v for _, v in floors)
-    remainder = total_instructional_minutes - allocated
-    fractional_order = sorted(range(len(raw)), key=lambda i: raw[i][1] - floors[i][1], reverse=True)
-    minutes_by_unit = {u.id: v for u, v in floors}
-    for i in fractional_order[:remainder]:
-        u = raw[i][0]
-        minutes_by_unit[u.id] += 1
+    start = _parse_date(year.start_date)
+    end = _parse_date(year.end_date)
+    calendar_weeks = max(1, -(-(end - start).days // 7))  # ceil division; reported, not the budget
+    budget = len(teaching_slots_for_book(store, academic_year_id, book_id, periods_per_week))
 
-    estimates: list[TeachingTimeEstimate] = []
     skipped: list[str] = []
+    to_allocate: list[tuple[object, list[str]]] = []   # (unit, subtopic ids without a kept estimate)
+    existing_by_subtopic: dict[str, TeachingTimeEstimate] = {}
+    kept_periods = 0
     for unit in units:
-        chapters = store.chapters_for_unit(unit.id)
-        subtopic_ids: list[str] = []
-        for ch in chapters:
-            for topic in store.topics_for_chapter(ch.id):
-                for st in store.subtopics_for_topic(topic.id):
-                    subtopic_ids.append(st.id)
+        subtopic_ids = [st.id for ch in store.chapters_for_unit(unit.id)
+                        for topic in store.topics_for_chapter(ch.id)
+                        for st in store.subtopics_for_topic(topic.id)]
         if not subtopic_ids:
             skipped.append(unit.name)
             continue
+        open_ids: list[str] = []
+        for subtopic_id in subtopic_ids:
+            est = store.teaching_time_estimate_for_subtopic(subtopic_id, academic_year_id)
+            if est is not None and not (recompute and est.method == COMPUTED_ESTIMATE_METHOD):
+                kept_periods += est.estimated_periods or 0
+                continue
+            if est is not None:
+                existing_by_subtopic[subtopic_id] = est
+            open_ids.append(subtopic_id)
+        if open_ids:
+            to_allocate.append((unit, open_ids))
 
-        unit_minutes = minutes_by_unit[unit.id]
-        base = unit_minutes // len(subtopic_ids)
-        extra = unit_minutes - base * len(subtopic_ids)
-        for i, subtopic_id in enumerate(subtopic_ids):
-            minutes = base + (1 if i < extra else 0)
-            periods = round(minutes / period_cfg.period_minutes) if period_cfg.period_minutes else None
-            existing = store.teaching_time_estimate_for_subtopic(subtopic_id, academic_year_id)
-            if existing is not None:
-                continue  # idempotent -- a re-run doesn't duplicate/overwrite a prior estimate
-            est = store.create_teaching_time_estimate(
-                subtopic_id=subtopic_id, academic_year_id=academic_year_id,
-                estimated_minutes=minutes, estimated_periods=periods,
-                method="marks_weightage_proportional", approved_by=approved_by)
+    n_open = sum(len(ids) for _, ids in to_allocate)
+    extra = max(0, budget - kept_periods - n_open)
+    unit_extras = _largest_remainder(extra, [float(u.marks or 0) for u, _ in to_allocate])
+
+    estimates: list[TeachingTimeEstimate] = []
+    for (unit, open_ids), unit_extra in zip(to_allocate, unit_extras):
+        base, rem = divmod(unit_extra, len(open_ids))
+        for i, subtopic_id in enumerate(open_ids):
+            periods = 1 + base + (1 if i < rem else 0)
+            minutes = periods * period_cfg.period_minutes
+            prior = existing_by_subtopic.get(subtopic_id)
+            if prior is not None:
+                est = store.update_teaching_time_estimate(
+                    prior.id, estimated_minutes=minutes, estimated_periods=periods,
+                    method=COMPUTED_ESTIMATE_METHOD, approved_by=approved_by)
+            else:
+                est = store.create_teaching_time_estimate(
+                    subtopic_id=subtopic_id, academic_year_id=academic_year_id,
+                    estimated_minutes=minutes, estimated_periods=periods,
+                    method=COMPUTED_ESTIMATE_METHOD, approved_by=approved_by)
             estimates.append(est)
 
+    allocated = kept_periods + sum(e.estimated_periods or 0 for e in estimates)
     return TeachingTimeComputationResult(
         academic_year_id=academic_year_id, book_id=book_id, periods_per_week=periods_per_week,
         period_minutes=period_cfg.period_minutes, calendar_weeks=calendar_weeks,
-        total_subject_periods=total_subject_periods,
-        total_instructional_minutes=total_instructional_minutes,
+        total_subject_periods=budget,
+        total_instructional_minutes=budget * period_cfg.period_minutes,
         units_skipped_no_subtopics=tuple(skipped), estimates=tuple(estimates),
+        periods_allocated=allocated, periods_short=max(0, allocated - budget),
     )

@@ -83,6 +83,9 @@ class SnapshotSync:
         self._snapshot_seq = 0
         self._timer: Optional[threading.Timer] = None
         self._upload_lock = threading.Lock()
+        # An allowed empty start (below) has nothing to upload until someone
+        # edits a curriculum; save_empty_boot() publishes it instead.
+        self._empty_boot = False
         self._wedged = False
         self._closed = False
 
@@ -128,6 +131,7 @@ class SnapshotSync:
                         "ACOS_CURRICULUM_ALLOW_EMPTY_BOOT=1 for the first boot") from exc
                 logger.info("No curriculum snapshot uploaded yet -- starting with "
                             "a fresh local database")
+                self._empty_boot = True
                 return
             logger.error("Curriculum snapshot restore failed; refusing to start "
                          "with an empty curriculum", exc_info=True)
@@ -172,6 +176,27 @@ class SnapshotSync:
                 self._committed_changes = conn.total_changes
                 self._commit_seq += 1
         self._maybe_upload()
+
+    def save_empty_boot(self, conn: sqlite3.Connection) -> None:
+        """Publish the empty database this service started with, once.
+
+        A schema-only start changes no row, so `commit` marks nothing pending
+        and nothing is uploaded until someone edits a curriculum. The live GCP
+        service booted that way on 2026-09-22 with
+        ACOS_CURRICULUM_ALLOW_EMPTY_BOOT=1; the next deploy then refused to
+        start ("no curriculum snapshot in GCS", revision 00003), because the
+        acknowledgement is a first-boot variable, not a standing one. Saving
+        the empty snapshot here keeps it a first-boot variable.
+
+        Called by the store's owner (get_curriculum_store), not by __init__:
+        constructing a store must not touch the remote."""
+        if not self._empty_boot:
+            return
+        self._empty_boot = False
+        with self._conn_lock:
+            self._conn = conn
+            self._commit_seq += 1
+        self.flush()
 
     def _pending(self) -> bool:
         return self._commit_seq != self._snapshot_seq

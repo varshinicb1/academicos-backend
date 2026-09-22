@@ -75,6 +75,7 @@ from .models import (
     SubjectPeriodAllocation,
     SubjectTimetableSlot,
     QuestionSubtopicLink,
+    RECORDED_STATUSES,
     STATUS_VALUES,
     ScheduledLesson,
     StudentEnrollment,
@@ -296,6 +297,17 @@ CREATE TABLE IF NOT EXISTS scheduled_lessons (
 CREATE INDEX IF NOT EXISTS idx_sl_book_year ON scheduled_lessons(academic_year_id, book_id);
 CREATE INDEX IF NOT EXISTS idx_sl_subtopic ON scheduled_lessons(subtopic_id, academic_year_id);
 CREATE INDEX IF NOT EXISTS idx_sl_school_date ON scheduled_lessons(school_id, date);
+
+-- The cadence a book's schedule was placed with (Task 102 review): the
+-- schedule route takes periods_per_week explicitly and may disagree with the
+-- stored SubjectPeriodAllocation, so PUSH used to fall back to the allocation
+-- and reschedule at a different cadence than the schedule was made with.
+CREATE TABLE IF NOT EXISTS book_schedule_cadences (
+  academic_year_id TEXT NOT NULL,
+  book_id      TEXT NOT NULL,
+  periods_per_week INTEGER NOT NULL,
+  PRIMARY KEY (academic_year_id, book_id)
+);
 
 CREATE TABLE IF NOT EXISTS teacher_assignments (
   id           TEXT PRIMARY KEY,
@@ -697,30 +709,50 @@ class CurriculumStore:
         return {r["subtopic_id"]: r["school_id"] for r in rows}
 
     _SEQUENCE_TABLES = {"unit": "units", "chapter": "chapters", "topic": "topics", "subtopic": "subtopics"}
+    _SEQUENCE_PARENTS = {"unit": "book_id", "chapter": "unit_id", "topic": "chapter_id",
+                         "subtopic": "topic_id"}
 
     def set_sequence(self, entity_type: str, entity_id: str, seq: int) -> None:
-        """Changes one Unit/Chapter/Topic/Subtopic's delivery-order `seq` --
-        the field `chapters_for_unit`/`topics_for_chapter`/
-        `subtopics_for_topic`/`units_for_book` all `ORDER BY`, and the field
-        `scheduling.py::schedule_book()` walks in that same order (unit ->
-        chapter -> topic -> subtopic) to decide what gets taught when. A
-        change here takes effect on the *next* `schedule_book()` call --
-        it does not retroactively touch any `ScheduledLesson` rows a
-        previous run already created (see the matrix's own open item on
-        re-running/flagging schedules stale after a reorder).
+        """Moves one Unit/Chapter/Topic/Subtopic to delivery position `seq`
+        among its siblings (same book/unit/chapter/topic) and renumbers the
+        whole sibling list 0..n-1 in one transaction: the others shift to
+        make room, so sequence numbers stay unique and contiguous. `seq` past
+        the end means last; below 0 means first.
+
+        Until 2026-09-22 this updated the one row and never touched its
+        siblings: moving 'Carbon and its Compounds' to seq 0 left two
+        chapters of that unit at 0, and the regenerated schedule did not
+        start with the moved chapter (ORDER BY seq broke the tie by storage
+        order). Siblings are read ORDER BY seq, rowid, so a list that
+        already holds duplicates is repaired deterministically by the move.
+
+        The `seq` field is what units_for_book/chapters_for_unit/
+        topics_for_chapter/subtopics_for_topic ORDER BY and what
+        scheduling.schedule_book() walks. A change takes effect on the next
+        schedule_book() call; it does not re-date lessons already scheduled.
 
         Unlike rename_topic/rename_subtopic's silent no-op on an unknown id,
-        this raises: a reorder is a deliberate, meaningful admin action, and
-        a caller reordering something that doesn't exist deserves a real
-        error, not quiet success."""
+        this raises: a reorder is a deliberate admin action, and reordering
+        something that does not exist deserves a real error."""
         table = self._SEQUENCE_TABLES.get(entity_type)
         if table is None:
             raise ValueError(f"unknown sequence entity_type: {entity_type!r}")
+        parent_col = self._SEQUENCE_PARENTS[entity_type]
         with self._conn_lock:
-            cur = self.conn.execute(f"UPDATE {table} SET seq=? WHERE id=?", (seq, entity_id))
-            rowcount = cur.rowcount
-        if rowcount == 0:
-            raise ValueError(f"no {entity_type} with id {entity_id!r}")
+            row = self.conn.execute(
+                f"SELECT {parent_col} FROM {table} WHERE id=?", (entity_id,)).fetchone()
+            if row is None:
+                raise ValueError(f"no {entity_type} with id {entity_id!r}")
+            ordered = [r[0] for r in self.conn.execute(
+                f"SELECT id FROM {table} WHERE {parent_col}=? AND id<>? ORDER BY seq, rowid",
+                (row[0], entity_id)).fetchall()]
+            ordered.insert(min(max(seq, 0), len(ordered)), entity_id)
+            try:
+                for position, sibling_id in enumerate(ordered):
+                    self.conn.execute(f"UPDATE {table} SET seq=? WHERE id=?", (position, sibling_id))
+            except sqlite3.Error:
+                self.conn.rollback()
+                raise
         self._commit()
 
     def chapters_for_unit(self, unit_id: str) -> list[Chapter]:
@@ -1126,6 +1158,19 @@ class CurriculumStore:
         self._commit()
         return t
 
+    def update_teaching_time_estimate(self, estimate_id: str, *, estimated_minutes: int,
+                                      estimated_periods: Optional[int], method: str,
+                                      approved_by: Optional[str]) -> TeachingTimeEstimate:
+        """calendar.compute_teaching_time_estimates(recompute=True) replacing
+        its own earlier estimate in place (same id), never an admin's."""
+        self._exec(
+            "UPDATE teaching_time_estimates SET estimated_minutes=?, estimated_periods=?, method=?, "
+            "approved_by=? WHERE id=?",
+            (estimated_minutes, estimated_periods, method, approved_by, estimate_id))
+        self._commit()
+        r = self._fetchone("SELECT * FROM teaching_time_estimates WHERE id=?", (estimate_id,))
+        return TeachingTimeEstimate(**dict(r))
+
     def teaching_time_estimate_for_subtopic(self, subtopic_id: str,
                                             academic_year_id: str) -> Optional[TeachingTimeEstimate]:
         r = self._fetchone(
@@ -1171,21 +1216,38 @@ class CurriculumStore:
         self._commit()
         return self.get_scheduled_lesson(lesson_id)
 
-    def reschedule_lesson_date(self, lesson_id: str, *, new_date: str) -> Optional[ScheduledLesson]:
+    def reschedule_lesson_date(self, lesson_id: str, *, new_date: str,
+                               status: Optional[str] = None) -> Optional[ScheduledLesson]:
         """§14: the one write PUSH/ADJUST ever make -- just the date.
         Never touches status/note/completed_by, so a lesson already marked
         completed and then legitimately moved (e.g. corrected after the
         fact) keeps its completion record intact. The real audit trail
         (old date, new date, reason, changed-by, timestamp) is the
         caller's job (scheduling.py), via the existing assessment audit
-        log -- this store method only ever changes the one column."""
-        self._exec("UPDATE scheduled_lessons SET date=? WHERE id=?", (new_date, lesson_id))
+        log -- this store method only ever changes the one column, plus
+        `status` when ADJUST puts an 'unscheduled' lesson back on a day."""
+        if status is not None:
+            self._exec("UPDATE scheduled_lessons SET date=?, status=? WHERE id=?",
+                       (new_date, status, lesson_id))
+        else:
+            self._exec("UPDATE scheduled_lessons SET date=? WHERE id=?", (new_date, lesson_id))
         self._commit()
         return self.get_scheduled_lesson(lesson_id)
 
+    def mark_lesson_unscheduled(self, lesson_id: str) -> None:
+        """A still-to-teach lesson a PUSH could not fit
+        before the year ends: it stops holding its day (see models.py's
+        STATUS_VALUES note). Its date is left as the last one planned."""
+        self._exec("UPDATE scheduled_lessons SET status='unscheduled' WHERE id=? AND status='scheduled'",
+                   (lesson_id,))
+        self._commit()
+
     def scheduled_lessons_for_book(self, academic_year_id: str, book_id: str) -> list[ScheduledLesson]:
+        """Date order; lessons sharing a day (a double period) in the order
+        they were created, which is the delivery order schedule_book()
+        placed them in."""
         rows = self._fetchall(
-            "SELECT * FROM scheduled_lessons WHERE academic_year_id=? AND book_id=? ORDER BY date",
+            "SELECT * FROM scheduled_lessons WHERE academic_year_id=? AND book_id=? ORDER BY date, rowid",
             (academic_year_id, book_id))
         return [ScheduledLesson(**dict(r)) for r in rows]
 
@@ -1199,20 +1261,57 @@ class CurriculumStore:
                                          end_date: str) -> list[ScheduledLesson]:
         """The real access pattern a yearly/monthly/weekly/daily view (the
         next milestone) needs -- date-range scoped to one school, not one
-        book, since a real day mixes lessons from every subject."""
+        book, since a real day mixes lessons from every subject. An
+        'unscheduled' lesson holds no day, so no calendar view shows it on
+        the date it last had."""
         rows = self._fetchall(
-            "SELECT * FROM scheduled_lessons WHERE school_id=? AND date>=? AND date<=? ORDER BY date",
+            "SELECT * FROM scheduled_lessons WHERE school_id=? AND date>=? AND date<=? "
+            "AND status<>'unscheduled' ORDER BY date, rowid",
             (school_id, start_date, end_date))
         return [ScheduledLesson(**dict(r)) for r in rows]
 
-    def delete_scheduled_lessons_for_book(self, academic_year_id: str, book_id: str) -> int:
+    def delete_unrecorded_lessons_for_book(self, academic_year_id: str, book_id: str,
+                                           from_date: Optional[str] = None) -> int:
+        """A force regenerate's delete: only lessons still to be taught
+        ('scheduled'/'unscheduled'). Completed and skipped lessons are the
+        teaching record and stay; until 2026-09-22 a regenerate deleted
+        them with every other row.
+
+        With `from_date`, a 'scheduled' lesson dated before it stays too: its
+        day has passed, so it was taught or is overdue, and either way it is
+        what delayed-topics, planned-to-date and pace report on. Deleting it
+        (the first version of this delete) erased the overdue record of a
+        school whose teachers taught but did not tick. Every 'unscheduled'
+        lesson goes: a PUSH found it no day, so it is still to be placed."""
+        placeholders = ",".join("?" for _ in RECORDED_STATUSES)
+        sql = (f"DELETE FROM scheduled_lessons WHERE academic_year_id=? AND book_id=? "
+               f"AND status NOT IN ({placeholders})")
+        params: tuple = (academic_year_id, book_id, *RECORDED_STATUSES)
+        if from_date is not None:
+            sql += " AND (status='unscheduled' OR date >= ?)"
+            params += (from_date,)
         with self._conn_lock:
-            cur = self.conn.execute(
-                "DELETE FROM scheduled_lessons WHERE academic_year_id=? AND book_id=?",
-                (academic_year_id, book_id))
+            cur = self.conn.execute(sql, params)
             rowcount = cur.rowcount
         self._commit()
         return rowcount
+
+    def set_book_schedule_cadence(self, academic_year_id: str, book_id: str,
+                                  periods_per_week: int) -> None:
+        self._exec(
+            "INSERT INTO book_schedule_cadences (academic_year_id, book_id, periods_per_week) "
+            "VALUES (?,?,?) ON CONFLICT(academic_year_id, book_id) "
+            "DO UPDATE SET periods_per_week=excluded.periods_per_week",
+            (academic_year_id, book_id, periods_per_week))
+        self._commit()
+
+    def book_schedule_cadence(self, academic_year_id: str, book_id: str) -> Optional[int]:
+        """The periods_per_week this book's schedule was placed with; None
+        for a schedule made before 2026-09-22, when it was not recorded."""
+        r = self._fetchone(
+            "SELECT periods_per_week FROM book_schedule_cadences WHERE academic_year_id=? AND book_id=?",
+            (academic_year_id, book_id))
+        return r["periods_per_week"] if r else None
 
     # ---------------- teacher assignments (§15 -- "what do I teach today") ----------------
 
@@ -1342,7 +1441,8 @@ class CurriculumStore:
         total_lessons = len(rows)
         completed_lessons = sum(1 for r in rows if r["status"] == "completed")
         skipped_lessons = sum(1 for r in rows if r["status"] == "skipped")
-        planned_to_date = sum(1 for r in rows if r["date"] <= as_of_date)
+        # An 'unscheduled' lesson has no day in the plan, so it is never "planned to date".
+        planned_to_date = sum(1 for r in rows if r["date"] <= as_of_date and r["status"] != "unscheduled")
         completed_to_date = sum(1 for r in rows if r["date"] <= as_of_date and r["status"] == "completed")
 
         overall_coverage_pct = round((completed_lessons / total_lessons * 100), 2) if total_lessons > 0 else 0.0
@@ -1355,7 +1455,8 @@ class CurriculumStore:
             s_total = len(s_lessons)
             s_completed = sum(1 for l in s_lessons if l["status"] == "completed")
             s_skipped = sum(1 for l in s_lessons if l["status"] == "skipped")
-            s_planned_to_date = sum(1 for l in s_lessons if l["date"] <= as_of_date)
+            s_planned_to_date = sum(1 for l in s_lessons
+                                    if l["date"] <= as_of_date and l["status"] != "unscheduled")
             s_completed_to_date = sum(1 for l in s_lessons if l["date"] <= as_of_date and l["status"] == "completed")
             s_coverage_pct = round((s_completed / s_total * 100), 2) if s_total > 0 else 0.0
             s_pace_pct = round((s_completed_to_date / s_planned_to_date * 100), 2) if s_planned_to_date > 0 else 100.0
@@ -1414,14 +1515,17 @@ class CurriculumStore:
     def get_delayed_topics(self, *, school_id: str, academic_year_id: str,
                            as_of_date: Optional[str] = None) -> dict[str, Any]:
         """All scheduled lessons past due (date < as_of_date) still in
-        'scheduled' status (§17, §32)."""
+        'scheduled' status (§17, §32), and separately every 'unscheduled'
+        lesson (a PUSH found it no period before the year ends), whatever
+        its stale date: a lesson that lost its day is the worst delay, and
+        until the review of 2026-09-22 the `status = 'scheduled'` filter
+        kept it off this report entirely."""
         from datetime import date, datetime, timezone
         if not as_of_date:
             as_of_date = datetime.now(timezone.utc).date().isoformat()
         as_of = date.fromisoformat(as_of_date)
 
-        rows = self._fetchall(
-            """
+        select = """
             SELECT l.id as lesson_id, l.date as scheduled_date, l.subtopic_id,
                    st.name as subtopic_name, tp.name as topic_name,
                    ch.name as chapter_name, s.name as subject_name,
@@ -1433,11 +1537,13 @@ class CurriculumStore:
             JOIN books b ON l.book_id = b.id
             JOIN subjects s ON b.subject_id = s.id
             JOIN grades g ON s.grade_id = g.id
-            WHERE l.school_id = ? AND l.academic_year_id = ? AND l.date < ? AND l.status = 'scheduled'
+            WHERE l.school_id = ? AND l.academic_year_id = ? AND {cond}
             ORDER BY l.date, g.number, s.name
-            """,
-            (school_id, academic_year_id, as_of_date),
-        )
+            """
+        rows = self._fetchall(select.format(cond="l.date < ? AND l.status = 'scheduled'"),
+                              (school_id, academic_year_id, as_of_date))
+        unscheduled_rows = self._fetchall(select.format(cond="l.status = 'unscheduled'"),
+                                          (school_id, academic_year_id))
 
         assignment_rows = self._fetchall(
             "SELECT teacher_id, book_id FROM teacher_assignments WHERE school_id=?",
@@ -1462,12 +1568,26 @@ class CurriculumStore:
                 "teacher_name": None,
             })
 
+        unscheduled = [{
+            "lesson_id": r["lesson_id"],
+            "last_planned_date": r["scheduled_date"],
+            "grade_number": r["grade_number"],
+            "subject_name": r["subject_name"],
+            "chapter_name": r["chapter_name"],
+            "topic_name": r["topic_name"],
+            "subtopic_name": r["subtopic_name"],
+            "teacher_id": teacher_for_book.get(r["book_id"]),
+            "teacher_name": None,
+        } for r in unscheduled_rows]
+
         return {
             "school_id": school_id,
             "academic_year_id": academic_year_id,
             "as_of_date": as_of_date,
             "delayed_count": len(delayed),
             "delayed_lessons": delayed,
+            "unscheduled_count": len(unscheduled),
+            "unscheduled_lessons": unscheduled,
         }
 
 
@@ -1495,5 +1615,8 @@ def get_curriculum_store(data_root: Path) -> CurriculumStore:
     instance = _INSTANCE.get(key)
     if instance is None:
         instance = CurriculumStore(Path(key))
+        # A service that started empty saves that empty curriculum now, so the
+        # next deploy restores it instead of refusing to start.
+        instance._snapshots.save_empty_boot(instance.conn)
         _INSTANCE[key] = instance
     return instance

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -94,6 +94,18 @@ from .seed_cbse10 import seed_cbse_class_10
 from .store import CurriculumStore, get_curriculum_store
 
 router = APIRouter(prefix="/api/v1/curriculum")
+
+# India Standard Time has no daylight saving, so a fixed offset is exact and
+# needs no tz database (Windows Pythons often ship without one).
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _school_today() -> date:
+    """Today on the schools' own calendar (IST). The server clock is UTC:
+    between 00:00 and 05:30 IST the UTC date is still yesterday, so a
+    schedule regenerated first thing in the morning would still offer
+    yesterday's periods. Tests pin it with monkeypatch."""
+    return datetime.now(_IST).date()
 
 # Every read here requires a signed-in caller and returns only the caller's
 # own school's rows (docs/PRD.md section 10: "every query scoped by
@@ -812,7 +824,7 @@ def add_timetable_slot(academic_year_id: str, req: AddTimetableSlotRequest,
     """Persists one real weekday+period a subject meets -- once any slots
     exist for a subject/year, scheduling.py's schedule_book() uses exactly
     those real weekdays instead of its "first N working days of the week"
-    fallback heuristic (see _subject_teaching_days's docstring)."""
+    fallback heuristic (see calendar.subject_teaching_slots's docstring)."""
     store = _require()
     _require_school_owns_academic_year(academic_year_id, principal)
     slot = store.add_timetable_slot(
@@ -899,7 +911,7 @@ def compute_teaching_time_estimates(book_id: str, academic_year_id: str,
     try:
         result = calendar_mod.compute_teaching_time_estimates(
             store, academic_year_id=academic_year_id, book_id=book_id,
-            periods_per_week=periods_per_week, approved_by=principal.id)
+            periods_per_week=periods_per_week, approved_by=principal.id, recompute=req.recompute)
     except ValueError as e:
         raise HTTPException(404, str(e))
     return ComputeTeachingTimeResponse(
@@ -908,7 +920,8 @@ def compute_teaching_time_estimates(book_id: str, academic_year_id: str,
         calendar_weeks=result.calendar_weeks, total_subject_periods=result.total_subject_periods,
         total_instructional_minutes=result.total_instructional_minutes,
         units_skipped_no_subtopics=list(result.units_skipped_no_subtopics),
-        estimates_created=len(result.estimates))
+        estimates_created=len(result.estimates), periods_allocated=result.periods_allocated,
+        periods_short=result.periods_short, fits_in_year=result.fits_in_year)
 
 
 @router.get("/subtopics/{subtopic_id}/teaching-time-estimate",
@@ -948,14 +961,22 @@ def schedule_book(book_id: str, academic_year_id: str, req: ScheduleBookRequest,
     documented weekday-assignment simplification. Requires
     compute_teaching_time_estimates() to have already run for this
     (book, academic_year); a Subtopic without a real estimate is skipped
-    and reported, never given a guessed period count."""
+    and reported, never given a guessed period count. `allSubtopicsScheduled`
+    is false, with a `warning` sentence, whenever any subtopic ends up
+    without its full dated periods. `force` keeps completed/skipped lessons,
+    and every lesson dated before today (taught or overdue), and replans
+    only what is still to be taught. New lessons are placed from
+    the school's today (or the year's first day, if later): a day that has
+    passed cannot be taught on, and the shortfall warning counts only the
+    periods left."""
     store = _require()
     _require_school_owns_book(book_id, principal)
     _require_school_owns_academic_year(academic_year_id, principal)
     try:
         result = scheduling_mod.schedule_book(
             store, school_id=principal.school_id, academic_year_id=academic_year_id,
-            book_id=book_id, periods_per_week=req.periods_per_week, force=req.force)
+            book_id=book_id, periods_per_week=req.periods_per_week, force=req.force,
+            from_date=_school_today().isoformat())
     except ValueError as e:
         raise HTTPException(409, str(e))
     return ScheduleBookResponse(
@@ -966,7 +987,11 @@ def schedule_book(book_id: str, academic_year_id: str, req: ScheduleBookRequest,
         subtopics_partially_scheduled=list(result.subtopics_partially_scheduled),
         subtopics_unscheduled=list(result.subtopics_unscheduled),
         subtopics_without_estimate=list(result.subtopics_without_estimate),
-        first_scheduled_date=result.first_scheduled_date, last_scheduled_date=result.last_scheduled_date)
+        first_scheduled_date=result.first_scheduled_date, last_scheduled_date=result.last_scheduled_date,
+        teaching_periods_available=result.teaching_periods_available,
+        lessons_kept=result.lessons_kept, past_lessons_kept=result.past_lessons_kept,
+        all_subtopics_scheduled=result.all_subtopics_scheduled,
+        warning=result.warning)
 
 
 @router.get("/books/{book_id}/schedule", response_model=list[ScheduledLessonResponse])
@@ -1069,6 +1094,12 @@ def mark_lesson(lesson_id: str, req: MarkLessonRequest,
     is_assigned = lesson.book_id in {a.book_id for a in store.assignments_for_teacher(current.id)}
     if current.role != "principal" and not is_assigned:
         raise HTTPException(403, "you are not assigned to teach this book")
+    # 409: the request is well formed but the lesson holds no day to have
+    # been taught on (a PUSH could not fit it before the year ends).
+    if lesson.status == "unscheduled":
+        raise HTTPException(
+            409, "this lesson has no day in the plan (it no longer fit before the year ends) -- "
+                 "ADJUST it onto a working day first")
     updated = store.mark_lesson(lesson_id, status=req.status, note=req.note, completed_by=current.id)
     return _lesson_response(updated)
 
@@ -1139,7 +1170,8 @@ def push_schedule(book_id: str, academic_year_id: str, req: PushScheduleRequest,
 @router.get("/scheduled-lessons/{lesson_id}/history", response_model=list[RescheduleHistoryEntryResponse])
 def get_lesson_history(lesson_id: str,
                        current: User = Depends(get_current_user)) -> list[RescheduleHistoryEntryResponse]:
-    """Every real PUSH/ADJUST ever applied to this lesson -- readable by
+    """Every real PUSH/ADJUST ever applied to this lesson (newDate is null
+    where a PUSH left it 'unscheduled') -- readable by
     the assigned teacher or a same-school principal, same posture as
     marking completion."""
     store = _require()
@@ -1233,24 +1265,32 @@ def get_my_progress(academic_year_id: str,
     """Real per-subject progress: how many of this class's real scheduled
     lessons (up to today) have actually been marked completed vs skipped
     vs still just scheduled -- computed from the same real ScheduledLesson
-    rows the teacher/principal views use, never a separate estimate."""
-    from datetime import date as date_cls
+    rows the teacher/principal views use, never a separate estimate.
+
+    An 'unscheduled' lesson (a PUSH found it no period before the year
+    ends) is counted in `unscheduledCount` and in `totalCount` whatever its
+    stale date: it is still owed, and it has no day to be "up to today" by.
+    Until the review of 2026-09-22 one dated on or before today was in the
+    total and in none of the parts, so the counts did not add up."""
     store = _require()
     enrollment = _require_student_enrollment(store, current)
-    as_of = date_cls.today().isoformat()
+    as_of = _school_today().isoformat()
     book_ids = store.book_ids_for_grade(enrollment.grade_id)
 
     subjects: list[SubjectProgressResponse] = []
     for book_id in book_ids:
         book = store.get_book(book_id)
         subject = store.get_subject(book.subject_id) if book else None
-        lessons = [l for l in store.scheduled_lessons_for_book(academic_year_id, book_id) if l.date <= as_of]
+        all_lessons = store.scheduled_lessons_for_book(academic_year_id, book_id)
+        lessons = [l for l in all_lessons if l.date <= as_of and l.status != "unscheduled"]
         scheduled_count = sum(1 for l in lessons if l.status == "scheduled")
         completed_count = sum(1 for l in lessons if l.status == "completed")
         skipped_count = sum(1 for l in lessons if l.status == "skipped")
+        unscheduled_count = sum(1 for l in all_lessons if l.status == "unscheduled")
         subjects.append(SubjectProgressResponse(
             subject_name=subject.name if subject else "", scheduled_count=scheduled_count,
-            completed_count=completed_count, skipped_count=skipped_count, total_count=len(lessons)))
+            completed_count=completed_count, skipped_count=skipped_count,
+            unscheduled_count=unscheduled_count, total_count=len(lessons) + unscheduled_count))
 
     return MyProgressResponse(academic_year_id=academic_year_id, as_of_date=as_of, subjects=subjects)
 
@@ -1280,14 +1320,17 @@ def get_coverage_report(academic_year_id: str, as_of_date: Optional[str] = None,
 def get_delayed_topics(academic_year_id: str, as_of_date: Optional[str] = None,
                        principal: User = Depends(require_principal)) -> DelayedTopicsReportResponse:
     """All scheduled lessons past due (date < as_of_date) still in
-    'scheduled' status, with days overdue (§17, §32)."""
+    'scheduled' status, with days overdue (§17, §32), plus every lesson a
+    PUSH left 'unscheduled' (no day before the year ends -- the worst
+    delay, which this report left out until the review of 2026-09-22).
+    `as_of_date` defaults to the school's today (IST)."""
     store = _require()
     _require_school_owns_academic_year(academic_year_id, principal)
     data = store.get_delayed_topics(school_id=principal.school_id,
                                     academic_year_id=academic_year_id,
-                                    as_of_date=as_of_date)
+                                    as_of_date=as_of_date or _school_today().isoformat())
     users_store = _require_users()
-    for l in data["delayed_lessons"]:
+    for l in data["delayed_lessons"] + data["unscheduled_lessons"]:
         if l.get("teacher_id"):
             u = users_store.get(l["teacher_id"])
             if u:

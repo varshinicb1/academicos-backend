@@ -298,7 +298,14 @@ class StudentEnrollment:
     created_at: str = ""
 
 
-STATUS_VALUES = ("scheduled", "completed", "skipped")
+# 'unscheduled': a still-to-teach lesson a PUSH could not
+# fit before the year ends. It holds no day (the calendar views and every
+# clash check ignore it) and keeps the last date it was planned for, because
+# the date column is NOT NULL and every client parses it. Until 2026-09-22
+# such a lesson stayed 'scheduled' on its old date while the lesson before
+# it was moved onto that same date -- two lessons of one book on one day.
+STATUS_VALUES = ("scheduled", "completed", "skipped", "unscheduled")
+RECORDED_STATUSES = ("completed", "skipped")   # the teaching record: never moved, never deleted
 
 
 @dataclass
@@ -320,7 +327,7 @@ class ScheduledLesson:
     book_id: str
     subtopic_id: str
     date: str                     # ISO date, always a real working day
-    status: str = "scheduled"     # scheduled | completed | skipped
+    status: str = "scheduled"     # scheduled | completed | skipped | unscheduled
     note: Optional[str] = None
     completed_by: Optional[str] = None   # the teacher user id who marked it, null until they do
     completed_at: Optional[str] = None   # ISO datetime, null until marked
