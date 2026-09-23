@@ -63,6 +63,19 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Optional
 
+# The engine, from the FastAPI-free module. Imported at MODULE scope on
+# purpose: it used to come from `assessment/qbank_routes.py`, which imports
+# `fastapi` at module scope, so `pip install -e ".[mcp]"` raised ImportError on
+# the first stdio request -- and deferring the import into the method bodies,
+# as this file did, moved that failure from import time to request time rather
+# than removing it. `[mcp]` now genuinely runs stdio; the network transports
+# still need `[api]`, for uvicorn and for the key gate below.
+from ..assessment.qbank_engine import (
+    QuestionBank,
+    has_answer_key,
+    topics_of as _topics_of,
+)
+
 if TYPE_CHECKING:  # the SDK and the key store are both optional at import time
     from ..assessment.api_keys import ApiKey, ApiKeyStore
 
@@ -78,6 +91,11 @@ KEY_DB = Path("assessment") / "api_keys.sqlite"
 # HTTP surface requires for exactly the same data.
 TRANSPORT_SCOPE = "questions:read"
 
+# The three things a caller may say about answer keys. Closed, because an
+# unrecognised value used to fall through every branch and silently turn the
+# Q1 default off.
+ANSWER_KEY_STATES: frozenset[str] = frozenset({"any", "official", "none"})
+
 
 # --------------------------------------------------------------------------- #
 # the corpus
@@ -86,13 +104,25 @@ TRANSPORT_SCOPE = "questions:read"
 class Corpus:
     """The loaded bank plus the queries the tools need.
 
-    Wraps `qbank_routes.QuestionBank` rather than reimplementing filtering, so
-    the MCP surface and the HTTP surface answer identically. Any divergence
-    between them would be a bug that only appears for one kind of consumer.
+    Wraps `assessment.qbank_engine.QuestionBank` rather than reimplementing
+    filtering, so the MCP surface and the HTTP surface answer identically. Any
+    divergence between them would be a bug that only appears for one kind of
+    consumer.
+
+    That claim used to be false where it mattered most: `search` ran its own
+    copy of the whole filter chain, and its keyword haystack was stem + tags +
+    `provenance.sourceDocumentId` where the HTTP `_matches` haystack was stem +
+    tags. `keyword="CBSE2023"` therefore returned a different set over MCP than
+    over HTTP for one bank. Every filter below is now a call into
+    `QuestionBank.page`, and the source document is a named parameter rather
+    than a term smuggled into one surface's keyword search.
+
+    What remains here is translation, not filtering: MCP's `answer_key_state`
+    vocabulary onto the engine's `has_scheme`/`key_provenance`, and the
+    per-topic reporting the tools shape for an agent.
     """
 
     def __init__(self, records: list[dict[str, Any]]):
-        from ..assessment.qbank_routes import QuestionBank
         self._bank = QuestionBank(records)
         self.records = self._bank.records
 
@@ -104,6 +134,12 @@ class Corpus:
         for the same reason `qbank_routes.init` tolerates it: the bank is a
         data file, and an empty bank reports itself honestly through
         `coverage_report`.
+
+        This used to de-duplicate ids itself (`seen[rid] = rec`, blank ids
+        skipped). It no longer does, because `QuestionBank.__init__` does it
+        for every surface and logs what it dropped -- doing it twice, in two
+        places, with only one of them logging, is how the two surfaces came to
+        count differently in the first place.
         """
         p = Path(path)
         if not p.exists():
@@ -126,8 +162,7 @@ class Corpus:
         disagreeing -- the divergence Q5 exists to prevent -- and the copy here
         did not check the same fields as the builder.
         """
-        from ..assessment.qbank_routes import QuestionBank
-        return QuestionBank.has_answer_key(rec)
+        return has_answer_key(rec)
 
     def search(
         self,
@@ -141,63 +176,71 @@ class Corpus:
         question_type: str | None = None,
         difficulty: str | None = None,
         keyword: str | None = None,
+        source_document_id: str | None = None,
         limit: int = 20,
         require_answer_key: bool = True,
         answer_key_state: str = "any",
     ) -> list[dict[str, Any]]:
-        """Filter the bank.
+        """Filter the bank -- through `QuestionBank.page`, not beside it.
+
+        Every predicate below is the engine's, so a question asked over MCP and
+        the same question asked over HTTP select the same records. This method
+        used to reimplement the chain, and the copy had drifted: its keyword
+        haystack was stem + tags + `provenance.sourceDocumentId` where HTTP's
+        was stem + tags, so `keyword="CBSE2023"` answered differently on the
+        two surfaces. Selecting by source paper survives as
+        `source_document_id`, its own parameter, which is what it always was.
 
         `answer_key_state`:
           * `"any"` (default) -- require_answer_key is honoured
-          * `"official"`      -- only questions carrying a CBSE marking scheme
+          * `"official"`      -- only answer-keyed questions whose key is
+                                 CBSE's own marking scheme. The HTTP surface's
+                                 `?key_provenance=cbse_marking_scheme`, record
+                                 for record (Q5).
           * `"none"`          -- only questions with no attached scheme, for
                                  auditing what the relink has not reached
+
+        `"official"` tested the CBSE label ALONE, which let a record carrying
+        that label over an empty scheme through -- the 259-record failure the
+        content half of the rule exists for, and an asymmetry with HTTP in the
+        opposite direction from the one the Q1 pass closed. It now narrows
+        within the answer-keyed set rather than sidestepping it.
 
         There is no "include unanswered" flag that quietly widens the default.
         An agent asking for questions gets answerable ones, and a caller who
         wants the unanswerable set has to say so in those words.
+
+        An unknown `answer_key_state` is an error rather than a no-op: it used
+        to fall through every branch, so a typo (`"offical"`) disabled the Q1
+        default and handed the caller the unanswerable set.
         """
-        needle = (keyword or "").strip().lower()
-        out: list[dict[str, Any]] = []
-        for rec in self.records:
-            if subject and str(rec.get("subject") or "").lower() != subject.lower():
-                continue
-            if grade is not None and rec.get("grade") != grade:
-                continue
-            if marks is not None and rec.get("marks") != marks:
-                continue
-            if min_marks is not None and (rec.get("marks") or 0) < min_marks:
-                continue
-            if max_marks is not None and (rec.get("marks") or 0) > max_marks:
-                continue
-            if question_type and str(rec.get("type") or "") != question_type:
-                continue
-            if difficulty and str(rec.get("difficulty") or "") != difficulty:
-                continue
-            if topic and not _topic_matches(rec, topic):
-                continue
-            if needle:
-                hay = " ".join([
-                    str(rec.get("stem") or ""),
-                    " ".join(str(t) for t in (rec.get("tags") or [])),
-                    str((rec.get("provenance") or {}).get("sourceDocumentId") or ""),
-                ]).lower()
-                if needle not in hay:
-                    continue
+        if answer_key_state not in ANSWER_KEY_STATES:
+            raise ValueError(
+                "answer_key_state must be one of "
+                + ", ".join(sorted(ANSWER_KEY_STATES))
+                + f"; got {answer_key_state!r}")
 
-            official = (rec.get("answerScheme") or {}).get("provenance") == "cbse_marking_scheme"
-            has = self.has_answer_key(rec)
-            if answer_key_state == "official" and not official:
-                continue
-            if answer_key_state == "none" and has:
-                continue
-            if answer_key_state == "any" and require_answer_key and not has:
-                continue
+        # The MCP vocabulary, translated onto the engine's. `"official"` is
+        # `?key_provenance=cbse_marking_scheme`, which narrows WITHIN the keyed
+        # set -- it never widens past Q1.
+        has_scheme: bool | None
+        key_provenance: str | None = None
+        if answer_key_state == "official":
+            has_scheme = True
+            key_provenance = "cbse_marking_scheme"
+        elif answer_key_state == "none":
+            has_scheme = False
+        else:
+            has_scheme = True if require_answer_key else None
 
-            out.append(rec)
-            if len(out) >= limit:
-                break
-        return out
+        items, _, _ = self._bank.page(
+            subject=subject, grade=grade, topic=topic, marks=marks,
+            min_marks=min_marks, max_marks=max_marks, type_=question_type,
+            difficulty=difficulty, keyword=keyword,
+            source_document_id=source_document_id,
+            has_scheme=has_scheme, key_provenance=key_provenance,
+            limit=max(0, limit))
+        return items
 
     def topics(self, *, subject: str | None = None, grade: int | None = None,
                require_answer_key: bool = True) -> list[dict[str, Any]]:
@@ -250,27 +293,12 @@ class Corpus:
         return self._bank.coverage()
 
 
-def _topics_of(rec: dict[str, Any]) -> list[str]:
-    """Every topic label a question carries.
-
-    Chapters come from `chapterIds` (the keyword/embedding tagger) and the
-    learning-ladder reference from the CBSE CBE import; both are real mappings,
-    so both are exposed.
-    """
-    out = [str(c) for c in (rec.get("chapterIds") or []) if c]
-    for key in ("topic", "contentCode", "contentReference"):
-        v = rec.get(key)
-        if v:
-            out.append(str(v))
-    return list(dict.fromkeys(out)) or ["unmapped"]
-
-
-def _topic_matches(rec: dict[str, Any], topic: str) -> bool:
-    needle = topic.strip().lower()
-    for t in _topics_of(rec):
-        if needle in t.lower():
-            return True
-    return False
+# `_topics_of` and `_topic_matches` used to live here. They moved into
+# `assessment/qbank_engine.py` (as `topics_of`/`topic_matches`) when `?topic=`
+# became part of the one shared filter chain -- a topic predicate that only the
+# MCP surface could run is how the two surfaces start disagreeing again.
+# `_topics_of` is imported above under its old name, because the reporting
+# tools below read better with it.
 
 
 # --------------------------------------------------------------------------- #
@@ -301,9 +329,10 @@ def build_server(corpus: Corpus):
         name="search_questions",
         description=(
             "Find answerable CBSE questions by subject, class, topic, marks, "
-            "type or keyword. Returns questions WITH their marking schemes by "
-            "default. Set answer_key_state='none' to audit which questions have "
-            "no scheme."
+            "type or keyword. keyword searches the question text and its tags; "
+            "use source_document_id to ask for one source paper. Returns "
+            "questions WITH their marking schemes by default. Set "
+            "answer_key_state='none' to audit which questions have no scheme."
         ),
     )
     def search_questions(
@@ -316,17 +345,25 @@ def build_server(corpus: Corpus):
         question_type: Optional[str] = None,
         difficulty: Optional[str] = None,
         keyword: Optional[str] = None,
+        source_document_id: Optional[str] = None,
         limit: int = 20,
         require_answer_key: bool = True,
         answer_key_state: str = "any",
     ) -> dict:
-        rows = corpus.search(
-            subject=subject, grade=grade, topic=topic, marks=marks,
-            min_marks=min_marks, max_marks=max_marks,
-            question_type=question_type, difficulty=difficulty, keyword=keyword,
-            limit=max(1, min(limit, 200)), require_answer_key=require_answer_key,
-            answer_key_state=answer_key_state,
-        )
+        try:
+            rows = corpus.search(
+                subject=subject, grade=grade, topic=topic, marks=marks,
+                min_marks=min_marks, max_marks=max_marks,
+                question_type=question_type, difficulty=difficulty,
+                keyword=keyword, source_document_id=source_document_id,
+                limit=max(1, min(limit, 200)),
+                require_answer_key=require_answer_key,
+                answer_key_state=answer_key_state,
+            )
+        except ValueError as exc:
+            # An agent that misspells a filter is told so, rather than handed
+            # a set it did not ask for.
+            return {"error": str(exc)}
         return {"count": len(rows), "questions": [_brief(r) for r in rows]}
 
     @mcp.tool(

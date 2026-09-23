@@ -366,6 +366,13 @@ def _report_competency(paper: GeneratedPaper, target: float | None) -> list[str]
     return warnings
 
 
+def _borrowing_warnings(opt_result) -> list[str]:
+    """The optimizer's gap lines that say a section was filled from outside
+    the chapters the request chose. The other gap lines are about a section
+    printing short, which the paper itself already says."""
+    return [g for g in opt_result.gaps if "outside the selected chapters" in g]
+
+
 def _overlap_warnings(paper: GeneratedPaper) -> list[str]:
     return [f"Set {label} repeats {n} question(s) from an earlier set: the question bank "
             f"has no unused question of the same marks and type left in the chapters "

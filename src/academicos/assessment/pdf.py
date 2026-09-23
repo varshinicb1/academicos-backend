@@ -147,13 +147,23 @@ def _register_unicode_font() -> None:
 # container falls back to Helvetica (WinAnsi only) when DejaVu is missing.
 _PDF_PUNCTUATION = (("—", "-"), ("–", "-"), ("•", "-"),
                     ("‘", "'"), ("’", "'"), ("“", '"'), ("”", '"'))
-# Subscript digits U+2080-2089; superscript digits U+2070, U+00B9, U+00B2,
-# U+00B3, U+2074-2079. The digit is real content (a formula's subscript, an
-# exponent), so it is kept as a plain digit rather than dropped.
-_SUB_SUPER_DIGITS = str.maketrans(
-    "₀₁₂₃₄₅₆₇₈₉"
-    "⁰¹²³⁴⁵⁶⁷⁸⁹",
-    "01234567890123456789")
+# Subscript digits U+2080-2089. A subscript names a thing -- H2O, a1 -- and
+# never changes a value, so a plain digit reads as the ASCII spelling already
+# in use.
+_SUB_DIGITS = str.maketrans("₀₁₂₃₄₅₆₇₈₉", "0123456789")
+# Superscripts are an exponent, and a plain digit is a DIFFERENT quantity:
+# cbe:q:Maths8BS2 is "(A) 4y³ (B) 9y³ (C) 13y³ (D) 36y³" and printed
+# "(A) 4y3 (B) 9y3 ..." -- the whole point of the question, gone (re-audit,
+# 2026-09-23). Printed with the caret a teacher writes on a board, over the
+# whole run, so "10⁻³" is "10^-3" and not "10^-^3".
+_SUPERSCRIPTS = {"⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4", "⁵": "5",
+                 "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9", "⁺": "+", "⁻": "-",
+                 "⁼": "=", "⁽": "(", "⁾": ")", "ⁿ": "n"}
+_SUPER_RUN = re.compile(f"[{''.join(_SUPERSCRIPTS)}]+")
+
+
+def _exponent(match: re.Match) -> str:
+    return "^" + "".join(_SUPERSCRIPTS[c] for c in match.group(0))
 _PDF_MATH = (
     ("−", "-"), ("√", "sqrt"), ("∴", "therefore"), ("∵", "because"),
     ("∠", "angle "), ("⇒", "=>"), ("⟹", "=>"), ("≠", "!="),
@@ -245,7 +255,7 @@ def pdf_safe(text: str) -> str:
     """Text a base PDF font can print, keeping every symbol's meaning."""
     for a, b in _PDF_PUNCTUATION:
         text = text.replace(a, b)
-    text = text.translate(_SUB_SUPER_DIGITS)
+    text = _SUPER_RUN.sub(_exponent, text.translate(_SUB_DIGITS))
     for a, b in _PDF_MATH:
         text = text.replace(a, b)
     text = _PRIVATE_USE.sub("", text)

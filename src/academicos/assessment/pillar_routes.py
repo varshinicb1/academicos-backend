@@ -358,10 +358,17 @@ def catalog_chapters(subject: str, grade: int, response: Response) -> list[Chapt
             chapter_id=cid, chapter_name=cid.replace("-", " ").title(),
             question_count=len(qs), marks_available=sorted({q.marks for q in qs}),
         ))
-    if "unmapped" in by_chapter and not syllabus:
+    if "unmapped" in by_chapter:
+        # Emitted whether or not a syllabus exists. It used to be `and not
+        # syllabus`, i.e. never for a main subject, so every question the
+        # tagger could not place disappeared from the only list a teacher
+        # picks chapters from: live on 2026-09-23 Science 6 showed 8 of its
+        # 247 served questions and Mathematics 6 showed 69 of 446. The
+        # questions are real and keyed; what is missing is their chapter, and
+        # that is what the name says.
         qs = by_chapter["unmapped"]
         out.append(ChapterEntry(
-            chapter_id="unmapped", chapter_name="Unmapped",
+            chapter_id="unmapped", chapter_name="Not yet matched to a chapter",
             question_count=len(qs), marks_available=sorted({q.marks for q in qs}),
         ))
     response.headers["Cache-Control"] = "public, max-age=300"

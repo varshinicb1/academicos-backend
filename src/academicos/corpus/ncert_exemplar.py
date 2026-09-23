@@ -2403,6 +2403,16 @@ def to_bank_record(q: ExemplarQuestion, chapter_id: str = "",
             "correctOptions": list(q.answer_letters),
             "multipleCorrect": q.section_kind == MCQ_MULTIPLE,
             "marksBasis": "assigned_by_section_kind",
+            # Exemplar prints neither a difficulty nor a Bloom level: the
+            # difficulty below is read off the marks and the Bloom level is the
+            # bank's neutral default. Flagged as the other importers flag what
+            # they supply (bank_merge, assessment/mapping), so
+            # `selection.difficulty_signal` does not take a guess for a
+            # judgement -- unflagged, every marks value held exactly one
+            # difficulty and all three tiers returned the same paper
+            # (re-audit, 2026-09-23).
+            "difficultyInferred": True,
+            "bloomInferred": True,
             "answerDocumentId": answer_doc,
         },
         "diagramAssetId": None, "mapAssetId": None,

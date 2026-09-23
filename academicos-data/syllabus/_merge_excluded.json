@@ -1,334 +1,6 @@
 {
  "excluded": [
   {
-   "id": "cbse:q:src:de9d7a7a1c777974c1dd9138:30",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Science",
-   "grade": 10,
-   "stem": "(a) (i) An object of 5 cm height is placed at a distance of 20 cm from the optical centre of a concave lens of focal length 18 cm. Calculate (1) image distance and (2) the magnification in this case. "
-  },
-  {
-   "id": "cbse:q:src:f01c7b6fd6fca7ef7d9987dc:27",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Mathematics",
-   "grade": 10,
-   "stem": "The altitude of a right-angled triangle is 7 cm less than its base. If its hypotenuse is 17 cm long, then"
-  },
-  {
-   "id": "cbse:q:src:f01c7b6fd6fca7ef7d9987dc:34",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Mathematics",
-   "grade": 10,
-   "stem": "Two poles of equal height are standing opposite each other on either side of a road, which is 100 m wide. From a point somewhere between them on the road, the angles of elevation of the top of the pol"
-  },
-  {
-   "id": "cbse:q:src:7d85e69ac9a355f7b0d2eac0:32",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Social Science",
-   "grade": 10,
-   "stem": "(a) Explain any five challenges faced by political parties in India. 5 1=5"
-  },
-  {
-   "id": "cbse:q:src:7d85e69ac9a355f7b0d2eac0:33",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Social Science",
-   "grade": 10,
-   "stem": "(a) How does credit play a positive and a negative role ? Explain with examples."
-  },
-  {
-   "id": "cbse:q:src:856803fb4333bfbe91cef527:28",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Social Science",
-   "grade": 10,
-   "stem": "How is a democracy accountable and responsive to the needs and expectations of the citizens ? Analyse."
-  },
-  {
-   "id": "cbse:q:src:856803fb4333bfbe91cef527:29",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Social Science",
-   "grade": 10,
-   "stem": "How are primary, secondary and tertiary sectors dependent on each other ? Explain."
-  },
-  {
-   "id": "cbse:q:src:856803fb4333bfbe91cef527:31",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Social Science",
-   "grade": 10,
-   "stem": "(a) Explain any five factors affecting the location of industries. 5 1=5"
-  },
-  {
-   "id": "cbse:q:src:856803fb4333bfbe91cef527:32",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Social Science",
-   "grade": 10,
-   "stem": "(a) Explain the process of unification of Germany."
-  },
-  {
-   "id": "cbse:q:src:a493a2f3223053e6b8581787:36",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Social Science",
-   "grade": 10,
-   "stem": "Read the following extract and answer the questions that follow : 4 Linguistic diversity of India How many languages do we have in India ? The answer depends on how one counts it. The latest informati"
-  },
-  {
-   "id": "cbse:q:src:f73780490a16ef016ae67e67:27",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Social Science",
-   "grade": 10,
-   "stem": "Analyse any three challenges faced by political parties in India."
-  },
-  {
-   "id": "cbse:q:src:f73780490a16ef016ae67e67:32",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Social Science",
-   "grade": 10,
-   "stem": "(a) Explain with examples the role of democracy in the reduction of inequality and poverty."
-  },
-  {
-   "id": "cbse:q:src:f73780490a16ef016ae67e67:35",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Social Science",
-   "grade": 10,
-   "stem": "Read the given source and answer the questions that follow : Conservation of Resources At the international level, the Club of Rome advocated resource conservation for the first time in a more systema"
-  },
-  {
-   "id": "cbse:q:src:4d332115f14c6aeeaa34b438:21",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Accountancy",
-   "grade": 12,
-   "stem": "Pawan Ltd. was registered with an authorised capital of ₹ 10,00,000 divided into 1,00,000 equity shares of ₹ 10 each. The company offered to the public for subscription, 80,000 equity shares. The amou"
-  },
-  {
-   "id": "cbse:q:src:4d332115f14c6aeeaa34b438:23",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Accountancy",
-   "grade": 12,
-   "stem": "(a) Lotus Ltd. invited applications for issuing 80,000 equity shares of ₹ 10 each at a premium of ₹ 4 per share. The amount was payable as follows : On application -₹ 5 per share and On allotment -₹ 9"
-  },
-  {
-   "id": "cbse:q:src:4d332115f14c6aeeaa34b438:25",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Accountancy",
-   "grade": 12,
-   "stem": "Trisha, Anisha and Rishika were partners in a firm sharing profits and losses in the ratio of 2 : 2 : 1. Their Balance Sheet as at 31st March, 2022 was as follows : Balance Sheet of Trisha, Anisha and"
-  },
-  {
-   "id": "cbse:q:src:4d332115f14c6aeeaa34b438:32",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Accountancy",
-   "grade": 12,
-   "stem": "Identify and state the significance of any two ratios that are calculated to measure the efficiency of operations of business based on effective utilisation of resources."
-  },
-  {
-   "id": "cbse:q:src:4d332115f14c6aeeaa34b438:33",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Accountancy",
-   "grade": 12,
-   "stem": "(a) Calculate Gross Profit Ratio from the following information : 4 Average Inventory ₹ 1,60,000; Inventory Turnover Ratio 8 times, Average Trade Receivables ₹ 2,00,000; Trade Receivables Turnover Rat"
-  },
-  {
-   "id": "cbse:q:src:d4ab284479dbd2fbc3a07c7f:21",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Accountancy",
-   "grade": 12,
-   "stem": "Ravi, Kavi and Chand were partners sharing profits in the ratio of 5 : 3 : 2. On 31st March, 2022, their Balance Sheet was as follows : Balance Sheet of Ravi, Kavi and Chand as on 31st March, 2022 Lia"
-  },
-  {
-   "id": "cbse:q:src:d4ab284479dbd2fbc3a07c7f:22",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Accountancy",
-   "grade": 12,
-   "stem": "On 1st April, 2021, Prabha Ltd. was formed with an authorised capital of ₹ 90,00,000 divided into 90,000 equity shares of ₹ 100 each. The company invited applications for 80,000 equity shares. The amo"
-  },
-  {
-   "id": "cbse:q:src:bbd21b0e42bac3cafc7a33a0:26",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Accountancy",
-   "grade": 12,
-   "stem": "(a) Yash Ltd. invited applications for 50,000 equity shares of ₹10 each at a premium of 10%. The amount was payable as follows : On application -₹ 3 per share; on allotment (including premium) -₹ 3 pe"
-  },
-  {
-   "id": "cbse:q:src:be7fd19527d3a0bcac687817:21",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Accountancy",
-   "grade": 12,
-   "stem": "Shivalik Limited was registered with an authorized capital of ₹ 10,00,000 divided into equity shares of ₹ 10 each. It offered 50,000 equity shares to the public. The amount was payable as follows : On"
-  },
-  {
-   "id": "cbse:q:src:be7fd19527d3a0bcac687817:22",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Accountancy",
-   "grade": 12,
-   "stem": "Archana, Vandana and Arti were partners in a firm sharing profits and losses in the ratio of 5 : 3 : 2. Their Balance Sheet on 31st March, 2023 was as follows : Balance Sheet of Archana, Vandana and A"
-  },
-  {
-   "id": "cbse:q:src:be7fd19527d3a0bcac687817:24",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Accountancy",
-   "grade": 12,
-   "stem": "On 1st April, 2022, Zubian Ltd. issued ₹ 10,00,000, 7% Debentures of ₹ 100 each at a premium of 6%, redeemable at a premium of 4% after five years. The company had a balance of ₹ 30,000 in Securities "
-  },
-  {
-   "id": "cbse:q:src:be7fd19527d3a0bcac687817:25",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Accountancy",
-   "grade": 12,
-   "stem": "(a) Qumtan Ltd. invited applications for issuing 1,00,000 equity shares of ₹ 10 each at a premium of ₹ 6 per share. The amount was payable as follows : On Application and Allotment -₹ 8 per share (inc"
-  },
-  {
-   "id": "cbse:q:src:be7fd19527d3a0bcac687817:26",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Accountancy",
-   "grade": 12,
-   "stem": "(a) Shubhi and Revanshi were partners in a firm sharing profits and losses in the ratio of 3 : 2. Their Balance Sheet as at 31st March, 2023 was as follows : Balance Sheet of Shubhi and Revanshi as at"
-  },
-  {
-   "id": "cbse:q:src:be7fd19527d3a0bcac687817:32",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Accountancy",
-   "grade": 12,
-   "stem": "From the given information, calculate : 3 Particulars Amount (₹) Current Assets 4,00,000 Inventory 1,00,000 Current Liabilities 2,00,000 Net Profit Before Tax 7,20,000 Revenue from Operations 10,00,00"
-  },
-  {
-   "id": "cbse:q:src:be7fd19527d3a0bcac687817:33",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Accountancy",
-   "grade": 12,
-   "stem": "(a) From the given Balance Sheet of Geox Ltd., prepare Common Size Balance Sheet : 4 Balance Sheet of Geox Ltd. as at 31st March, 2023 Particulars Note No."
-  },
-  {
-   "id": "cbse:q:src:ad3ce0b4b8fd4acfaef20782:32",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Accountancy",
-   "grade": 12,
-   "stem": "From the given information, calculate : 3 Particulars Amount (₹) Liquid Assets 8,00,000 Inventory 2,00,000 Current Liabilities 4,00,000 Net Profit Before Tax 12,80,000 10% Debentures 12,00,000 Shareho"
-  },
-  {
-   "id": "cbse:q:src:77dfb7463111e74de8cc31bb:32",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Accountancy",
-   "grade": 12,
-   "stem": "From the given information, calculate : 3 Particulars Amount (₹) Credit Revenue from Operations 80,00,000 Debtors 25,00,000 Bills Receivables 15,00,000 Total Assets 50,00,000 10% Debentures 12,00,000 "
-  },
-  {
-   "id": "cbse:q:src:09a7d8a43ab84dbfb45c1229:22",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Biology",
-   "grade": 12,
-   "stem": "Identify a, b, c, d, e and f in the table given below : 3 Sl. No. Organism Bioactive Molecule Use"
-  },
-  {
-   "id": "cbse:q:src:51de56e82e732c8705ea398e:27",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Biology",
-   "grade": 12,
-   "stem": "(a) Construct a pyramid of biomass in sea with phytoplankton and fishes. Explain giving reasons about the characteristic of the constructed pyramid."
-  },
-  {
-   "id": "cbse:q:src:784bd959b5f48fd5620f57e6:26",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Biology",
-   "grade": 12,
-   "stem": "In a family, the father, the daughter and the son are colour blind, whereas the mother has normal vision. Do you think the son and the daughter have inherited the disease from their father ? Work out "
-  },
-  {
-   "id": "cbse:q:src:784bd959b5f48fd5620f57e6:27",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Biology",
-   "grade": 12,
-   "stem": "(a) (i) What are transgenic animals ? 1 (ii) Name the first transgenic cow and state its importance."
-  },
-  {
-   "id": "cbse:q:src:784bd959b5f48fd5620f57e6:28",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Biology",
-   "grade": 12,
-   "stem": "(a) Explain how it is ensured that the orchid Ophrys is pollinated by a specific species of bee. 2 -11 16 IÊS> K 29 30 -3"
-  },
-  {
-   "id": "cbse:q:src:3901e48d946b1f956b5a21c7:22",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Business Studies",
-   "grade": 12,
-   "stem": "Kanav, after passing out of college with specialization in renewable energy, was determined to start a solar power plant. The venture required heavy investment in plant and machinery and less on manua"
-  },
-  {
-   "id": "cbse:q:src:3901e48d946b1f956b5a21c7:31",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Business Studies",
-   "grade": 12,
-   "stem": "(a) Explain the following techniques of Scientific Management : 6 (ii) Differential piece wage system (iii) Motion study"
-  },
-  {
-   "id": "cbse:q:src:d6a0af7f19eb5ac30bc846fe:23",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Physics",
-   "grade": 12,
-   "stem": "Two wires of equal lengths are shaped in the form of a square loop and a circular loop. Both loops are suspended in a uniform magnetic field. Prove that for the same current, the circular loop will ex"
-  },
-  {
-   "id": "cbse:q:src:6df8d2b3a2f6c8cce1428573:19",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Physics",
-   "grade": 12,
-   "stem": "An object is placed 30 cm in front of a concave mirror of radius of curvature 40 cm. Find the (i) position of the image formed and (ii) magnification of the image."
-  },
-  {
-   "id": "cbse:q:src:6df8d2b3a2f6c8cce1428573:31",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Physics",
-   "grade": 12,
-   "stem": "(a) (i) Derive an expression for potential energy of an electric dipole p in an external uniform electric field E . When is the potential energy of the dipole (1) maximum, and (2) minimum ? (ii) An el"
-  },
-  {
-   "id": "cbse:q:src:2eeb4a479953ae7153287aeb:25",
-   "source": "cbse_board_paper",
-   "reason": "scheme-marks-unallocated",
-   "subject": "Physics",
-   "grade": 12,
-   "stem": "(a) Draw the graphs showing the variation of the following with the frequency of ac source in a circuit : (ii) Capacitive reactance (iii) Inductive reactance"
-  },
-  {
    "id": "cbse:q:src:af50a3f7e666fdea9cee608f:4",
    "source": "cbse_board_paper",
    "reason": "no-verified-key",
@@ -26137,6 +25809,334 @@
    "stem": "(a) Describe the process of reorganisation of states in India after 1952."
   },
   {
+   "id": "cbse:q:src:de9d7a7a1c777974c1dd9138:30",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Science",
+   "grade": 10,
+   "stem": "(a) (i) An object of 5 cm height is placed at a distance of 20 cm from the optical centre of a concave lens of focal length 18 cm. Calculate (1) image distance and (2) the magnification in this case. "
+  },
+  {
+   "id": "cbse:q:src:f01c7b6fd6fca7ef7d9987dc:27",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Mathematics",
+   "grade": 10,
+   "stem": "The altitude of a right-angled triangle is 7 cm less than its base. If its hypotenuse is 17 cm long, then"
+  },
+  {
+   "id": "cbse:q:src:f01c7b6fd6fca7ef7d9987dc:34",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Mathematics",
+   "grade": 10,
+   "stem": "Two poles of equal height are standing opposite each other on either side of a road, which is 100 m wide. From a point somewhere between them on the road, the angles of elevation of the top of the pol"
+  },
+  {
+   "id": "cbse:q:src:7d85e69ac9a355f7b0d2eac0:32",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Social Science",
+   "grade": 10,
+   "stem": "(a) Explain any five challenges faced by political parties in India. 5 1=5"
+  },
+  {
+   "id": "cbse:q:src:7d85e69ac9a355f7b0d2eac0:33",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Social Science",
+   "grade": 10,
+   "stem": "(a) How does credit play a positive and a negative role ? Explain with examples."
+  },
+  {
+   "id": "cbse:q:src:856803fb4333bfbe91cef527:28",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Social Science",
+   "grade": 10,
+   "stem": "How is a democracy accountable and responsive to the needs and expectations of the citizens ? Analyse."
+  },
+  {
+   "id": "cbse:q:src:856803fb4333bfbe91cef527:29",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Social Science",
+   "grade": 10,
+   "stem": "How are primary, secondary and tertiary sectors dependent on each other ? Explain."
+  },
+  {
+   "id": "cbse:q:src:856803fb4333bfbe91cef527:31",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Social Science",
+   "grade": 10,
+   "stem": "(a) Explain any five factors affecting the location of industries. 5 1=5"
+  },
+  {
+   "id": "cbse:q:src:856803fb4333bfbe91cef527:32",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Social Science",
+   "grade": 10,
+   "stem": "(a) Explain the process of unification of Germany."
+  },
+  {
+   "id": "cbse:q:src:a493a2f3223053e6b8581787:36",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Social Science",
+   "grade": 10,
+   "stem": "Read the following extract and answer the questions that follow : 4 Linguistic diversity of India How many languages do we have in India ? The answer depends on how one counts it. The latest informati"
+  },
+  {
+   "id": "cbse:q:src:f73780490a16ef016ae67e67:27",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Social Science",
+   "grade": 10,
+   "stem": "Analyse any three challenges faced by political parties in India."
+  },
+  {
+   "id": "cbse:q:src:f73780490a16ef016ae67e67:32",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Social Science",
+   "grade": 10,
+   "stem": "(a) Explain with examples the role of democracy in the reduction of inequality and poverty."
+  },
+  {
+   "id": "cbse:q:src:f73780490a16ef016ae67e67:35",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Social Science",
+   "grade": 10,
+   "stem": "Read the given source and answer the questions that follow : Conservation of Resources At the international level, the Club of Rome advocated resource conservation for the first time in a more systema"
+  },
+  {
+   "id": "cbse:q:src:4d332115f14c6aeeaa34b438:21",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Accountancy",
+   "grade": 12,
+   "stem": "Pawan Ltd. was registered with an authorised capital of ₹ 10,00,000 divided into 1,00,000 equity shares of ₹ 10 each. The company offered to the public for subscription, 80,000 equity shares. The amou"
+  },
+  {
+   "id": "cbse:q:src:4d332115f14c6aeeaa34b438:23",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Accountancy",
+   "grade": 12,
+   "stem": "(a) Lotus Ltd. invited applications for issuing 80,000 equity shares of ₹ 10 each at a premium of ₹ 4 per share. The amount was payable as follows : On application -₹ 5 per share and On allotment -₹ 9"
+  },
+  {
+   "id": "cbse:q:src:4d332115f14c6aeeaa34b438:25",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Accountancy",
+   "grade": 12,
+   "stem": "Trisha, Anisha and Rishika were partners in a firm sharing profits and losses in the ratio of 2 : 2 : 1. Their Balance Sheet as at 31st March, 2022 was as follows : Balance Sheet of Trisha, Anisha and"
+  },
+  {
+   "id": "cbse:q:src:4d332115f14c6aeeaa34b438:32",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Accountancy",
+   "grade": 12,
+   "stem": "Identify and state the significance of any two ratios that are calculated to measure the efficiency of operations of business based on effective utilisation of resources."
+  },
+  {
+   "id": "cbse:q:src:4d332115f14c6aeeaa34b438:33",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Accountancy",
+   "grade": 12,
+   "stem": "(a) Calculate Gross Profit Ratio from the following information : 4 Average Inventory ₹ 1,60,000; Inventory Turnover Ratio 8 times, Average Trade Receivables ₹ 2,00,000; Trade Receivables Turnover Rat"
+  },
+  {
+   "id": "cbse:q:src:d4ab284479dbd2fbc3a07c7f:21",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Accountancy",
+   "grade": 12,
+   "stem": "Ravi, Kavi and Chand were partners sharing profits in the ratio of 5 : 3 : 2. On 31st March, 2022, their Balance Sheet was as follows : Balance Sheet of Ravi, Kavi and Chand as on 31st March, 2022 Lia"
+  },
+  {
+   "id": "cbse:q:src:d4ab284479dbd2fbc3a07c7f:22",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Accountancy",
+   "grade": 12,
+   "stem": "On 1st April, 2021, Prabha Ltd. was formed with an authorised capital of ₹ 90,00,000 divided into 90,000 equity shares of ₹ 100 each. The company invited applications for 80,000 equity shares. The amo"
+  },
+  {
+   "id": "cbse:q:src:bbd21b0e42bac3cafc7a33a0:26",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Accountancy",
+   "grade": 12,
+   "stem": "(a) Yash Ltd. invited applications for 50,000 equity shares of ₹10 each at a premium of 10%. The amount was payable as follows : On application -₹ 3 per share; on allotment (including premium) -₹ 3 pe"
+  },
+  {
+   "id": "cbse:q:src:be7fd19527d3a0bcac687817:21",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Accountancy",
+   "grade": 12,
+   "stem": "Shivalik Limited was registered with an authorized capital of ₹ 10,00,000 divided into equity shares of ₹ 10 each. It offered 50,000 equity shares to the public. The amount was payable as follows : On"
+  },
+  {
+   "id": "cbse:q:src:be7fd19527d3a0bcac687817:22",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Accountancy",
+   "grade": 12,
+   "stem": "Archana, Vandana and Arti were partners in a firm sharing profits and losses in the ratio of 5 : 3 : 2. Their Balance Sheet on 31st March, 2023 was as follows : Balance Sheet of Archana, Vandana and A"
+  },
+  {
+   "id": "cbse:q:src:be7fd19527d3a0bcac687817:24",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Accountancy",
+   "grade": 12,
+   "stem": "On 1st April, 2022, Zubian Ltd. issued ₹ 10,00,000, 7% Debentures of ₹ 100 each at a premium of 6%, redeemable at a premium of 4% after five years. The company had a balance of ₹ 30,000 in Securities "
+  },
+  {
+   "id": "cbse:q:src:be7fd19527d3a0bcac687817:25",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Accountancy",
+   "grade": 12,
+   "stem": "(a) Qumtan Ltd. invited applications for issuing 1,00,000 equity shares of ₹ 10 each at a premium of ₹ 6 per share. The amount was payable as follows : On Application and Allotment -₹ 8 per share (inc"
+  },
+  {
+   "id": "cbse:q:src:be7fd19527d3a0bcac687817:26",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Accountancy",
+   "grade": 12,
+   "stem": "(a) Shubhi and Revanshi were partners in a firm sharing profits and losses in the ratio of 3 : 2. Their Balance Sheet as at 31st March, 2023 was as follows : Balance Sheet of Shubhi and Revanshi as at"
+  },
+  {
+   "id": "cbse:q:src:be7fd19527d3a0bcac687817:32",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Accountancy",
+   "grade": 12,
+   "stem": "From the given information, calculate : 3 Particulars Amount (₹) Current Assets 4,00,000 Inventory 1,00,000 Current Liabilities 2,00,000 Net Profit Before Tax 7,20,000 Revenue from Operations 10,00,00"
+  },
+  {
+   "id": "cbse:q:src:be7fd19527d3a0bcac687817:33",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Accountancy",
+   "grade": 12,
+   "stem": "(a) From the given Balance Sheet of Geox Ltd., prepare Common Size Balance Sheet : 4 Balance Sheet of Geox Ltd. as at 31st March, 2023 Particulars Note No."
+  },
+  {
+   "id": "cbse:q:src:ad3ce0b4b8fd4acfaef20782:32",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Accountancy",
+   "grade": 12,
+   "stem": "From the given information, calculate : 3 Particulars Amount (₹) Liquid Assets 8,00,000 Inventory 2,00,000 Current Liabilities 4,00,000 Net Profit Before Tax 12,80,000 10% Debentures 12,00,000 Shareho"
+  },
+  {
+   "id": "cbse:q:src:77dfb7463111e74de8cc31bb:32",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Accountancy",
+   "grade": 12,
+   "stem": "From the given information, calculate : 3 Particulars Amount (₹) Credit Revenue from Operations 80,00,000 Debtors 25,00,000 Bills Receivables 15,00,000 Total Assets 50,00,000 10% Debentures 12,00,000 "
+  },
+  {
+   "id": "cbse:q:src:09a7d8a43ab84dbfb45c1229:22",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Biology",
+   "grade": 12,
+   "stem": "Identify a, b, c, d, e and f in the table given below : 3 Sl. No. Organism Bioactive Molecule Use"
+  },
+  {
+   "id": "cbse:q:src:51de56e82e732c8705ea398e:27",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Biology",
+   "grade": 12,
+   "stem": "(a) Construct a pyramid of biomass in sea with phytoplankton and fishes. Explain giving reasons about the characteristic of the constructed pyramid."
+  },
+  {
+   "id": "cbse:q:src:784bd959b5f48fd5620f57e6:26",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Biology",
+   "grade": 12,
+   "stem": "In a family, the father, the daughter and the son are colour blind, whereas the mother has normal vision. Do you think the son and the daughter have inherited the disease from their father ? Work out "
+  },
+  {
+   "id": "cbse:q:src:784bd959b5f48fd5620f57e6:27",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Biology",
+   "grade": 12,
+   "stem": "(a) (i) What are transgenic animals ? 1 (ii) Name the first transgenic cow and state its importance."
+  },
+  {
+   "id": "cbse:q:src:784bd959b5f48fd5620f57e6:28",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Biology",
+   "grade": 12,
+   "stem": "(a) Explain how it is ensured that the orchid Ophrys is pollinated by a specific species of bee. 2 -11 16 IÊS> K 29 30 -3"
+  },
+  {
+   "id": "cbse:q:src:3901e48d946b1f956b5a21c7:22",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Business Studies",
+   "grade": 12,
+   "stem": "Kanav, after passing out of college with specialization in renewable energy, was determined to start a solar power plant. The venture required heavy investment in plant and machinery and less on manua"
+  },
+  {
+   "id": "cbse:q:src:3901e48d946b1f956b5a21c7:31",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Business Studies",
+   "grade": 12,
+   "stem": "(a) Explain the following techniques of Scientific Management : 6 (ii) Differential piece wage system (iii) Motion study"
+  },
+  {
+   "id": "cbse:q:src:d6a0af7f19eb5ac30bc846fe:23",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Physics",
+   "grade": 12,
+   "stem": "Two wires of equal lengths are shaped in the form of a square loop and a circular loop. Both loops are suspended in a uniform magnetic field. Prove that for the same current, the circular loop will ex"
+  },
+  {
+   "id": "cbse:q:src:6df8d2b3a2f6c8cce1428573:19",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Physics",
+   "grade": 12,
+   "stem": "An object is placed 30 cm in front of a concave mirror of radius of curvature 40 cm. Find the (i) position of the image formed and (ii) magnification of the image."
+  },
+  {
+   "id": "cbse:q:src:6df8d2b3a2f6c8cce1428573:31",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Physics",
+   "grade": 12,
+   "stem": "(a) (i) Derive an expression for potential energy of an electric dipole p in an external uniform electric field E . When is the potential energy of the dipole (1) maximum, and (2) minimum ? (ii) An el"
+  },
+  {
+   "id": "cbse:q:src:2eeb4a479953ae7153287aeb:25",
+   "source": "cbse_board_paper",
+   "reason": "scheme-marks-unallocated",
+   "subject": "Physics",
+   "grade": 12,
+   "stem": "(a) Draw the graphs showing the variation of the following with the frequency of ac source in a circuit : (ii) Capacitive reactance (iii) Inductive reactance"
+  },
+  {
    "id": "cbe:q:English9JV1a",
    "source": "cbse_question_bank",
    "reason": "mcq-answer-unresolved",
@@ -37418,7 +37418,6 @@
   }
  ],
  "counts": {
-  "scheme-marks-unallocated": 41,
   "no-verified-key": 3214,
   "stem-fragment": 58,
   "symbol-loss": 7,
@@ -37426,6 +37425,7 @@
   "garbled-script": 112,
   "page-furniture": 1,
   "figure-unavailable": 122,
+  "scheme-marks-unallocated": 41,
   "mcq-answer-unresolved": 264,
   "passage-unavailable": 49,
   "stem-too-short": 12,
