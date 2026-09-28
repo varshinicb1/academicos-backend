@@ -1627,7 +1627,7 @@ def _lesson_response(lesson) -> ScheduledLessonResponse:
                                    subtopic_id=lesson.subtopic_id, date=lesson.date,
                                    status=lesson.status, note=lesson.note,
                                    completed_by=lesson.completed_by, completed_at=lesson.completed_at,
-                                   created_at=lesson.created_at)
+                                   created_at=lesson.created_at, section_id=lesson.section_id)
 
 
 @router.post("/books/{book_id}/schedule", response_model=ScheduleBookResponse)
@@ -1649,11 +1649,28 @@ def schedule_book(book_id: str, academic_year_id: str, req: ScheduleBookRequest,
     store = _require()
     _require_school_owns_book(book_id, principal)
     _require_school_owns_academic_year(academic_year_id, principal)
+    periods = req.periods_per_week
+    if req.section_id is not None:
+        # SCH-4: this section's own plan, on its own week and allocation.
+        section = _require_school_owns_section(req.section_id, principal)
+        book = store.get_book(book_id)
+        subject = store.get_subject(book.subject_id) if book else None
+        if subject is None or subject.grade_id != section.grade_id:
+            raise HTTPException(422, "that book is not one of this section's class's books")
+        if periods is None:
+            try:
+                periods = scheduling_mod._resolve_cadence(store, academic_year_id, book_id, None,
+                                                          req.section_id)
+            except ValueError as e:
+                raise HTTPException(422, str(e))
+    elif periods is None:
+        raise HTTPException(422, "periodsPerWeek is required for the school-wide plan; "
+                                 "pass sectionId to plan one section from its allocation")
     try:
         result = scheduling_mod.schedule_book(
             store, school_id=principal.school_id, academic_year_id=academic_year_id,
-            book_id=book_id, periods_per_week=req.periods_per_week, force=req.force,
-            from_date=_school_today().isoformat())
+            book_id=book_id, periods_per_week=periods, force=req.force,
+            from_date=_school_today().isoformat(), section_id=req.section_id)
     except ValueError as e:
         raise HTTPException(409, str(e))
     return ScheduleBookResponse(
@@ -1668,15 +1685,20 @@ def schedule_book(book_id: str, academic_year_id: str, req: ScheduleBookRequest,
         teaching_periods_available=result.teaching_periods_available,
         lessons_kept=result.lessons_kept, past_lessons_kept=result.past_lessons_kept,
         all_subtopics_scheduled=result.all_subtopics_scheduled,
-        warning=result.warning)
+        warning=result.warning, section_id=result.section_id)
 
 
 @router.get("/books/{book_id}/schedule", response_model=list[ScheduledLessonResponse])
 def get_book_schedule(book_id: str, academic_year_id: str,
+                      section_id: Optional[str] = Query(default=None, alias="sectionId"),
                       current: User = Depends(get_current_user)) -> list[ScheduledLessonResponse]:
+    """One plan of the book: a section's (sectionId), or the school-wide one."""
     store = _require()
     _require_school_owns_book(book_id, current)
-    return [_lesson_response(l) for l in store.scheduled_lessons_for_book(academic_year_id, book_id)]
+    if section_id is not None:
+        _require_school_owns_section(section_id, current)
+    return [_lesson_response(l)
+            for l in store.scheduled_lessons_for_book(academic_year_id, book_id, section_id)]
 
 
 @router.get("/schedule", response_model=list[ScheduledLessonResponse])
@@ -1739,10 +1761,24 @@ def get_my_schedule(start_date: str, end_date: str,
         chosen = store.selected_book_for_subject(book.subject_id) if book else None
         if chosen is not None:
             book_ids.add(chosen.id)
-    if not book_ids:
+    # SCH-4: a section's plan is the allocated teacher's (M1.2), whatever
+    # the book assignments say.
+    my_cells = {(a.section_id, a.subject_id) for a in store.allocations_for_teacher(current.id)}
+    if not book_ids and not my_cells:
         return []
+    subject_of_book: dict[str, Optional[str]] = {}
+
+    def _mine(l) -> bool:
+        if l.section_id is None:
+            return l.book_id in book_ids
+        if l.book_id not in subject_of_book:
+            b = store.get_book(l.book_id)
+            subject_of_book[l.book_id] = b.subject_id if b else None
+        return (l.section_id, subject_of_book[l.book_id]) in my_cells
     lessons = [l for l in store.scheduled_lessons_for_date_range(current.school_id, start_date, end_date)
-              if l.book_id in book_ids]
+              if _mine(l)]
+    section_names = {s.id: s for s in (store.get_section(sid) for sid in {l.section_id for l in lessons
+                                                                          if l.section_id}) if s}
 
     out: list[MyScheduleEntryResponse] = []
     for l in lessons:
@@ -1758,7 +1794,9 @@ def get_my_schedule(start_date: str, end_date: str,
             lesson_id=l.id, date=l.date, status=l.status, note=l.note, book_id=l.book_id,
             book_title=book.title if book else "", subject_name=subject.name if subject else "",
             chapter_name=chapter.name if chapter else "", topic_name=topic.name if topic else "",
-            subtopic_id=subtopic.id, subtopic_name=subtopic.name))
+            subtopic_id=subtopic.id, subtopic_name=subtopic.name, section_id=l.section_id,
+            section_name=(store._section_label(section_names[l.section_id])
+                          if l.section_id in section_names else None)))
     return out
 
 
@@ -1777,7 +1815,13 @@ def mark_lesson(lesson_id: str, req: MarkLessonRequest,
         raise HTTPException(404, "scheduled lesson not found")
     if lesson.school_id != current.school_id:
         raise HTTPException(403, "this lesson belongs to a different school")
-    is_assigned = lesson.book_id in {a.book_id for a in store.assignments_for_teacher(current.id)}
+    if lesson.section_id is not None:
+        # SCH-4: a section's lesson is its allocated teacher's (M1.2).
+        book = store.get_book(lesson.book_id)
+        alloc = store.allocation_for(lesson.section_id, book.subject_id) if book else None
+        is_assigned = alloc is not None and alloc.teacher_id == current.id
+    else:
+        is_assigned = lesson.book_id in {a.book_id for a in store.assignments_for_teacher(current.id)}
     if current.role != "principal" and not is_assigned:
         raise HTTPException(403, "you are not assigned to teach this book")
     # 409: the request is well formed but the lesson holds no day to have
@@ -1835,12 +1879,14 @@ def push_schedule(book_id: str, academic_year_id: str, req: PushScheduleRequest,
     store = _require()
     _require_school_owns_book(book_id, principal)
     _require_school_owns_academic_year(academic_year_id, principal)
+    if req.section_id is not None:
+        _require_school_owns_section(req.section_id, principal)
     from ..assessment.audit_log import get_audit_log
     try:
         result = scheduling_mod.push_lessons_after(
             store, get_audit_log(_cfg.data_root), academic_year_id=academic_year_id, book_id=book_id,
             from_date=req.from_date, periods_per_week=req.periods_per_week, reason=req.reason,
-            changed_by=principal.id)
+            changed_by=principal.id, section_id=req.section_id)
     except ValueError as e:
         raise HTTPException(422, str(e))
     return PushScheduleResponse(
@@ -1850,7 +1896,8 @@ def push_schedule(book_id: str, academic_year_id: str, req: PushScheduleRequest,
         reschedules=[RescheduleResultResponse(lesson_id=r.lesson_id, subtopic_id=r.subtopic_id,
                                               old_date=r.old_date, new_date=r.new_date, reason=r.reason,
                                               mode=r.mode)
-                    for r in result.reschedules])
+                    for r in result.reschedules],
+        section_id=result.section_id)
 
 
 @router.get("/scheduled-lessons/{lesson_id}/history", response_model=list[RescheduleHistoryEntryResponse])
@@ -1922,6 +1969,21 @@ def enroll_student(req: EnrollStudentRequest,
                                      created_at=e.created_at)
 
 
+def _my_plan_section(store: CurriculumStore, enrollment, academic_year_id: str,
+                     book_id: str) -> Optional[str]:
+    """The plan a student follows for a book (SCH-4): their own section's
+    when it has one, else the school-wide plan (None)."""
+    if enrollment.section_id and store.scheduled_lessons_for_book(academic_year_id, book_id,
+                                                                  enrollment.section_id):
+        return enrollment.section_id
+    return None
+
+
+def _in_my_plan(store: CurriculumStore, enrollment, lesson) -> bool:
+    return lesson.section_id == _my_plan_section(store, enrollment, lesson.academic_year_id,
+                                                 lesson.book_id)
+
+
 def _require_student_enrollment(store: CurriculumStore, current: User):
     if current.role != "student":
         raise HTTPException(403, "this endpoint is for students only")
@@ -1947,7 +2009,7 @@ def get_my_class_schedule(start_date: str, end_date: str,
     # the same days, as if the class were taught twice.
     book_ids = set(store.selected_book_ids_for_grade(enrollment.grade_id))
     lessons = [l for l in store.scheduled_lessons_for_date_range(current.school_id, start_date, end_date)
-              if l.book_id in book_ids]
+              if l.book_id in book_ids and _in_my_plan(store, enrollment, l)]
 
     out: list[MyClassScheduleEntryResponse] = []
     for l in lessons:
@@ -1991,7 +2053,8 @@ def get_my_progress(academic_year_id: str,
     for book_id in book_ids:
         book = store.get_book(book_id)
         subject = store.get_subject(book.subject_id) if book else None
-        all_lessons = store.scheduled_lessons_for_book(academic_year_id, book_id)
+        all_lessons = store.scheduled_lessons_for_book(
+            academic_year_id, book_id, _my_plan_section(store, enrollment, academic_year_id, book_id))
         lessons = [l for l in all_lessons if l.date <= as_of and l.status != "unscheduled"]
         scheduled_count = sum(1 for l in lessons if l.status == "scheduled")
         completed_count = sum(1 for l in lessons if l.status == "completed")

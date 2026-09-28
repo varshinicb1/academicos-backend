@@ -469,6 +469,13 @@ class CurriculumStore(SchoolModelMixin):
         section_cols = {r["name"] for r in self._fetchall("PRAGMA table_info(sections)")}
         if "bell_schedule_id" not in section_cols:
             self._exec("ALTER TABLE sections ADD COLUMN bell_schedule_id TEXT")
+        # SCH-4: a lesson plan is per (book, section). A NULL section is the
+        # school-wide plan every lesson made before this change belongs to.
+        lesson_cols = {r["name"] for r in self._fetchall("PRAGMA table_info(scheduled_lessons)")}
+        if "section_id" not in lesson_cols:
+            self._exec("ALTER TABLE scheduled_lessons ADD COLUMN section_id TEXT")
+        self._exec("CREATE INDEX IF NOT EXISTS idx_sl_plan "
+                   "ON scheduled_lessons(academic_year_id, book_id, section_id)")
 
     def _migrate_sections(self) -> None:
         """Give every grade that has no section its first one, and place
@@ -1837,17 +1844,18 @@ class CurriculumStore(SchoolModelMixin):
     # ---------------- scheduled lessons (§11-14) ----------------
 
     def create_scheduled_lesson(self, *, school_id: str, academic_year_id: str, book_id: str,
-                                subtopic_id: str, date: str, status: str = "scheduled") -> ScheduledLesson:
+                                subtopic_id: str, date: str, status: str = "scheduled",
+                                section_id: Optional[str] = None) -> ScheduledLesson:
         from datetime import datetime, timezone
         lesson = ScheduledLesson(
             id=new_id("lesson"), school_id=school_id, academic_year_id=academic_year_id,
             book_id=book_id, subtopic_id=subtopic_id, date=date, status=status,
-            created_at=datetime.now(timezone.utc).isoformat())
+            created_at=datetime.now(timezone.utc).isoformat(), section_id=section_id)
         self._exec(
             "INSERT INTO scheduled_lessons (id, school_id, academic_year_id, book_id, subtopic_id, "
-            "date, status, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            "date, status, created_at, section_id) VALUES (?,?,?,?,?,?,?,?,?)",
             (lesson.id, lesson.school_id, lesson.academic_year_id, lesson.book_id,
-             lesson.subtopic_id, lesson.date, lesson.status, lesson.created_at))
+             lesson.subtopic_id, lesson.date, lesson.status, lesson.created_at, lesson.section_id))
         self._commit()
         return lesson
 
@@ -1898,13 +1906,16 @@ class CurriculumStore(SchoolModelMixin):
                    (lesson_id,))
         self._commit()
 
-    def scheduled_lessons_for_book(self, academic_year_id: str, book_id: str) -> list[ScheduledLesson]:
-        """Date order; lessons sharing a day (a double period) in the order
-        they were created, which is the delivery order schedule_book()
-        placed them in."""
+    def scheduled_lessons_for_book(self, academic_year_id: str, book_id: str,
+                                   section_id: Optional[str] = None) -> list[ScheduledLesson]:
+        """One plan's lessons: the book's for `section_id`, or with None the
+        school-wide plan made before plans were per section (SCH-4). Date
+        order; lessons sharing a day (a double period) in the order they were
+        created, which is the delivery order schedule_book() placed them in."""
         rows = self._fetchall(
-            "SELECT * FROM scheduled_lessons WHERE academic_year_id=? AND book_id=? ORDER BY date, rowid",
-            (academic_year_id, book_id))
+            "SELECT * FROM scheduled_lessons WHERE academic_year_id=? AND book_id=? AND section_id IS ? "
+            "ORDER BY date, rowid",
+            (academic_year_id, book_id, section_id))
         return [ScheduledLesson(**dict(r)) for r in rows]
 
     def scheduled_lessons_for_subtopic(self, subtopic_id: str, academic_year_id: str) -> list[ScheduledLesson]:
@@ -1927,7 +1938,8 @@ class CurriculumStore(SchoolModelMixin):
         return [ScheduledLesson(**dict(r)) for r in rows]
 
     def delete_unrecorded_lessons_for_book(self, academic_year_id: str, book_id: str,
-                                           from_date: Optional[str] = None) -> int:
+                                           from_date: Optional[str] = None,
+                                           section_id: Optional[str] = None) -> int:
         """A force regenerate's delete: only lessons still to be taught
         ('scheduled'/'unscheduled'). Completed and skipped lessons are the
         teaching record and stay; until 2026-09-22 a regenerate deleted
@@ -1941,8 +1953,8 @@ class CurriculumStore(SchoolModelMixin):
         lesson goes: a PUSH found it no day, so it is still to be placed."""
         placeholders = ",".join("?" for _ in RECORDED_STATUSES)
         sql = (f"DELETE FROM scheduled_lessons WHERE academic_year_id=? AND book_id=? "
-               f"AND status NOT IN ({placeholders})")
-        params: tuple = (academic_year_id, book_id, *RECORDED_STATUSES)
+               f"AND section_id IS ? AND status NOT IN ({placeholders})")
+        params: tuple = (academic_year_id, book_id, section_id, *RECORDED_STATUSES)
         if from_date is not None:
             sql += " AND (status='unscheduled' OR date >= ?)"
             params += (from_date,)
@@ -1953,7 +1965,15 @@ class CurriculumStore(SchoolModelMixin):
         return rowcount
 
     def set_book_schedule_cadence(self, academic_year_id: str, book_id: str,
-                                  periods_per_week: int) -> None:
+                                  periods_per_week: int, section_id: Optional[str] = None) -> None:
+        if section_id is not None:
+            self._exec(
+                "INSERT INTO section_plan_cadences (academic_year_id, book_id, section_id, "
+                "periods_per_week) VALUES (?,?,?,?) ON CONFLICT(academic_year_id, book_id, section_id) "
+                "DO UPDATE SET periods_per_week=excluded.periods_per_week",
+                (academic_year_id, book_id, section_id, periods_per_week))
+            self._commit()
+            return
         self._exec(
             "INSERT INTO book_schedule_cadences (academic_year_id, book_id, periods_per_week) "
             "VALUES (?,?,?) ON CONFLICT(academic_year_id, book_id) "
@@ -1961,9 +1981,15 @@ class CurriculumStore(SchoolModelMixin):
             (academic_year_id, book_id, periods_per_week))
         self._commit()
 
-    def book_schedule_cadence(self, academic_year_id: str, book_id: str) -> Optional[int]:
-        """The periods_per_week this book's schedule was placed with; None
-        for a schedule made before 2026-09-22, when it was not recorded."""
+    def book_schedule_cadence(self, academic_year_id: str, book_id: str,
+                              section_id: Optional[str] = None) -> Optional[int]:
+        """The periods_per_week this plan was placed with; None for a schedule
+        made before 2026-09-22, when it was not recorded."""
+        if section_id is not None:
+            r = self._fetchone(
+                "SELECT periods_per_week FROM section_plan_cadences WHERE academic_year_id=? "
+                "AND book_id=? AND section_id=?", (academic_year_id, book_id, section_id))
+            return r["periods_per_week"] if r else None
         r = self._fetchone(
             "SELECT periods_per_week FROM book_schedule_cadences WHERE academic_year_id=? AND book_id=?",
             (academic_year_id, book_id))
@@ -2093,8 +2119,10 @@ class CurriculumStore(SchoolModelMixin):
                    ch.id as chapter_id, ch.name as chapter_name,
                    b.id as book_id, b.title as book_title,
                    s.id as subject_id, s.name as subject_name,
-                   g.id as grade_id, g.number as grade_number
+                   g.id as grade_id, g.number as grade_number,
+                   l.section_id as section_id, sec.name as section_name
             FROM scheduled_lessons l
+            LEFT JOIN sections sec ON l.section_id = sec.id
             JOIN subtopics st ON l.subtopic_id = st.id
             JOIN topics tp ON st.topic_id = tp.id
             JOIN chapters ch ON tp.chapter_id = ch.id
@@ -2118,14 +2146,19 @@ class CurriculumStore(SchoolModelMixin):
             (school_id,),
         )
         teacher_for_book = {r["book_id"]: r["teacher_id"] for r in assignment_rows}
+        teacher_for_cell = {(a["section_id"], a["subject_id"]): a["teacher_id"] for a in self._fetchall(
+            "SELECT section_id, subject_id, teacher_id FROM teaching_allocations WHERE academic_year_id=?",
+            (academic_year_id,))}
 
+        # A section's own plan (SCH-4) is its own row, keyed with the section:
+        # otherwise two sections' lessons would merge and count twice.
         # Keyed on (subject, book), not the subject alone: an edition the
         # school did not choose -- possible only with a hand-written books
         # row, since the filter above keeps just the chosen one -- reports
         # under its own title instead of being folded into another book's.
         subjects_map: dict[tuple[str, str], dict[str, Any]] = {}
         for r in rows:
-            sid = (r["subject_id"], r["book_id"])
+            sid = (r["subject_id"], r["book_id"], r["section_id"])
             if sid not in subjects_map:
                 subjects_map[sid] = {
                     "subject_id": r["subject_id"],
@@ -2133,7 +2166,10 @@ class CurriculumStore(SchoolModelMixin):
                     "grade_number": r["grade_number"],
                     "book_id": r["book_id"],
                     "book_title": r["book_title"],
-                    "teacher_id": teacher_for_book.get(r["book_id"]),
+                    "section_id": r["section_id"],
+                    "section_name": r["section_name"],
+                    "teacher_id": (teacher_for_cell.get((r["section_id"], r["subject_id"]))
+                                   if r["section_id"] else teacher_for_book.get(r["book_id"])),
                     "lessons": [],
                     "chapters": {},
                 }
@@ -2193,6 +2229,8 @@ class CurriculumStore(SchoolModelMixin):
                 "grade_number": sdata["grade_number"],
                 "book_id": sdata["book_id"],
                 "book_title": sdata["book_title"],
+                "section_id": sdata["section_id"],
+                "section_name": sdata["section_name"],
                 "teacher_id": sdata["teacher_id"],
                 "teacher_name": None,
                 "total_lessons": s_total,
@@ -2239,8 +2277,9 @@ class CurriculumStore(SchoolModelMixin):
                    st.name as subtopic_name, tp.name as topic_name,
                    ch.name as chapter_name, s.name as subject_name,
                    g.number as grade_number, b.id as book_id, b.title as book_title,
-                   s.id as subject_id
+                   s.id as subject_id, l.section_id as section_id, sec.name as section_name
             FROM scheduled_lessons l
+            LEFT JOIN sections sec ON l.section_id = sec.id
             JOIN subtopics st ON l.subtopic_id = st.id
             JOIN topics tp ON st.topic_id = tp.id
             JOIN chapters ch ON tp.chapter_id = ch.id
@@ -2260,6 +2299,14 @@ class CurriculumStore(SchoolModelMixin):
             (school_id,),
         )
         teacher_for_book = {r["book_id"]: r["teacher_id"] for r in assignment_rows}
+        teacher_for_cell = {(a["section_id"], a["subject_id"]): a["teacher_id"] for a in self._fetchall(
+            "SELECT section_id, subject_id, teacher_id FROM teaching_allocations WHERE academic_year_id=?",
+            (academic_year_id,))}
+
+        def _teacher(r) -> Optional[str]:
+            if r["section_id"]:
+                return teacher_for_cell.get((r["section_id"], r["subject_id"]))
+            return teacher_for_book.get(r["book_id"])
 
         # An edition the school stopped teaching keeps its overdue lessons
         # (nothing deletes them), and the row said nothing about which book it
@@ -2290,7 +2337,9 @@ class CurriculumStore(SchoolModelMixin):
                 "book_id": r["book_id"],
                 "book_title": r["book_title"],
                 "is_chosen_edition": _chosen(r["subject_id"]) == r["book_id"],
-                "teacher_id": teacher_for_book.get(r["book_id"]),
+                "section_id": r["section_id"],
+                "section_name": r["section_name"],
+                "teacher_id": _teacher(r),
                 "teacher_name": None,
             })
 
@@ -2305,7 +2354,9 @@ class CurriculumStore(SchoolModelMixin):
             "chapter_name": r["chapter_name"],
             "topic_name": r["topic_name"],
             "subtopic_name": r["subtopic_name"],
-            "teacher_id": teacher_for_book.get(r["book_id"]),
+            "section_id": r["section_id"],
+            "section_name": r["section_name"],
+            "teacher_id": _teacher(r),
             "teacher_name": None,
         } for r in unscheduled_rows]
 

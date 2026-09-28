@@ -26,7 +26,7 @@ from .store import CurriculumStore
 
 
 def _resolve_cadence(store: CurriculumStore, academic_year_id: str, book_id: str,
-                     periods_per_week: Optional[int]) -> int:
+                     periods_per_week: Optional[int], section_id: Optional[str] = None) -> int:
     """The periods a week this book's lessons are laid out at, for PUSH --
     the cadence the existing schedule was made with.
 
@@ -41,7 +41,7 @@ def _resolve_cadence(store: CurriculumStore, academic_year_id: str, book_id: str
     with a 200 "Schedule pushed"."""
     if periods_per_week is not None and periods_per_week <= 0:
         raise ValueError("periods_per_week must be positive")
-    per_weekday = calendar_mod.timetable_periods_by_weekday(store, academic_year_id, book_id)
+    per_weekday = calendar_mod.timetable_periods_by_weekday(store, academic_year_id, book_id, section_id)
     if per_weekday:
         timetable_cadence = sum(per_weekday.values())
         if periods_per_week is not None and periods_per_week != timetable_cadence:
@@ -50,7 +50,7 @@ def _resolve_cadence(store: CurriculumStore, academic_year_id: str, book_id: str
                 f"places {timetable_cadence} lesson(s) a week (one per timetable period) -- the "
                 f"timetable decides the days, so leave periodsPerWeek blank or change the timetable")
         return timetable_cadence
-    recorded = store.book_schedule_cadence(academic_year_id, book_id)
+    recorded = store.book_schedule_cadence(academic_year_id, book_id, section_id)
     if recorded is not None:
         if periods_per_week is not None and periods_per_week != recorded:
             raise ValueError(
@@ -61,6 +61,14 @@ def _resolve_cadence(store: CurriculumStore, academic_year_id: str, book_id: str
         return recorded
     if periods_per_week is not None:
         return periods_per_week
+    if section_id is not None:
+        # A section's plan: its own allocation (M1.2), never the per-name row.
+        book = store.get_book(book_id)
+        alloc = store.allocation_for(section_id, book.subject_id) if book else None
+        if alloc is None:
+            raise ValueError("no periods_per_week supplied and this section has no allocation for "
+                             "the book's subject -- allocate it, or pass periodsPerWeek")
+        return alloc.periods_per_week
     subject = store.subject_name_for_book(book_id)
     alloc = store.subject_period_allocation(academic_year_id, subject) if subject else None
     if alloc is None:
@@ -89,6 +97,7 @@ class ScheduleResult:
     lessons_kept: int = 0                 # completed/skipped lessons a force regenerate kept
     past_lessons_kept: int = 0            # unmarked lessons dated before from_date a regenerate kept
     warning: Optional[str] = None         # set whenever a subtopic has no (or too few) dated lessons
+    section_id: Optional[str] = None      # the section this plan is for; None: the school-wide plan
 
     @property
     def all_subtopics_scheduled(self) -> bool:
@@ -120,6 +129,7 @@ def _shortfall_warning(*, total: int, unscheduled: int, partial: int, without_es
 def schedule_book(
     store: CurriculumStore, *, school_id: str, academic_year_id: str, book_id: str,
     periods_per_week: int, force: bool = False, from_date: Optional[str] = None,
+    section_id: Optional[str] = None,
 ) -> ScheduleResult:
     """Schedules every real, approved Subtopic in a book's real delivery
     order (Unit.seq -> Chapter.seq -> Topic.seq -> Subtopic.seq -- §13's
@@ -164,11 +174,16 @@ def schedule_book(
     subtopic's estimate means only the future is replanned.
 
     Records the cadence the lessons were laid out at, so PUSH moves them at
-    the same cadence (Task 102 review)."""
+    the same cadence (Task 102 review).
+
+    With `section_id` (SCH-4) this is that section's plan: its own lessons,
+    its own week from the timetable (TimetableEntry) and its own cadence.
+    Another section's plan of the same book, and the school-wide plan, are
+    never read, kept or deleted by it."""
     if periods_per_week <= 0:
         raise ValueError("periods_per_week must be positive")
 
-    existing = store.scheduled_lessons_for_book(academic_year_id, book_id)
+    existing = store.scheduled_lessons_for_book(academic_year_id, book_id, section_id)
     recorded = [l for l in existing if l.status in RECORDED_STATUSES]
     past = [l for l in existing
             if l.status == "scheduled" and from_date is not None and l.date < from_date]
@@ -179,7 +194,8 @@ def schedule_book(
                 f"book {book_id} already has a schedule for {academic_year_id} "
                 f"({len(existing)} lessons) -- pass force=True to regenerate (completed and skipped "
                 "lessons are kept; only what is still to be taught is replanned)")
-        store.delete_unrecorded_lessons_for_book(academic_year_id, book_id, from_date=from_date)
+        store.delete_unrecorded_lessons_for_book(academic_year_id, book_id, from_date=from_date,
+                                                 section_id=section_id)
 
     # A kept lesson holds only its own period. Cutting the slot list after
     # the latest kept lesson (the first version of this fix) threw the whole
@@ -187,7 +203,8 @@ def schedule_book(
     # skip in March left the rest of the syllabus to fit after March.
     held = Counter(l.date for l in kept)
     slots = []
-    for d in calendar_mod.teaching_slots_for_book(store, academic_year_id, book_id, periods_per_week):
+    for d in calendar_mod.teaching_slots_for_book(store, academic_year_id, book_id, periods_per_week,
+                                                  section_id):
         if from_date is not None and d.isoformat() < from_date:
             continue        # a day that has passed: nothing new can be taught on it
         if held[d.isoformat()] > 0:
@@ -232,7 +249,8 @@ def schedule_book(
         while placed < periods_needed and slot_idx < len(slots):
             d = slots[slot_idx].isoformat()
             store.create_scheduled_lesson(school_id=school_id, academic_year_id=academic_year_id,
-                                          book_id=book_id, subtopic_id=subtopic_id, date=d)
+                                          book_id=book_id, subtopic_id=subtopic_id, date=d,
+                                          section_id=section_id)
             lessons_created += 1
             first_date = first_date or d
             last_date = d
@@ -245,9 +263,9 @@ def schedule_book(
         else:
             fully_scheduled += 1
 
-    per_weekday = calendar_mod.timetable_periods_by_weekday(store, academic_year_id, book_id)
+    per_weekday = calendar_mod.timetable_periods_by_weekday(store, academic_year_id, book_id, section_id)
     cadence = sum(per_weekday.values()) if per_weekday else periods_per_week
-    store.set_book_schedule_cadence(academic_year_id, book_id, cadence)
+    store.set_book_schedule_cadence(academic_year_id, book_id, cadence, section_id)
 
     return ScheduleResult(
         academic_year_id=academic_year_id, book_id=book_id, periods_per_week=cadence,
@@ -263,6 +281,7 @@ def schedule_book(
             total=total_subtopics, unscheduled=len(unscheduled), partial=len(partially_scheduled),
             without_estimate=len(without_estimate), periods_available=len(slots),
             periods_needed=sum(n for _, n in ordered), from_date=from_date),
+        section_id=section_id,
     )
 
 
@@ -358,10 +377,11 @@ def adjust_lesson(
     wd = working_days_for_year(store, lesson.academic_year_id)
     if new_date not in wd.dates:
         raise ValueError(f"{new_date} is not a real working day for this academic year")
-    occupants = [l for l in store.scheduled_lessons_for_book(lesson.academic_year_id, lesson.book_id)
+    occupants = [l for l in store.scheduled_lessons_for_book(lesson.academic_year_id, lesson.book_id,
+                                                             lesson.section_id)
                  if l.date == new_date and l.id != lesson_id and l.status != "unscheduled"]
     per_weekday = calendar_mod.timetable_periods_by_weekday(store, lesson.academic_year_id,
-                                                            lesson.book_id)
+                                                            lesson.book_id, lesson.section_id)
     capacity = _periods_on(per_weekday, date.fromisoformat(new_date))
     if len(occupants) >= capacity:
         raise RescheduleClash(
@@ -376,7 +396,7 @@ def adjust_lesson(
 
 def _reflow(store: CurriculumStore, audit_log: AuditLog, *, academic_year_id: str, book_id: str,
             periods_per_week: int, from_date: str, skip_disruption_day: bool, reason: str,
-            changed_by: str) -> tuple[list[RescheduleResult], list[str]]:
+            changed_by: str, section_id: Optional[str] = None) -> tuple[list[RescheduleResult], list[str]]:
     """Lays every still-to-teach lesson dated on/after `from_date` onto the
     book's teaching periods from `from_date` on, in delivery order -- PUSH's
     placement rule.
@@ -392,7 +412,7 @@ def _reflow(store: CurriculumStore, audit_log: AuditLog, *, academic_year_id: st
     that same date -- a double-booked day. Losing its day is logged like a
     move (mode 'unscheduled', no new date), so the lesson's history says
     why it has none."""
-    on_or_after = [l for l in store.scheduled_lessons_for_book(academic_year_id, book_id)
+    on_or_after = [l for l in store.scheduled_lessons_for_book(academic_year_id, book_id, section_id)
                    if l.date >= from_date]
     affected = [l for l in on_or_after if l.status == "scheduled"]   # date, then delivery order
     if not affected:
@@ -400,7 +420,8 @@ def _reflow(store: CurriculumStore, audit_log: AuditLog, *, academic_year_id: st
     held = Counter(l.date for l in on_or_after if l.status in RECORDED_STATUSES)
 
     slots = [d.isoformat() for d in
-             calendar_mod.teaching_slots_for_book(store, academic_year_id, book_id, periods_per_week)]
+             calendar_mod.teaching_slots_for_book(store, academic_year_id, book_id, periods_per_week,
+                                                  section_id)]
     start = next((i for i, d in enumerate(slots) if d >= from_date), None)
     if start is None:
         raise ValueError(
@@ -443,11 +464,13 @@ class PushResult:
     lessons_pushed: int
     lessons_dropped: tuple[str, ...]   # ran out of real teaching periods: now 'unscheduled'
     reschedules: tuple[RescheduleResult, ...]
+    section_id: Optional[str] = None   # the plan pushed; None: the school-wide plan
 
 
 def push_lessons_after(
     store: CurriculumStore, audit_log: AuditLog, *, academic_year_id: str, book_id: str,
     from_date: str, reason: str, changed_by: str, periods_per_week: Optional[int] = None,
+    section_id: Optional[str] = None,
 ) -> PushResult:
     """PUSH: real disruption handling -- "today just became a holiday" (or
     any other reason a day at/after from_date is lost). Every lesson still
@@ -470,13 +493,13 @@ def push_lessons_after(
     Lessons that run past the real academic year's last teaching day are
     reported in `lessons_dropped` and marked 'unscheduled', never placed
     past the calendar's real end date or left holding a day."""
-    cadence = _resolve_cadence(store, academic_year_id, book_id, periods_per_week)
+    cadence = _resolve_cadence(store, academic_year_id, book_id, periods_per_week, section_id)
     moves, dropped = _reflow(store, audit_log, academic_year_id=academic_year_id, book_id=book_id,
                              periods_per_week=cadence, from_date=from_date, skip_disruption_day=True,
-                             reason=reason, changed_by=changed_by)
+                             reason=reason, changed_by=changed_by, section_id=section_id)
     return PushResult(academic_year_id=academic_year_id, book_id=book_id, from_date=from_date,
                       periods_per_week=cadence, lessons_pushed=len(moves),
-                      lessons_dropped=tuple(dropped), reschedules=tuple(moves))
+                      lessons_dropped=tuple(dropped), reschedules=tuple(moves), section_id=section_id)
 
 
 def reschedule_history_for_lesson(audit_log: AuditLog, lesson_id: str) -> list[dict]:

@@ -456,3 +456,6 @@ class ScheduledLesson:
     completed_by: Optional[str] = None   # the teacher user id who marked it, null until they do
     completed_at: Optional[str] = None   # ISO datetime, null until marked
     created_at: str = ""
+    # SCH-4: the section this lesson is planned for; None is the school-wide
+    # plan every lesson made before plans were per section belongs to.
+    section_id: Optional[str] = None

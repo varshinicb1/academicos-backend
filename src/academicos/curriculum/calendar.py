@@ -280,9 +280,20 @@ def subject_teaching_slots(working_days: list[date], periods_per_week: int,
 
 
 def timetable_periods_by_weekday(store: CurriculumStore, academic_year_id: str,
-                                 book_id: str) -> dict[int, int]:
+                                 book_id: str, section_id: Optional[str] = None) -> dict[int, int]:
     """{weekday: periods} from this book's subject's timetable; empty when
-    the school has not entered one."""
+    the school has not entered one.
+
+    With a section (SCH-4) it is that section's own week for the book's
+    subject (TimetableEntry, keyed by subject id). Without one it is the
+    school-wide per-subject-NAME slots, which every class of the year shares
+    -- audit D115, and why a plan per section exists."""
+    if section_id is not None:
+        book = store.get_book(book_id)
+        if book is None:
+            return {}
+        return dict(Counter(e.day_of_week for e in store.timetable_for_section(section_id)
+                            if e.subject_id == book.subject_id))
     subject = store.subject_name_for_book(book_id)
     if subject is None:
         return {}
@@ -290,12 +301,13 @@ def timetable_periods_by_weekday(store: CurriculumStore, academic_year_id: str,
 
 
 def teaching_slots_for_book(store: CurriculumStore, academic_year_id: str, book_id: str,
-                            periods_per_week: int) -> list[date]:
+                            periods_per_week: int, section_id: Optional[str] = None) -> list[date]:
     """subject_teaching_slots() over the year's real working days and this
-    book's subject's timetable."""
+    book's subject's timetable (the section's own week when given)."""
     wd = working_days_for_year(store, academic_year_id)
-    return subject_teaching_slots([date.fromisoformat(s) for s in wd.dates], periods_per_week,
-                                  timetable_periods_by_weekday(store, academic_year_id, book_id) or None)
+    return subject_teaching_slots(
+        [date.fromisoformat(s) for s in wd.dates], periods_per_week,
+        timetable_periods_by_weekday(store, academic_year_id, book_id, section_id) or None)
 
 
 def _largest_remainder(total: int, weights: list[float]) -> list[int]:

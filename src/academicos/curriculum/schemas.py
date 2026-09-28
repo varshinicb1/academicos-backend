@@ -498,8 +498,12 @@ class ComputeTeachingTimeResponse(Camel):
 # ---------------- micro scheduling (§11-14, §38-41) ----------------
 
 class ScheduleBookRequest(Camel):
-    periods_per_week: int = Field(gt=0)
+    # Required for the school-wide plan. For a section's plan (sectionId) it
+    # defaults to the section's allocation, and the section's own timetable
+    # decides the days when it has one (SCH-4).
+    periods_per_week: Optional[int] = Field(default=None, gt=0)
     force: bool = False
+    section_id: Optional[str] = None
 
 
 class ScheduleBookResponse(Camel):
@@ -526,6 +530,7 @@ class ScheduleBookResponse(Camel):
     # a 200 -- the lessons that fit were created -- but no longer a silent one.
     all_subtopics_scheduled: bool = True
     warning: Optional[str] = None
+    section_id: Optional[str] = None
 
 
 class ScheduledLessonResponse(Camel):
@@ -543,6 +548,7 @@ class ScheduledLessonResponse(Camel):
     completed_by: Optional[str] = None
     completed_at: Optional[str] = None
     created_at: str
+    section_id: Optional[str] = None   # SCH-4; null: the school-wide plan
 
 
 # ---------------- completion tracking (§15) ----------------
@@ -565,6 +571,8 @@ class PushScheduleRequest(Camel):
     # SubjectPeriodAllocation (scheduling.push_lessons_after).
     periods_per_week: Optional[int] = Field(default=None, gt=0)
     reason: str = Field(min_length=1)
+    # SCH-4: push one section's plan (null: the school-wide plan).
+    section_id: Optional[str] = None
 
 
 class RescheduleResultResponse(Camel):
@@ -584,6 +592,7 @@ class PushScheduleResponse(Camel):
     lessons_pushed: int
     lessons_dropped: list[str]
     reschedules: list[RescheduleResultResponse]
+    section_id: Optional[str] = None
 
 
 class RescheduleHistoryEntryResponse(Camel):
@@ -673,6 +682,9 @@ class MyScheduleEntryResponse(Camel):
     topic_name: str
     subtopic_id: str
     subtopic_name: str
+    # SCH-4: the section this plan is for (null: the school-wide plan).
+    section_id: Optional[str] = None
+    section_name: Optional[str] = None
 
 
 # ---------------- management reporting & variance (§17, §32) ----------------
@@ -692,6 +704,9 @@ class SubjectCoverageResponse(Camel):
     grade_number: int
     book_id: str
     book_title: str
+    # SCH-4: the section this plan is for (null: the school-wide plan).
+    section_id: Optional[str] = None
+    section_name: Optional[str] = None
     teacher_id: Optional[str] = None
     teacher_name: Optional[str] = None
     total_lessons: int
@@ -734,6 +749,9 @@ class DelayedLessonResponse(Camel):
     book_id: str = ""
     book_title: str = ""
     is_chosen_edition: bool = True
+    # SCH-4: the section this plan is for (null: the school-wide plan).
+    section_id: Optional[str] = None
+    section_name: Optional[str] = None
     teacher_id: Optional[str] = None
     teacher_name: Optional[str] = None
 
@@ -752,6 +770,9 @@ class UnscheduledLessonResponse(Camel):
     chapter_name: str
     topic_name: str
     subtopic_name: str
+    # SCH-4: the section this plan is for (null: the school-wide plan).
+    section_id: Optional[str] = None
+    section_name: Optional[str] = None
     teacher_id: Optional[str] = None
     teacher_name: Optional[str] = None
 

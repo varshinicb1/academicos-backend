@@ -85,6 +85,16 @@ CREATE TABLE IF NOT EXISTS timetable_entries (
 );
 CREATE INDEX IF NOT EXISTS idx_tt_year ON timetable_entries(academic_year_id);
 CREATE INDEX IF NOT EXISTS idx_tt_teacher ON timetable_entries(teacher_id, day_of_week, period);
+
+-- SCH-4: the cadence each section's plan of a book was placed with (the
+-- school-wide plan's stays in book_schedule_cadences).
+CREATE TABLE IF NOT EXISTS section_plan_cadences (
+  academic_year_id TEXT NOT NULL,
+  book_id          TEXT NOT NULL,
+  section_id       TEXT NOT NULL,
+  periods_per_week INTEGER NOT NULL,
+  PRIMARY KEY (academic_year_id, book_id, section_id)
+);
 """
 
 ROOM_KINDS = ("classroom", "lab", "hall", "other")
