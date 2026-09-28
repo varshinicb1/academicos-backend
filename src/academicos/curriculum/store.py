@@ -476,6 +476,10 @@ class CurriculumStore(SchoolModelMixin):
             self._exec("ALTER TABLE scheduled_lessons ADD COLUMN section_id TEXT")
         self._exec("CREATE INDEX IF NOT EXISTS idx_sl_plan "
                    "ON scheduled_lessons(academic_year_id, book_id, section_id)")
+        # SCH-3: a locked period is kept by the timetable solver.
+        entry_cols = {r["name"] for r in self._fetchall("PRAGMA table_info(timetable_entries)")}
+        if "locked" not in entry_cols:
+            self._exec("ALTER TABLE timetable_entries ADD COLUMN locked INTEGER NOT NULL DEFAULT 0")
 
     def _migrate_sections(self) -> None:
         """Give every grade that has no section its first one, and place

@@ -112,6 +112,7 @@ class TimetableEntryBody(_Req):
     subject_id: str = Field(min_length=1)
     teacher_id: Optional[str] = None
     room_id: Optional[str] = None
+    locked: bool = False      # SCH-3: the solver keeps a locked period where it is
 
 
 class SectionTimetableRequest(_Req):
@@ -130,6 +131,7 @@ class TimetableEntryResponse(Camel):
     subject_id: str
     teacher_id: Optional[str] = None
     room_id: Optional[str] = None
+    locked: bool = False
 
 
 class TimetableGapResponse(Camel):
@@ -187,7 +189,7 @@ def _bell(b) -> BellScheduleResponse:
 def _entry(e) -> TimetableEntryResponse:
     return TimetableEntryResponse(id=e.id, section_id=e.section_id, day_of_week=e.day_of_week,
                                   period=e.period, subject_id=e.subject_id, teacher_id=e.teacher_id,
-                                  room_id=e.room_id)
+                                  room_id=e.room_id, locked=bool(e.locked))
 
 
 def _section_week(section) -> SectionTimetableResponse:
@@ -482,3 +484,119 @@ def my_timetable(current: User = Depends(get_current_user)) -> MyTimetableRespon
     return MyTimetableResponse(role=current.role, academic_year_id=year.id,
                                bell_schedule=_bell(default) if default else None,
                                entries=[_entry(e) for e in store.timetable_for_teacher(current.id, year.id)])
+
+
+# ---------------- generation (SCH-3) ----------------
+
+class SolveRequest(_Req):
+    apply: bool = False
+    keep_existing: bool = True
+    max_per_day: int = Field(default=7, ge=1, le=12)
+    max_consecutive: int = Field(default=4, ge=1, le=12)
+    time_limit_seconds: int = Field(default=30, ge=1, le=60)
+    section_ids: Optional[list[str]] = None
+
+
+class ProposedEntryResponse(Camel):
+    section_id: str
+    day_of_week: int
+    period: int
+    subject_id: str
+    teacher_id: Optional[str] = None
+    room_id: Optional[str] = None
+
+
+class SolveResponse(Camel):
+    status: str           # solved | infeasible | timeout | nothing_to_solve
+    applied: bool
+    problems: list[str]
+    kept: int
+    moved_or_added: int
+    removed: int
+    seconds: float
+    entries: list[ProposedEntryResponse]
+
+
+@router.post("/academic-years/{academic_year_id}/timetable/solve", response_model=SolveResponse)
+def solve_timetable(academic_year_id: str, req: SolveRequest,
+                    principal: User = Depends(require_principal)) -> SolveResponse:
+    """Generate a clash-free week for the whole school (or `sectionIds`) from
+    the allocations and bells: no teacher, room or section in two places,
+    a teacher's maximum a day and in a row, subjects spread across the week,
+    unavailable periods free, locked periods kept, and -- with keepExisting
+    -- the fewest changes to the current week. `apply: false` returns the
+    proposal and its diff without writing; `apply: true` publishes it."""
+    from .timetable_solver import SolveOptions, solve
+    cr._require_school_owns_academic_year(academic_year_id, principal)
+    store = cr._require()
+    section_ids = None
+    if req.section_ids:
+        for sid in req.section_ids:
+            cr._require_school_owns_section(sid, principal)
+        section_ids = set(req.section_ids)
+    result = solve(store, academic_year_id, SolveOptions(
+        max_per_day=req.max_per_day, max_consecutive=req.max_consecutive,
+        keep_existing=req.keep_existing, time_limit_seconds=req.time_limit_seconds,
+        section_ids=section_ids))
+    applied = False
+    if req.apply and result.status == "solved":
+        solving = section_ids or {s.id for s in store.sections_for_year(academic_year_id)}
+        store.apply_solved_timetable(academic_year_id, result.entries, solving)
+        applied = True
+        _audit("timetable_solved", principal,
+               {"academicYearId": academic_year_id, "sections": len(solving), "kept": result.kept,
+                "movedOrAdded": result.moved_or_added, "removed": result.removed})
+    return SolveResponse(
+        status=result.status, applied=applied, problems=result.problems, kept=result.kept,
+        moved_or_added=result.moved_or_added, removed=result.removed, seconds=round(result.seconds, 2),
+        entries=[ProposedEntryResponse(section_id=e.section_id, day_of_week=e.day_of_week,
+                                       period=e.period, subject_id=e.subject_id,
+                                       teacher_id=e.teacher_id, room_id=e.room_id)
+                 for e in result.entries])
+
+
+class UnavailableSlot(_Req):
+    day_of_week: int = Field(ge=0, le=6)
+    period: int = Field(ge=1, le=20)
+
+
+class TeacherUnavailabilityRequest(_Req):
+    slots: list[UnavailableSlot]
+
+
+class TeacherUnavailabilityResponse(Camel):
+    teacher_id: str
+    slots: list[UnavailableSlot]
+
+
+@router.get("/academic-years/{academic_year_id}/teacher-unavailability",
+            response_model=list[TeacherUnavailabilityResponse])
+def list_teacher_unavailability(academic_year_id: str,
+                                principal: User = Depends(require_principal)
+                                ) -> list[TeacherUnavailabilityResponse]:
+    """Periods each teacher cannot teach (the default bell's numbering).
+    Teacher-level data: the principal's (ADM-5)."""
+    cr._require_school_owns_academic_year(academic_year_id, principal)
+    rows = cr._require().teacher_unavailability_for_year(academic_year_id)
+    return [TeacherUnavailabilityResponse(
+        teacher_id=t, slots=[UnavailableSlot(day_of_week=d, period=p) for d, p in sorted(slots)])
+        for t, slots in sorted(rows.items())]
+
+
+@router.put("/academic-years/{academic_year_id}/teacher-unavailability/{teacher_id}",
+            response_model=TeacherUnavailabilityResponse)
+def set_teacher_unavailability(academic_year_id: str, teacher_id: str, req: TeacherUnavailabilityRequest,
+                               principal: User = Depends(require_principal)
+                               ) -> TeacherUnavailabilityResponse:
+    cr._require_school_owns_academic_year(academic_year_id, principal)
+    _staff_member(teacher_id, principal)
+    try:
+        slots = cr._require().set_teacher_unavailability(
+            academic_year_id, teacher_id, [(s.day_of_week, s.period) for s in req.slots])
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    _audit("teacher_unavailability_set", principal,
+           {"academicYearId": academic_year_id, "teacherId": teacher_id, "slots": len(slots)})
+    return TeacherUnavailabilityResponse(
+        teacher_id=teacher_id, slots=[UnavailableSlot(day_of_week=d, period=p) for d, p in slots])
+

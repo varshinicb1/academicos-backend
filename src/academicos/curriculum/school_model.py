@@ -86,6 +86,16 @@ CREATE TABLE IF NOT EXISTS timetable_entries (
 CREATE INDEX IF NOT EXISTS idx_tt_year ON timetable_entries(academic_year_id);
 CREATE INDEX IF NOT EXISTS idx_tt_teacher ON timetable_entries(teacher_id, day_of_week, period);
 
+-- SCH-3: periods a teacher cannot teach (a day of the week and a period
+-- number of the year's default bell); the solver leaves them free.
+CREATE TABLE IF NOT EXISTS teacher_unavailability (
+  academic_year_id TEXT NOT NULL,
+  teacher_id       TEXT NOT NULL,
+  day_of_week      INTEGER NOT NULL,
+  period           INTEGER NOT NULL,
+  PRIMARY KEY (academic_year_id, teacher_id, day_of_week, period)
+);
+
 -- SCH-4: the cadence each section's plan of a book was placed with (the
 -- school-wide plan's stays in book_schedule_cadences).
 CREATE TABLE IF NOT EXISTS section_plan_cadences (
@@ -186,6 +196,7 @@ class TimetableEntry:
     teacher_id: Optional[str] = None
     room_id: Optional[str] = None
     created_at: str = ""
+    locked: int = 0          # SCH-3: the solver keeps a locked period where it is
 
 
 def clean_slots(raw: list[dict[str, Any]]) -> list[BellSlot]:
@@ -619,7 +630,8 @@ class SchoolModelMixin:
                                            academic_year_id=section.academic_year_id,
                                            section_id=section_id, day_of_week=day, period=period,
                                            subject_id=subject_id, teacher_id=teacher_id,
-                                           room_id=room_id, created_at=_now()))
+                                           room_id=room_id, created_at=_now(),
+                                           locked=int(bool(raw.get("locked")))))
             for subject_id, n in per_subject.items():
                 allowed = allocs[subject_id].periods_per_week
                 if n > allowed:
@@ -630,14 +642,70 @@ class SchoolModelMixin:
                 raise TimetableClash(problems)
             self._exec("DELETE FROM timetable_entries WHERE section_id=?", (section_id,))
             for e in rows:
-                self._exec(
-                    "INSERT INTO timetable_entries (id, school_id, academic_year_id, section_id, "
-                    "day_of_week, period, subject_id, teacher_id, room_id, created_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (e.id, e.school_id, e.academic_year_id, e.section_id, e.day_of_week, e.period,
-                     e.subject_id, e.teacher_id, e.room_id, e.created_at))
+                self._insert_entry(e)
         self._commit()
         return self.timetable_for_section(section_id)
+
+    def _insert_entry(self, e: TimetableEntry) -> None:
+        self._exec(
+            "INSERT INTO timetable_entries (id, school_id, academic_year_id, section_id, "
+            "day_of_week, period, subject_id, teacher_id, room_id, created_at, locked) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (e.id, e.school_id, e.academic_year_id, e.section_id, e.day_of_week, e.period,
+             e.subject_id, e.teacher_id, e.room_id, e.created_at, e.locked))
+
+    # ---------------- solver support (SCH-3) ----------------
+
+    def locked_entries_for_year(self, academic_year_id: str) -> list[TimetableEntry]:
+        return self._entries_where("academic_year_id=? AND locked=1", (academic_year_id,))
+
+    def teacher_unavailability_for_year(self, academic_year_id: str) -> dict[str, set[tuple[int, int]]]:
+        out: dict[str, set[tuple[int, int]]] = defaultdict(set)
+        for r in self._fetchall("SELECT teacher_id, day_of_week, period FROM teacher_unavailability "
+                                "WHERE academic_year_id=?", (academic_year_id,)):
+            out[r["teacher_id"]].add((r["day_of_week"], r["period"]))
+        return dict(out)
+
+    def set_teacher_unavailability(self, academic_year_id: str, teacher_id: str,
+                                   slots: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        """Replace one teacher's unavailable periods for the year."""
+        cleaned = sorted({(int(d), int(p)) for d, p in slots})
+        if any(not 0 <= d <= 6 or not 1 <= p <= 20 for d, p in cleaned):
+            raise ValueError("a period is a day 0 (Monday) to 6 and a period number 1 to 20")
+        with self._conn_lock:
+            self._exec("DELETE FROM teacher_unavailability WHERE academic_year_id=? AND teacher_id=?",
+                       (academic_year_id, teacher_id))
+            for d, p in cleaned:
+                self._exec("INSERT INTO teacher_unavailability (academic_year_id, teacher_id, "
+                           "day_of_week, period) VALUES (?,?,?,?)", (academic_year_id, teacher_id, d, p))
+        self._commit()
+        return cleaned
+
+    def apply_solved_timetable(self, academic_year_id: str, entries: list,
+                               section_ids: set[str]) -> int:
+        """Write a solver's week for `section_ids` in one lock hold. An entry
+        identical to a locked one stays locked. Returns entries written."""
+        with self._conn_lock:
+            year = self.get_academic_year(academic_year_id)
+            if year is None:
+                raise KeyError(academic_year_id)
+            was_locked = {(e.section_id, e.day_of_week, e.period, e.subject_id)
+                          for e in self.locked_entries_for_year(academic_year_id)}
+            for sid in section_ids:
+                self._exec("DELETE FROM timetable_entries WHERE section_id=?", (sid,))
+            written = 0
+            for p in entries:
+                if p.section_id not in section_ids:
+                    continue
+                self._insert_entry(TimetableEntry(
+                    id=_new_id("tt"), school_id=year.school_id, academic_year_id=academic_year_id,
+                    section_id=p.section_id, day_of_week=p.day_of_week, period=p.period,
+                    subject_id=p.subject_id, teacher_id=p.teacher_id, room_id=p.room_id,
+                    created_at=_now(),
+                    locked=int((p.section_id, p.day_of_week, p.period, p.subject_id) in was_locked)))
+                written += 1
+        self._commit()
+        return written
 
     def timetable_gaps(self, section_id: str) -> list[dict[str, Any]]:
         """Per allocated subject of the section: allocated vs timetabled
