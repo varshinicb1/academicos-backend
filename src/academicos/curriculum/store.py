@@ -397,6 +397,7 @@ def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
+from .cover import COVER_SCHEMA, CoverMixin
 from .school_model import SCHOOL_MODEL_SCHEMA, SchoolModelMixin
 
 
@@ -405,7 +406,7 @@ class SectionInUse(Exception):
     its grade's last. The route's 409."""
 
 
-class CurriculumStore(SchoolModelMixin):
+class CurriculumStore(SchoolModelMixin, CoverMixin):
     _SNAPSHOT_KEY = "curriculum.sqlite"
     _SNAPSHOT_DEBOUNCE_SECONDS = 30.0
 
@@ -440,7 +441,7 @@ class CurriculumStore(SchoolModelMixin):
         on start, and after a snapshot conflict reloads one an older release
         wrote. Executes only; the caller commits."""
         with self._conn_lock:
-            self.conn.executescript(SCHEMA + SCHOOL_MODEL_SCHEMA)
+            self.conn.executescript(SCHEMA + SCHOOL_MODEL_SCHEMA + COVER_SCHEMA)
             self._migrate()
 
     def _migrate(self) -> None:
