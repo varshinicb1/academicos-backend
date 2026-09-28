@@ -39,6 +39,7 @@ from ..assessment.users import User
 from ..config import (Config, LLMNotEnabled, build_identity, enforce_production_config,
                       get_config, is_production)
 from ..curriculum import routes as curriculum_routes
+from ..curriculum import school_model_routes
 from ..graph.store import GraphStore
 from ..llm.budget import LLMBudgetExceeded, llm_budget
 from ..llm.telemetry import TELEMETRY
@@ -149,6 +150,7 @@ app.include_router(ingest_routes.router)
 app.include_router(auth_routes.router)
 app.include_router(consent_routes.router)
 app.include_router(curriculum_routes.router)
+app.include_router(school_model_routes.router)
 app.include_router(paper_template_routes.router)
 # The question-bank API carries its own `/v1/...` paths and its own key auth,
 # so it is mounted at the root rather than under `/api/v1` -- its paths are

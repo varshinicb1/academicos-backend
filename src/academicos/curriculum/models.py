@@ -88,6 +88,8 @@ class Section:
     name: str
     class_teacher_id: Optional[str] = None
     created_at: str = ""
+    # M1.3: this section's own bell schedule; None is the year's default.
+    bell_schedule_id: Optional[str] = None
 
 
 @dataclass

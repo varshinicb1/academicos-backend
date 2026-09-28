@@ -397,12 +397,15 @@ def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
+from .school_model import SCHOOL_MODEL_SCHEMA, SchoolModelMixin
+
+
 class SectionInUse(Exception):
     """A section cannot be removed: students are enrolled in it, or it is
     its grade's last. The route's 409."""
 
 
-class CurriculumStore:
+class CurriculumStore(SchoolModelMixin):
     _SNAPSHOT_KEY = "curriculum.sqlite"
     _SNAPSHOT_DEBOUNCE_SECONDS = 30.0
 
@@ -437,7 +440,7 @@ class CurriculumStore:
         on start, and after a snapshot conflict reloads one an older release
         wrote. Executes only; the caller commits."""
         with self._conn_lock:
-            self.conn.executescript(SCHEMA)
+            self.conn.executescript(SCHEMA + SCHOOL_MODEL_SCHEMA)
             self._migrate()
 
     def _migrate(self) -> None:
@@ -461,6 +464,11 @@ class CurriculumStore:
             self._exec("ALTER TABLE student_enrollments ADD COLUMN section_id TEXT")
         self._exec("CREATE INDEX IF NOT EXISTS idx_se_section ON student_enrollments(section_id)")
         self._migrate_sections()
+        # M1.3: a section may keep its own bell (a junior wing's shorter day);
+        # None means the year's default schedule.
+        section_cols = {r["name"] for r in self._fetchall("PRAGMA table_info(sections)")}
+        if "bell_schedule_id" not in section_cols:
+            self._exec("ALTER TABLE sections ADD COLUMN bell_schedule_id TEXT")
 
     def _migrate_sections(self) -> None:
         """Give every grade that has no section its first one, and place
