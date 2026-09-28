@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from typing import get_args
 
@@ -25,9 +25,11 @@ from .authz import (
     require_school_owns_paper,
 )
 from .auth_routes import get_current_user, require_principal, require_staff
+from .competency import CBSE_COMPETENCY_TARGET
 from .users import User, get_user_store
 from .mapping import grade_to_int, to_question_schema
-from .paper import generate_paper as build_generated_paper, generate_paper_sets
+from .paper import generate_paper as build_generated_paper, generate_paper_sets, \
+    report_competency
 from .pool import get_pool, near_duplicate
 from .schemas import (
     Assessment,
@@ -344,35 +346,6 @@ def _shortfall_warnings(paper: GeneratedPaper, blueprint: Blueprint) -> list[str
     return out
 
 
-def _report_competency(paper: GeneratedPaper, target: float | None) -> list[str]:
-    """The CBQ share of the printed questions and whether it meets `target`
-    (CBSE: at least 50%). Missed in 17/25 subject/grade pairs at the
-    2026-09-21 audit, with nothing on the paper to say so.
-
-    Set B/C print other questions than set A, so each set gets its own share:
-    reporting set A's for all three said 0.45 where B and C held 0.25 and 0.15.
-    Returns a warning per set that misses the target.
-    """
-    target = 0.50 if target is None else target
-    warnings: list[str] = []
-    for p in [paper, *paper.sets]:
-        flags = [q.is_competency for s in p.sections for q in s.questions]
-        p.competency_share = round(sum(flags) / len(flags), 3) if flags else 0.0
-        p.competency_target_met = p.competency_share >= target
-        if p is not paper and not p.competency_target_met:
-            warnings.append(
-                f"Set {p.set_label} has {round(p.competency_share * 100, 1)}% "
-                f"competency-based questions (CBSE target: {int(target * 100)}%).")
-    return warnings
-
-
-def _borrowing_warnings(opt_result) -> list[str]:
-    """The optimizer's gap lines that say a section was filled from outside
-    the chapters the request chose. The other gap lines are about a section
-    printing short, which the paper itself already says."""
-    return [g for g in opt_result.gaps if "outside the selected chapters" in g]
-
-
 def _overlap_warnings(paper: GeneratedPaper) -> list[str]:
     return [f"Set {label} repeats {n} question(s) from an earlier set: the question bank "
             f"has no unused question of the same marks and type left in the chapters "
@@ -435,11 +408,8 @@ def generate_paper_endpoint(
         alternatives_pool=alternatives,
     )
     paper.warnings = _overlap_warnings(paper)
-    paper.warnings += _report_competency(paper, request.blueprint.competency_percentage)
-    _require_papers().save(paper, request.template, school_id=current.school_id)
-    if paper.sets:
-        for s in paper.sets:
-            _require_papers().save(s, request.template, school_id=current.school_id)
+    paper.warnings += report_competency(paper, request.blueprint.competency_percentage)
+    _require_papers().save_generated(paper, request.template, school_id=current.school_id)
 
     if assessment:
         assessment.generated_paper_id = paper.id
@@ -490,7 +460,7 @@ def quick_generate_paper(request: QuickPaperRequest, current: User = Depends(req
         competency_weights=CompetencyWeights(),
         sections=sections,
         tier=tier,
-        competency_percentage=0.50,
+        competency_percentage=CBSE_COMPETENCY_TARGET,
         exam_type=request.exam_type,
     )
 
@@ -539,7 +509,8 @@ def quick_generate_paper(request: QuickPaperRequest, current: User = Depends(req
     # answer a teacher would not catch until the exam.
     paper.warnings = [*opt_result.warnings, *_borrowing_warnings(opt_result),
                       *_overlap_warnings(paper),
-                      *_report_competency(paper, bp.competency_percentage)]
+                      # Selection has written the paper's own line.
+                      *report_competency(paper, bp.competency_percentage, stated=True)]
     paper.tiers_available = opt_result.optimization_metrics["tierSignals"]["available"]
     if paper.tiers_available and not selection.tier_changed_selection(
             candidates, bp, fallback, opt_result.selected_questions):
@@ -558,10 +529,7 @@ def quick_generate_paper(request: QuickPaperRequest, current: User = Depends(req
         branding = t_store.get_branding(request.template_id, current.school_id)
         template = branding[0] if branding else None
 
-    _require_papers().save(paper, template, school_id=current.school_id)
-    if paper.sets:
-        for s in paper.sets:
-            _require_papers().save(s, template, school_id=current.school_id)
+    _require_papers().save_generated(paper, template, school_id=current.school_id)
 
     assessment = Assessment(
         id=asm_id,
@@ -588,6 +556,10 @@ def quick_generate_paper(request: QuickPaperRequest, current: User = Depends(req
             "tier": tier,
             "userId": current.id,
             "schoolId": current.school_id,
+            # The class and subject the paper was set for: PRD 12.6's exam
+            # coverage counts papers per class and subject per term.
+            "subject": request.subject,
+            "grade": request.grade,
             # MEASURED: how long the machine took. Decision 11 makes this the
             # renewal criterion, and it was not recorded anywhere before.
             "generationSeconds": round(time.perf_counter() - _started, 3),
@@ -669,7 +641,7 @@ def generate_from_ids(request: GenerateFromIdsRequest, current: User = Depends(r
         blueprint=bp,
         selected_questions=found_questions,
     )
-    _report_competency(paper, bp.competency_percentage)
+    report_competency(paper, bp.competency_percentage)
 
     template = None
     if request.template_id:
@@ -714,6 +686,8 @@ def generate_from_ids(request: GenerateFromIdsRequest, current: User = Depends(r
             "questionCount": len(found_questions),
             "userId": current.id,
             "schoolId": current.school_id,
+            "subject": request.subject,
+            "grade": request.grade,
             # MEASURED, same as quick generation. This route is the curated
             # path, so a school using only it would otherwise report zero
             # papers and conclude nothing was saved.
@@ -726,20 +700,74 @@ def generate_from_ids(request: GenerateFromIdsRequest, current: User = Depends(r
 
 
 @router.get("/paper-timing")
-def get_paper_timing(current: User = Depends(require_principal)) -> dict:
-    """Time saved per paper — the renewal criterion, made answerable.
+def get_paper_timing(term_id: Optional[str] = Query(None, alias="termId"),
+                     current: User = Depends(require_principal)) -> dict:
+    """Time saved and exam coverage, for one term -- the renewal criterion and
+    the principal's first dashboard metric, made answerable.
 
-    Decision 11: *"Renewal is measured as time saved per paper."* Before this
-    route the number existed nowhere, so the criterion could not be checked.
+    Decision 11: *"Renewal is measured as time saved per paper"*, per term.
+    PRD 12.6 (a): which classes and subjects have had a paper set this term,
+    and which have not. By default the term covering the school's today; a
+    `termId` of the caller's school names another. With no term covering
+    today the figures are all-time and the response says so (`scope`,
+    `scopeNote`) -- an all-time number shown as "this term" would be the
+    silent kind of wrong.
 
     Scoped to the caller's school. The response separates what was MEASURED
-    (generation time, from a monotonic clock) from what was DECLARED (the manual
-    baseline), and says so in the payload rather than only in the docs --
-    because a saving built on a declared baseline will be quoted at somebody,
-    and the word "estimated" has to travel with it.
+    (generation time, from a monotonic clock) from what was DECLARED (the
+    manual baseline -- the principal's own for the term when set), and says so
+    in the payload rather than only in the docs.
     """
-    cfg, _store = _require()
-    return paper_timing.report(cfg.data_root, school_id=current.school_id).as_dict()
+    cfg, store = _require()
+    from ..curriculum.store import get_curriculum_store
+    curriculum = get_curriculum_store(cfg.data_root)
+    if term_id is not None:
+        term = curriculum.get_term(term_id)
+        if term is None:
+            raise HTTPException(404, "term not found")
+        if term.school_id != current.school_id:
+            raise HTTPException(403, "this term belongs to a different school")
+    else:
+        term = curriculum.term_for_date(current.school_id, paper_timing.school_today())
+
+    def attribute(assessment_id: str):
+        # For entries written before generation recorded class and subject.
+        a = store.get(assessment_id)
+        if a is None or a.school_id != current.school_id:
+            return None
+        return a.subject, a.grade
+
+    baseline = None
+    universe = None
+    if term is not None:
+        if term.manual_baseline_minutes is not None:
+            baseline = (float(term.manual_baseline_minutes),
+                        f"set by the principal for {term.name}")
+        # The classes 6-10 the school declared for the term's year, and their
+        # subjects: what "not yet" is measured against.
+        universe = [(g.number, s.name)
+                    for g in curriculum.grades_for_year(term.academic_year_id)
+                    if 6 <= g.number <= 10
+                    for s in curriculum.subjects_for_grade(g.id)]
+    rep = paper_timing.report(
+        cfg.data_root, school_id=current.school_id, attribute=attribute, baseline=baseline,
+        start_date=term.start_date if term else None,
+        end_date=term.end_date if term else None)
+    body = rep.as_dict()
+    body["examCoverage"] = paper_timing.exam_coverage(rep, universe)
+    if term is None:
+        body.update(scope="allTime", term=None, scopeNote=(
+            f"No term of this school covers {paper_timing.school_today()}, so these figures "
+            "are for all time. Declare the school's terms in calendar setup to see this "
+            "term's papers and which classes have none yet."))
+    else:
+        body.update(scope="term", scopeNote=None, term={
+            "id": term.id, "name": term.name,
+            "startDate": term.start_date, "endDate": term.end_date,
+            # The term's own baseline, so a screen can offer to change or
+            # clear it; None means the deployment's declared one is in use.
+            "manualBaselineMinutes": term.manual_baseline_minutes})
+    return body
 
 
 @router.get("/papers/{paper_id}", response_model=GeneratedPaper)

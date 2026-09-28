@@ -144,6 +144,11 @@ def to_question_schema(pq: PoolQuestion) -> QuestionSchema:
     # "understand" default when extraction found none. selection's tier
     # signals ignore a supplied value instead of ranking on it.
     schema.metadata["difficultyInferred"] = True
+    # So is the type, always: extract/academic._guess_type's keyword guess
+    # ("passage" -> case_study) or, with none, _resolve_type's marks fallback
+    # (5 marks or more -> case_study). A case_study we named is not one the
+    # source printed, and competency.competency_signal must not count it.
+    schema.metadata["typeInferred"] = True
     if not q.cognitive:
         schema.metadata["bloomInferred"] = True
     if pq.has_answer:

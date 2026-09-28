@@ -8,91 +8,71 @@
       "unit_no": "I",
       "name": "Number Systems",
       "marks": 10,
-      "chapters": [
-        {
-          "id": "number-systems-9",
-          "name": "Number Systems"
-        }
-      ]
+      "chapters": []
     },
     {
       "unit_no": "II",
       "name": "Algebra",
       "marks": 20,
-      "chapters": [
-        {
-          "id": "polynomials-9",
-          "name": "Polynomials"
-        },
-        {
-          "id": "linear-equations-two-variables",
-          "name": "Linear Equations in Two Variables"
-        }
-      ]
+      "chapters": []
     },
     {
       "unit_no": "III",
       "name": "Coordinate Geometry",
       "marks": 4,
-      "chapters": [
-        {
-          "id": "coordinate-geometry-9",
-          "name": "Coordinate Geometry"
-        }
-      ]
+      "chapters": []
     },
     {
       "unit_no": "IV",
       "name": "Geometry",
       "marks": 27,
-      "chapters": [
-        {
-          "id": "intro-euclid-geometry",
-          "name": "Introduction to Euclid's Geometry"
-        },
-        {
-          "id": "lines-and-angles",
-          "name": "Lines and Angles"
-        },
-        {
-          "id": "triangles-9",
-          "name": "Triangles"
-        },
-        {
-          "id": "quadrilaterals",
-          "name": "Quadrilaterals"
-        },
-        {
-          "id": "circles-9",
-          "name": "Circles"
-        }
-      ]
+      "chapters": []
     },
     {
       "unit_no": "V",
       "name": "Mensuration",
       "marks": 13,
-      "chapters": [
-        {
-          "id": "herons-formula",
-          "name": "Heron's Formula"
-        },
-        {
-          "id": "surface-areas-and-volumes-9",
-          "name": "Surface Areas and Volumes"
-        }
-      ]
+      "chapters": []
     },
     {
       "unit_no": "VI",
       "name": "Statistics",
       "marks": 6,
-      "chapters": [
-        {
-          "id": "statistics-9",
-          "name": "Statistics"
-        }
-      ]
+      "chapters": []
+    }
+  ],
+  "chapters": [
+    {
+      "id": "mathematics-9/orienting-yourself-the-use-of-coordinates",
+      "name": "Orienting Yourself: The Use of Coordinates"
+    },
+    {
+      "id": "mathematics-9/introduction-to-linear-polynomials",
+      "name": "Introduction to Linear Polynomials"
+    },
+    {
+      "id": "mathematics-9/the-world-of-numbers",
+      "name": "The World of Numbers"
+    },
+    {
+      "id": "mathematics-9/exploring-algebraic-identities",
+      "name": "Exploring Algebraic Identities"
+    },
+    {
+      "id": "mathematics-9/i-m-up-and-down-and-round-and-round",
+      "name": "I’m Up and Down, and Round and Round"
+    },
+    {
+      "id": "mathematics-9/measuring-space-perimeter-and-area",
+      "name": "Measuring Space: Perimeter and Area"
+    },
+    {
+      "id": "mathematics-9/the-mathematics-of-maybe-introduction-to-probability",
+      "name": "The Mathematics of Maybe: Introduction to Probability"
+    },
+    {
+      "id": "mathematics-9/predicting-what-comes-next-exploring-sequences-and-progressi",
+      "name": "Predicting What Comes Next: Exploring Sequences and Progressions"
     }
   ]
 }

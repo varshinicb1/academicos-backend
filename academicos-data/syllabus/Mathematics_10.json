@@ -4,12 +4,105 @@
   "source": "CBSE Curriculum 2025-26, Maths_Sec_2025-26.pdf, Class X Course Structure",
   "total_marks": 80,
   "units": [
-    {"unit_no": "I", "name": "Number Systems", "marks": 6, "chapters": []},
-    {"unit_no": "II", "name": "Algebra", "marks": 20, "chapters": []},
-    {"unit_no": "III", "name": "Coordinate Geometry", "marks": 6, "chapters": []},
-    {"unit_no": "IV", "name": "Geometry", "marks": 15, "chapters": []},
-    {"unit_no": "V", "name": "Trigonometry", "marks": 12, "chapters": []},
-    {"unit_no": "VI", "name": "Mensuration", "marks": 10, "chapters": []},
-    {"unit_no": "VII", "name": "Statistics and Probability", "marks": 11, "chapters": []}
+    {
+      "unit_no": "I",
+      "name": "Number Systems",
+      "marks": 6,
+      "chapters": []
+    },
+    {
+      "unit_no": "II",
+      "name": "Algebra",
+      "marks": 20,
+      "chapters": []
+    },
+    {
+      "unit_no": "III",
+      "name": "Coordinate Geometry",
+      "marks": 6,
+      "chapters": []
+    },
+    {
+      "unit_no": "IV",
+      "name": "Geometry",
+      "marks": 15,
+      "chapters": []
+    },
+    {
+      "unit_no": "V",
+      "name": "Trigonometry",
+      "marks": 12,
+      "chapters": []
+    },
+    {
+      "unit_no": "VI",
+      "name": "Mensuration",
+      "marks": 10,
+      "chapters": []
+    },
+    {
+      "unit_no": "VII",
+      "name": "Statistics and Probability",
+      "marks": 11,
+      "chapters": []
+    }
+  ],
+  "chapters": [
+    {
+      "id": "mathematics-10/real-numbers",
+      "name": "Real Numbers"
+    },
+    {
+      "id": "mathematics-10/polynomials",
+      "name": "Polynomials"
+    },
+    {
+      "id": "mathematics-10/pair-of-linear-equations-in-two-variables",
+      "name": "Pair of Linear Equations in Two Variables"
+    },
+    {
+      "id": "mathematics-10/quadratic-equations",
+      "name": "Quadratic Equations"
+    },
+    {
+      "id": "mathematics-10/arithmetic-progressions",
+      "name": "Arithmetic Progressions"
+    },
+    {
+      "id": "mathematics-10/triangles",
+      "name": "Triangles"
+    },
+    {
+      "id": "mathematics-10/coordinate-geometry",
+      "name": "Coordinate Geometry"
+    },
+    {
+      "id": "mathematics-10/introduction-to-trigonometry",
+      "name": "Introduction to Trigonometry"
+    },
+    {
+      "id": "mathematics-10/some-applications-of-trigonometry",
+      "name": "Some Applications of Trigonometry"
+    },
+    {
+      "id": "mathematics-10/circles",
+      "name": "Circles"
+    },
+    {
+      "id": "mathematics-10/areas-related-to-circles",
+      "name": "Areas Related to Circles"
+    },
+    {
+      "id": "mathematics-10/surface-areas-and-volumes",
+      "name": "Surface Areas and Volumes"
+    },
+    {
+      "id": "mathematics-10/statistics",
+      "name": "Statistics"
+    },
+    {
+      "id": "mathematics-10/probability",
+      "name": "Probability"
+    }
   ]
 }

@@ -6,6 +6,7 @@ endpoints stay readable. Mounted under the same /api/v1 prefix.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -44,7 +45,7 @@ from .schemas import (
 from .school_templates import TemplateStore
 from .store import AssessmentStore
 from .users import User, get_user_store
-from ..syllabus.cbse_syllabus import load_syllabus
+from ..syllabus.cbse_syllabus import load_syllabus, taxonomy_chapters
 from ..syllabus.timetable import generate_timetable
 
 router = APIRouter(prefix="/api/v1")
@@ -322,6 +323,48 @@ def catalog(response: Response) -> CatalogResponse:
     return CatalogResponse(entries=entries, total_questions=total)
 
 
+def _name_key(name: str) -> str:
+    """A chapter name reduced to its letters and digits, so that an en dash, a
+    colon or an ampersand cannot make two spellings of one chapter differ
+    ("Light – Reflection and Refraction" against "Light - Reflection and
+    Refraction")."""
+    name = (name.replace("–", "-").replace("—", "-")
+                .replace("’", "'").replace("…", ""))
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def _chapter_of(q: QuestionSchema, known: set[str], by_name: dict[str, str],
+                book_names: dict[str, str]) -> str:
+    """The one chapter this question is filed under in the teacher's view.
+
+    The record carries up to two chapter claims and they are not the same
+    kind. `taxonomyChapterId` is the chapter of the NCERT book the tagger
+    read, written only above the gold-set confidence threshold, and for 1,626
+    Exemplar records it is the chapter the book itself printed the question
+    in. `chapterIds` is whatever the source bank supplied -- an old-syllabus
+    slug, a CBSE unit name, a CBE content code -- and for six of the ten class
+    6-10 Mathematics/Science pairs it names a chapter of the pre-2024 book,
+    which the class no longer studies.
+
+    So the tag is preferred, and `chapterIds` is read only when the syllabus
+    still knows the id, which is the same test as "this id names a chapter of
+    the book this class uses". Anything left goes to the named "unmapped"
+    bucket: a question with no chapter is shown as having none, never given
+    one it did not earn.
+    """
+    tid = q.taxonomy_chapter_id
+    if tid:
+        if not known or tid in known:
+            return tid
+        twin = by_name.get(_name_key(book_names.get(tid, "")))
+        if twin:
+            return twin
+    for cid in q.chapter_ids:
+        if not known or cid in known:
+            return cid
+    return "unmapped"
+
+
 @router.get("/catalog/{subject}/{grade}/chapters", response_model=list[ChapterEntry])
 def catalog_chapters(subject: str, grade: int, response: Response) -> list[ChapterEntry]:
     """Chapter breakdown for one subject — the real syllabus view."""
@@ -329,33 +372,48 @@ def catalog_chapters(subject: str, grade: int, response: Response) -> list[Chapt
     pool = get_pool(cfg, subject=subject, grade=_int_grade_to_roman(grade))
     schemas = [to_question_schema(q) for q in pool.questions]
 
+    # Real official CBSE units/chapters, when we have them — shown even with
+    # zero questions yet, a gap the teacher should see rather than one
+    # silently hidden behind an "unmapped" bucket.
+    syllabus = load_syllabus(subject, grade)
+    chapters = syllabus.all_chapters() if syllabus is not None else []
+    known = {chapter.id for _unit, chapter in chapters}
+    # The syllabus chapter that a taxonomy tag belongs to, by the name the
+    # book prints. Only Science 6 and Science 10 need it: their files list the
+    # same edition as the taxonomy under ids of their own, so "Life Processes"
+    # the tag and "life-processes" the chapter are one chapter. Where the file
+    # and the taxonomy read different editions no name matches, and the tag
+    # falls through to "unmapped" instead of being filed under a chapter of a
+    # book the class does not study.
+    by_name = {_name_key(chapter.name): chapter.id for _unit, chapter in chapters}
+    book_names = taxonomy_chapters(subject, grade)
+
     by_chapter: dict[str, list[QuestionSchema]] = {}
     for q in schemas:
-        for cid in (q.chapter_ids or ["unmapped"]):
-            by_chapter.setdefault(cid, []).append(q)
+        by_chapter.setdefault(_chapter_of(q, known, by_name, book_names), []).append(q)
 
-    # Real official CBSE units/chapters, when we have them (currently Class
-    # X only) — shown even with zero questions yet, a gap the teacher should
-    # see rather than one silently hidden behind an "unmapped" bucket.
-    syllabus = load_syllabus(subject, grade)
     out: list[ChapterEntry] = []
     seen: set[str] = set()
-    if syllabus is not None:
-        for unit, chapter in syllabus.all_chapters():
-            qs = by_chapter.get(chapter.id, [])
-            out.append(ChapterEntry(
-                chapter_id=chapter.id, chapter_name=chapter.name,
-                question_count=len(qs), marks_available=sorted({q.marks for q in qs}),
-                unit_name=unit.name, syllabus_marks=unit.marks,
-            ))
-            seen.add(chapter.id)
+    for unit, chapter in chapters:
+        qs = by_chapter.get(chapter.id, [])
+        out.append(ChapterEntry(
+            chapter_id=chapter.id, chapter_name=chapter.name,
+            question_count=len(qs), marks_available=sorted({q.marks for q in qs}),
+            # A chapter the book has but the CBSE marks table does not place
+            # in a unit carries no unit and no marks, rather than a guess at
+            # which unit it belongs to.
+            unit_name=unit.name if unit else None,
+            syllabus_marks=unit.marks if unit else None,
+        ))
+        seen.add(chapter.id)
 
     for cid in sorted(by_chapter):
         if cid in seen or cid == "unmapped":
             continue
         qs = by_chapter[cid]
         out.append(ChapterEntry(
-            chapter_id=cid, chapter_name=cid.replace("-", " ").title(),
+            chapter_id=cid,
+            chapter_name=book_names.get(cid) or cid.replace("-", " ").title(),
             question_count=len(qs), marks_available=sorted({q.marks for q in qs}),
         ))
     if "unmapped" in by_chapter:
@@ -384,12 +442,28 @@ class SyllabusUnitResponse(Camel):
     chapter_names: list[str] = Field(default_factory=list)
 
 
+class SyllabusChapterResponse(Camel):
+    id: str
+    name: str
+
+
 class SyllabusResponse(Camel):
     subject: str
     grade: int
     total_marks: int
     source: str
     units: list[SyllabusUnitResponse]
+    # The book's own chapters, for a class whose units are CBSE's marks
+    # weightage and carry no chapter list. Before fb0107a those files held the
+    # PREVIOUS edition's chapters inside the units (and Mathematics 6 held the
+    # new book's names on the old book's ids), so the screen named chapters the
+    # class does not study; after it, `units[].chapterNames` was empty and the
+    # screen named none at all. They are listed here rather than distributed
+    # across units because no unit owns them -- inventing an owner would be a
+    # claim the file does not make. The id is the one `taxonomyChapterId`
+    # carries, so a client can ask for a chapter's questions without matching
+    # on names, which is the mistake this whole area came from.
+    chapters: list[SyllabusChapterResponse] = Field(default_factory=list)
 
 
 @router.get("/syllabus/{subject}/{grade}", response_model=SyllabusResponse)
@@ -407,6 +481,7 @@ def get_syllabus(subject: str, grade: int, response: Response) -> SyllabusRespon
             )
             for u in doc.units
         ],
+        chapters=[SyllabusChapterResponse(id=c.id, name=c.name) for c in doc.chapters],
     )
 
 

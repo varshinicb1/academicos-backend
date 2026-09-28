@@ -986,6 +986,54 @@ def cmd_sync_gcs(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_seed_curriculum(args: argparse.Namespace) -> int:
+    """Seeds the CBSE curriculum hierarchy (board -> year -> grade -> subjects
+    -> books -> units -> chapters) for one grade 6-12, or every grade with
+    --all-grades.
+
+    Item 4 of the any-grade work: `seed_cbse_all_grades` had existed in
+    curriculum/seed_cbse10.py since the Class 10 seed landed, wired to no route
+    and no CLI command -- so the only way to set a school up was the Class 10
+    HTTP route. This is the same library call the route makes, for setting up a
+    school (or a scratch data root) without a running server.
+
+    Also applies the committed decomposition templates as PENDING proposals,
+    exactly like the route; nothing here approves anything, and the per-subject
+    lines below say which subjects reached Topic/Subtopic and which did not."""
+    from .curriculum.seed_cbse10 import seed_cbse_all_grades, seed_cbse_grade
+    from .curriculum.store import get_curriculum_store
+
+    if not args.all_grades and args.grade is None:
+        print("give --grade N (6-12) or --all-grades")
+        return 2
+
+    cfg = Config.load()
+    store = get_curriculum_store(cfg.data_root)
+    common = dict(school_id=args.school_id, academic_year_label=args.academic_year_label,
+                  start_date=args.start_date, end_date=args.end_date)
+    try:
+        results = (seed_cbse_all_grades(store, **common) if args.all_grades
+                   else [seed_cbse_grade(store, grade_number=args.grade, **common)])
+    except ValueError as e:
+        print(e)
+        return 2
+
+    for result in results:
+        grade = result.grade_number
+        print(f"grade {grade}: {result.subjects_seeded} subjects, {result.units_seeded} units, "
+              f"{result.chapters_seeded} chapters"
+              + (f" (skipped: {', '.join(result.subjects_skipped)})"
+                 if result.subjects_skipped else ""))
+        for t in result.topic_templates:
+            reached = f"{t.chapters_with_topics}/{t.chapters} chapters"
+            detail = (f" from {', '.join(t.provenance)}" if t.provenance
+                      else f" -- {t.note}" if t.note else "")
+            print(f"    {t.subject:<18} topics proposed for {reached}{detail}")
+        print(f"    -> {result.topics_proposed} topics / {result.subtopics_proposed} subtopics "
+              "proposed, all PENDING a principal's approval")
+    return 0
+
+
 def cmd_curriculum_extract(args: argparse.Namespace) -> int:
     """Bulk-runs Topic/Subtopic extraction proposals across every chapter
     of a book that doesn't already have real topics -- the transcript
@@ -1172,6 +1220,15 @@ def main(argv: list[str] | None = None) -> int:
     psg.add_argument("--max-cycles", type=int, default=None,
                      help="with --interval-minutes, stop after N cycles instead of running forever")
     psg.set_defaults(fn=cmd_sync_gcs)
+
+    psc = sub.add_parser("seed-curriculum")
+    psc.add_argument("--school-id", required=True)
+    psc.add_argument("--grade", type=int, default=None, help="6-12")
+    psc.add_argument("--all-grades", action="store_true", help="seed every grade 6-12")
+    psc.add_argument("--academic-year-label", required=True, help='e.g. "2026-27"')
+    psc.add_argument("--start-date", required=True, help="ISO date")
+    psc.add_argument("--end-date", required=True, help="ISO date")
+    psc.set_defaults(fn=cmd_seed_curriculum)
 
     pce = sub.add_parser("curriculum-extract")
     pce.add_argument("--school-id", required=True)

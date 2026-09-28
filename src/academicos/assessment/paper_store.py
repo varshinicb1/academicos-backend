@@ -111,6 +111,21 @@ class PaperStore:
             )
             self.conn.commit()
 
+    def save_generated(self, paper: GeneratedPaper, template: Optional[SchoolTemplate] = None,
+                       school_id: Optional[str] = None) -> None:
+        """A freshly generated paper and each of its sets, as one family.
+
+        Set A carries the paper's own id (`paper.generate_paper_sets`), and
+        every generation path saved the paper and then each set -- so set A's
+        copy, which holds no warnings and no sets, was written over the paper.
+        A reopened paper showed no competency share, and the first edit lost
+        the "Set B/C" lines (audit D78). Set A is the paper; it is saved once,
+        as the paper."""
+        self.save(paper, template, school_id=school_id)
+        for s in paper.sets:
+            if s.id != paper.id:
+                self.save(s, template, school_id=school_id)
+
     def get(self, paper_id: str) -> Optional[GeneratedPaper]:
         if self._remote.enabled:
             rows = self._remote.select(id=paper_id)

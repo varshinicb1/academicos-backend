@@ -8,66 +8,61 @@
       "unit_no": "I",
       "name": "Number Sense and Patterns",
       "marks": 30,
-      "chapters": [
-        {
-          "id": "knowing-our-numbers",
-          "name": "Patterns in Mathematics"
-        },
-        {
-          "id": "whole-numbers",
-          "name": "Lines and Angles"
-        },
-        {
-          "id": "playing-with-numbers",
-          "name": "Number Play"
-        },
-        {
-          "id": "integers-6",
-          "name": "Data Handling and Presentation"
-        },
-        {
-          "id": "fractions-6",
-          "name": "Prime Time"
-        },
-        {
-          "id": "decimals-6",
-          "name": "Perimeter and Area"
-        }
-      ]
+      "chapters": []
     },
     {
       "unit_no": "II",
       "name": "Shapes and Space",
       "marks": 25,
-      "chapters": [
-        {
-          "id": "basic-geometrical-ideas",
-          "name": "Fractions"
-        },
-        {
-          "id": "understanding-elementary-shapes",
-          "name": "Playing with Constructions"
-        },
-        {
-          "id": "symmetry-6",
-          "name": "Symmetry"
-        }
-      ]
+      "chapters": []
     },
     {
       "unit_no": "III",
       "name": "Algebra and Measurement",
       "marks": 25,
-      "chapters": [
-        {
-          "id": "algebra-6",
-          "name": "The Other Side of Zero"
-        },
-        {
-          "id": "ratio-and-proportion",
-          "name": "Ratio and Proportion"
-        }
-      ]
+      "chapters": []
+    }
+  ],
+  "chapters": [
+    {
+      "id": "mathematics-6/patterns-in-mathematics",
+      "name": "Patterns in Mathematics"
+    },
+    {
+      "id": "mathematics-6/lines-and-angles",
+      "name": "Lines and Angles"
+    },
+    {
+      "id": "mathematics-6/number-play",
+      "name": "Number Play"
+    },
+    {
+      "id": "mathematics-6/data-handling-and-presentation",
+      "name": "Data Handling and Presentation"
+    },
+    {
+      "id": "mathematics-6/prime-time",
+      "name": "Prime Time"
+    },
+    {
+      "id": "mathematics-6/perimeter-and-area",
+      "name": "Perimeter and Area"
+    },
+    {
+      "id": "mathematics-6/fractions",
+      "name": "Fractions"
+    },
+    {
+      "id": "mathematics-6/playing-with-constructions",
+      "name": "Playing with Constructions"
+    },
+    {
+      "id": "mathematics-6/symmetry",
+      "name": "Symmetry"
+    },
+    {
+      "id": "mathematics-6/the-other-side-of-zero",
+      "name": "The Other Side of Zero"
     }
   ]
 }

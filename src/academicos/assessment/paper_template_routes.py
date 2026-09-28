@@ -29,11 +29,11 @@ from . import paper_edit
 from .audit_log import get_audit_log
 from .auth_routes import require_staff
 from .authz import require_own_school, require_school_owns_paper
-from .paper import generate_paper_sets
-from .paper_edit import SwapCounts, bank_for
+from .paper import generate_paper_sets, report_competency
+from .paper_edit import Bank, SwapCounts, bank_for
 from .paper_store import PaperStore, paper_question_ids
 from .paper_templates import AvailabilityReport, SectionAvailability, SectionPlan, \
-    build_scope_filter, check_scope_ids, plan
+    build_scope_filter, check_scope_ids, competency_check, plan, tier_check
 from .school_templates import TemplateStore
 from .schemas import (
     Assessment,
@@ -315,31 +315,53 @@ def duplicate_teacher_template(
 
 # ---- availability + generation ----
 
-def _candidates(cfg: Config, template: PaperTemplateDraft) -> list[QuestionSchema]:
+def _bank(cfg: Config, template: PaperTemplateDraft) -> Bank:
     """The class+subject bank, mapped once per pool (`paper_edit.bank_for`)
     rather than per request: 22 ms of every generation on the class 10
     Science bank. The questions are shared -- never mutate one here."""
     try:
-        return list(bank_for(cfg, template.subject, template.grade).questions)
+        return bank_for(cfg, template.subject, template.grade)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+def _names_scope(scope: TemplateScope) -> bool:
+    return bool(scope.chapter_ids or scope.topic_ids or scope.subtopic_ids)
 
 
 def _plan(template: PaperTemplate, scope: Optional[TemplateScope], *,
           fill_from_outside_scope: bool = False,
           stale: frozenset[str] = frozenset()) -> tuple[AvailabilityReport, list[SectionPlan]]:
+    """`plan` over the template's bank and scope, with the competency and
+    tier checks attached to the report.
+
+    When the scope names chapters, topics or subtopics the template is planned
+    a second time over the whole syllabus (same stale set), so a share below
+    CBSE's 50% says whether the chapters or the bank are the limit. That run
+    changes nothing in the report but `competency`, and costs a plan's time:
+    16 ms (p50 of 20) for class 10 Science half-yearly on six chapters of the
+    served bank (2026-09-27)."""
     cfg, _ = _require()
     if scope is not None:
         template = template.model_copy(update={"scope": scope})
-    candidates = _candidates(cfg, template)
+    bank = _bank(cfg, template)
+    candidates = list(bank.questions)
 
     def subtopic_questions(ids: list[str]) -> list[str]:
         from ..curriculum.store import get_curriculum_store
         return get_curriculum_store(cfg.data_root).question_ids_for_subtopics(ids)
 
     scope_filter = build_scope_filter(template.scope, candidates, subtopic_questions)
-    return plan(template, template.id, candidates, scope_filter,
-                fill_from_outside_scope=fill_from_outside_scope, stale=stale)
+    report, plans = plan(template, template.id, candidates, scope_filter,
+                         fill_from_outside_scope=fill_from_outside_scope, stale=stale)
+    whole_plans = None
+    if _names_scope(template.scope):
+        _, whole_plans = plan(template, template.id, candidates,
+                              build_scope_filter(TemplateScope(), candidates), stale=stale)
+    keyed = [q for q in candidates if q.id in bank.keyed]
+    report.competency = competency_check(template, plans, keyed, whole_plans)
+    report.tiers = tier_check(template, keyed)
+    return report, plans
 
 
 @router.post("/schools/{school_id}/teacher-templates/{template_id}/availability",
@@ -404,10 +426,9 @@ def generate_from_template(
     )
     instructions = _printed_instructions(template, plans)
     paper = _with_header(paper, template, instructions)
+    _stamp_checks(paper, report, blueprint)
     branding = _branding(template, current.school_id)
-    _papers.save(paper, branding, school_id=current.school_id)
-    for s in paper.sets:
-        _papers.save(s, branding, school_id=current.school_id)
+    _papers.save_generated(paper, branding, school_id=current.school_id)
 
     notes = [n for p in plans for n in p.notes] + list(report.scope_notes)
     now = _now()
@@ -438,10 +459,33 @@ def generate_from_template(
         "template_paper_generated", assessment_id=asm_id,
         details={"paperId": paper.id, "templateId": template.id, "userId": current.id,
                  "schoolId": current.school_id, "gaps": len(gaps),
+                 "subject": template.subject, "grade": template.grade,
                  "generationSeconds": round(time.perf_counter() - started, 3)},
     )
     return TemplatePaperResponse(paper=paper, assessment_id=asm_id, complete=not gaps,
                                  gaps=gaps, notes=notes, availability=report)
+
+
+def _stamp_checks(paper: GeneratedPaper, report: AvailabilityReport,
+                  blueprint: Blueprint) -> None:
+    """What the availability check told the teacher, on the paper it became,
+    before it is saved: the competency share of the paper and of each set
+    (`paper.report_competency`, the one function every generation path
+    calls), whether a tier could change it, and -- when the share is below
+    CBSE's 50% -- the check's sentence first among the warnings, which the
+    builder's paper step already shows. The per-set shares follow it.
+
+    Template papers carried neither before (competencyShare and
+    tiersAvailable null), though the same bank rule decides both."""
+    check = report.competency
+    below = check is not None and check.status != "meets"
+    warnings = report_competency(paper, blueprint.competency_percentage, stated=below)
+    if below:
+        warnings.insert(0, f"{check.summary}. {check.detail}")
+    paper.warnings = [*paper.warnings, *warnings]
+    tiers = report.tiers.available if report.tiers is not None else None
+    for p in [paper, *paper.sets]:
+        p.tiers_available = tiers
 
 
 def _attach_choices(plans: list[SectionPlan]) -> None:
@@ -650,11 +694,13 @@ def remove_paper_question(paper_id: str, slot: str,
     if not any(m.id == paper.id for m in family):
         family.append(paper)
     edited = paper
+    target = asm.blueprint.competency_percentage
     for member in family:
         if slot.alternative:
-            updated = paper_edit.drop_alternative(member, q, paper.answer_key.get(str(q.display_number), ""))
+            updated = paper_edit.drop_alternative(
+                member, q, paper.answer_key.get(str(q.display_number), ""), target=target)
         else:
-            updated = paper_edit.drop_question(member, q.question_id)
+            updated = paper_edit.drop_question(member, q.question_id, target=target)
         _papers.save(updated, _papers.get_template(member.id), school_id=asm.school_id)
         _forget_pdfs(cfg, member.id)
         if member.id == paper.id:
@@ -720,7 +766,8 @@ def _edit_question(paper_id: str, slot_key: str, current: User, *,
         family.append(paper)
     edited = paper
     for member in family:
-        updated = paper_edit.replace_question(member, old_id, new)
+        updated = paper_edit.replace_question(member, old_id, new,
+                                              target=asm.blueprint.competency_percentage)
         _papers.save(updated, _papers.get_template(member.id), school_id=asm.school_id)
         _forget_pdfs(cfg, member.id)
         if member.id == paper.id:

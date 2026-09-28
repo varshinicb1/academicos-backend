@@ -250,6 +250,15 @@ def approve_run(store: CurriculumStore, run_id: str, *, approved_by: str,
     if run is None:
         raise ValueError(f"no such extraction run: {run_id}")
     proposals = store.proposals_for_run(run_id)
+    # models.SOURCE_TYPES draws the distinction an admin actually acts on:
+    # "llm_proposed" is content a model wrote and a human checked;
+    # "imported" is content copied verbatim from a real source (another
+    # school's approved decomposition, an NCERT textbook's own section
+    # headings -- see decomposition_templates.py) that a human accepted.
+    # Recording a template as llm_proposed would make every one of them
+    # look like an LLM's guess in the review surface and in provenance.
+    source_type = ("imported" if run.prompt_version.startswith("template:")
+                   else "llm_proposed")
 
     approved_at = datetime.now(timezone.utc).isoformat()
     topic_ids: list[str] = []
@@ -275,7 +284,7 @@ def approve_run(store: CurriculumStore, run_id: str, *, approved_by: str,
         existing = store.get_topic(p.materialized_id) if p.materialized_id else None
         topic = existing or store.create_topic(
             canonical_id=canonical_id, chapter_id=run.chapter_id, name=final_name, seq=p.sequence,
-            source_type="llm_proposed", source_reference=run.id, approved_by=approved_by,
+            source_type=source_type, source_reference=run.id, approved_by=approved_by,
             approved_at=approved_at, model_used=run.model, generation_version=run.prompt_version)
         store.set_proposal_materialized_id(p.id, topic.id)
         topic_ids.append(topic.id)
@@ -304,7 +313,7 @@ def approve_run(store: CurriculumStore, run_id: str, *, approved_by: str,
         canonical_id = f"{topic_row.canonical_id}:subtopic:{_slug(final_name)}"
         subtopic = store.create_subtopic(
             canonical_id=canonical_id, topic_id=parent_topic_id, name=final_name, seq=p.sequence,
-            source_type="llm_proposed", source_reference=run.id, approved_by=approved_by,
+            source_type=source_type, source_reference=run.id, approved_by=approved_by,
             approved_at=approved_at, model_used=run.model, generation_version=run.prompt_version)
         store.set_proposal_materialized_id(p.id, subtopic.id)
         subtopic_ids.append(subtopic.id)

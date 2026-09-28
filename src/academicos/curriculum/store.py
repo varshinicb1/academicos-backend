@@ -65,12 +65,17 @@ from ..storage.snapshot_sync import SnapshotSync
 from .models import (
     AcademicYear,
     Board,
+    Book,
+    BookSelection,
     Calendar,
     Chapter,
+    CHAPTER_SLUG_REASONS,
+    ChapterSlugMatch,
     CurriculumExtractionProposal,
     CurriculumExtractionRun,
     Grade,
     Holiday,
+    OtherEdition,
     PeriodConfiguration,
     SubjectPeriodAllocation,
     SubjectTimetableSlot,
@@ -78,11 +83,15 @@ from .models import (
     RECORDED_STATUSES,
     STATUS_VALUES,
     ScheduledLesson,
+    DEFAULT_SECTION_NAME,
+    SECTION_NAME_MAX,
+    Section,
     StudentEnrollment,
     Subject,
     Subtopic,
     TeacherAssignment,
     TeachingTimeEstimate,
+    Term,
     Topic,
     Unit,
 )
@@ -106,6 +115,24 @@ CREATE TABLE IF NOT EXISTS academic_years (
 );
 CREATE INDEX IF NOT EXISTS idx_years_school ON academic_years(school_id);
 
+-- Terms (Task 106): a named date range inside one academic year. Added after
+-- school_1's real database existed; CREATE TABLE IF NOT EXISTS is enough
+-- because it is a new table, not a new column. The no-overlap / inside-the-
+-- year rules live in CurriculumStore._check_term (SQLite cannot express
+-- them); the name rule is also a constraint, case-insensitive like the check.
+CREATE TABLE IF NOT EXISTS terms (
+  id           TEXT PRIMARY KEY,
+  school_id    TEXT NOT NULL,
+  academic_year_id TEXT NOT NULL,
+  name         TEXT NOT NULL COLLATE NOCASE,
+  start_date   TEXT NOT NULL,
+  end_date     TEXT NOT NULL,
+  manual_baseline_minutes REAL,
+  UNIQUE(academic_year_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_terms_year ON terms(academic_year_id);
+CREATE INDEX IF NOT EXISTS idx_terms_school_dates ON terms(school_id, start_date);
+
 CREATE TABLE IF NOT EXISTS grades (
   id           TEXT PRIMARY KEY,
   academic_year_id TEXT NOT NULL,
@@ -113,6 +140,25 @@ CREATE TABLE IF NOT EXISTS grades (
   section      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_grades_year ON grades(academic_year_id);
+
+-- Sections (M1.1, docs/plans/m1-school-data-model.md): the class of a grade a
+-- student is enrolled in. Until 2026-09-28 a section was only the optional
+-- grades.section label. Every grade has at least one: create_grade makes the
+-- first, and _migrate gives an existing grade without one a section named
+-- after its old label, or "A". New table, so CREATE TABLE IF NOT EXISTS is
+-- enough; the name rule is also a constraint, case-insensitive like the check.
+CREATE TABLE IF NOT EXISTS sections (
+  id           TEXT PRIMARY KEY,
+  school_id    TEXT NOT NULL,
+  academic_year_id TEXT NOT NULL,
+  grade_id     TEXT NOT NULL,
+  name         TEXT NOT NULL COLLATE NOCASE,
+  class_teacher_id TEXT,
+  created_at   TEXT NOT NULL,
+  UNIQUE(grade_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_sections_year ON sections(academic_year_id);
+CREATE INDEX IF NOT EXISTS idx_sections_grade ON sections(grade_id);
 
 CREATE TABLE IF NOT EXISTS subjects (
   id           TEXT PRIMARY KEY,
@@ -132,6 +178,22 @@ CREATE TABLE IF NOT EXISTS books (
   status       TEXT NOT NULL DEFAULT 'selected'
 );
 CREATE INDEX IF NOT EXISTS idx_books_subject ON books(subject_id);
+
+-- The school's chosen edition (Task 107, PRD 12.7: "one per subject per
+-- year, chosen by the school"). The primary key IS the rule: a second row for
+-- the same subject and year is refused by SQLite itself, not only by a route.
+-- A subject already belongs to one year (subject -> grade -> year), so the
+-- year column is redundant with subject_id today; it is kept so the rule
+-- reads as PRD 12.7 states it. New table, so CREATE TABLE IF NOT EXISTS
+-- is enough for school_1's existing database. No row for a subject with
+-- exactly one book means that book (selected_book_for_subject).
+CREATE TABLE IF NOT EXISTS book_selections (
+  academic_year_id TEXT NOT NULL,
+  subject_id   TEXT NOT NULL,
+  book_id      TEXT NOT NULL,
+  selected_at  TEXT NOT NULL,
+  PRIMARY KEY (academic_year_id, subject_id)
+);
 
 CREATE TABLE IF NOT EXISTS units (
   id           TEXT PRIMARY KEY,
@@ -324,7 +386,8 @@ CREATE TABLE IF NOT EXISTS student_enrollments (
   school_id    TEXT NOT NULL,
   student_id   TEXT NOT NULL UNIQUE,
   grade_id     TEXT NOT NULL,
-  created_at   TEXT NOT NULL
+  created_at   TEXT NOT NULL,
+  section_id   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_se_grade ON student_enrollments(grade_id);
 """
@@ -332,6 +395,11 @@ CREATE INDEX IF NOT EXISTS idx_se_grade ON student_enrollments(grade_id);
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+class SectionInUse(Exception):
+    """A section cannot be removed: students are enrolled in it, or it is
+    its grade's last. The route's 409."""
 
 
 class CurriculumStore:
@@ -347,7 +415,8 @@ class CurriculumStore:
         # Restores the last snapshot into db_path before the connect below;
         # upload, conflicts and flush live there too (storage/snapshot_sync.py).
         self._snapshots = SnapshotSync("curriculum-snapshots", self._SNAPSHOT_KEY, db_path,
-                                       self._conn_lock, debounce_seconds=self._SNAPSHOT_DEBOUNCE_SECONDS)
+                                       self._conn_lock, debounce_seconds=self._SNAPSHOT_DEBOUNCE_SECONDS,
+                                       on_reload=self._bring_up_to_date)
 
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -356,9 +425,20 @@ class CurriculumStore:
         self._exec("PRAGMA journal_mode=WAL")
         self._exec("PRAGMA busy_timeout=60000")
         self._exec("PRAGMA foreign_keys=ON")
-        self.conn.executescript(SCHEMA)
-        self._migrate()
-        self._commit()
+        self._bring_up_to_date()
+        # The migration's rows (M1.1's first sections) are the same on every
+        # instance that starts from this snapshot, so starting does not upload
+        # them: that would turn every rollout into a snapshot conflict with
+        # the instance being replaced (SnapshotSync.commit_derived).
+        self._snapshots.commit_derived(self.conn)
+
+    def _bring_up_to_date(self) -> None:
+        """This release's schema and migrations over whatever the file holds:
+        on start, and after a snapshot conflict reloads one an older release
+        wrote. Executes only; the caller commits."""
+        with self._conn_lock:
+            self.conn.executescript(SCHEMA)
+            self._migrate()
 
     def _migrate(self) -> None:
         """CREATE TABLE IF NOT EXISTS never adds a column to a table that
@@ -369,6 +449,57 @@ class CurriculumStore:
         cols = {r["name"] for r in self._fetchall("PRAGMA table_info(holidays)")}
         if "end_date" not in cols:
             self._exec("ALTER TABLE holidays ADD COLUMN end_date TEXT")
+        # Terms went live before a term carried its own paper baseline, so a
+        # school's existing terms table needs the column added, not assumed.
+        term_cols = {r["name"] for r in self._fetchall("PRAGMA table_info(terms)")}
+        if term_cols and "manual_baseline_minutes" not in term_cols:
+            self._exec("ALTER TABLE terms ADD COLUMN manual_baseline_minutes REAL")
+        # Sections (M1.1). The index lives here, not in SCHEMA: SCHEMA runs
+        # before this, while an existing enrollments table has no such column.
+        enrol_cols = {r["name"] for r in self._fetchall("PRAGMA table_info(student_enrollments)")}
+        if "section_id" not in enrol_cols:
+            self._exec("ALTER TABLE student_enrollments ADD COLUMN section_id TEXT")
+        self._exec("CREATE INDEX IF NOT EXISTS idx_se_section ON student_enrollments(section_id)")
+        self._migrate_sections()
+
+    def _migrate_sections(self) -> None:
+        """Give every grade that has no section its first one, and place
+        every enrollment that has no section in its grade's. Idempotent: a
+        grade that already has a section and an enrollment that already has
+        one are left alone, so this runs on every start at no cost.
+
+        A grade's first section is named after its old `grades.section`
+        label when it had one, else DEFAULT_SECTION_NAME; so a school that
+        never named sections has "10-A", and the students enrolled in grade
+        10 are in 10-A. An enrollment is placed only in a grade with exactly
+        one section: after the first pass every migrated grade has one, and
+        a grade whose principal has since added more is never guessed at.
+
+        The section's id is derived from its grade's, so every instance that
+        migrates the same snapshot writes the same rows (a rollout runs two);
+        which is why the start does not upload them (commit_derived)."""
+        import hashlib
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn_lock:
+            unsectioned = self._fetchall(
+                "SELECT g.id, g.academic_year_id, g.section, y.school_id FROM grades g "
+                "JOIN academic_years y ON g.academic_year_id = y.id "
+                "WHERE NOT EXISTS (SELECT 1 FROM sections s WHERE s.grade_id = g.id)")
+            for g in unsectioned:
+                name = (g["section"] or "").strip()[:SECTION_NAME_MAX] or DEFAULT_SECTION_NAME
+                sid = "section_" + hashlib.sha1(f"first-section:{g['id']}".encode()).hexdigest()[:12]
+                self._exec(
+                    "INSERT INTO sections (id, school_id, academic_year_id, grade_id, name, created_at) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (sid, g["school_id"], g["academic_year_id"], g["id"], name, now))
+            self._exec(
+                "UPDATE student_enrollments SET section_id = "
+                "(SELECT s.id FROM sections s WHERE s.grade_id = student_enrollments.grade_id) "
+                "WHERE section_id IS NULL AND "
+                "(SELECT COUNT(*) FROM sections s WHERE s.grade_id = student_enrollments.grade_id) = 1")
+        if unsectioned:
+            logger.info("sections migration: gave %d grade(s) their first section", len(unsectioned))
 
     # ------------------------------------------------------------------
     # Serialized SQLite access. The store holds ONE shared connection with
@@ -461,14 +592,147 @@ class CurriculumStore:
             "SELECT * FROM academic_years WHERE school_id=? AND label=?", (school_id, label))
         return AcademicYear(**dict(r)) if r else None
 
+    # ---------------- terms ----------------
+    # PRD 12.6 / section 0 decision 11 measure per term; see models.Term.
+    # create/update raise ValueError (the route's 422) for a range outside
+    # the year, an overlap with another term of the year, or a repeated name.
+    # The check and the write run under one _conn_lock hold: two principals
+    # saving overlapping terms at once must not both pass the check. The
+    # statements inside still go through _exec/_fetch* (the RLock nests),
+    # and _commit runs after the hold so a snapshot upload never happens
+    # while other requests wait on the lock.
+
+    @staticmethod
+    def _iso_date(value: str, field_name: str) -> str:
+        from datetime import date as _date
+        try:
+            parsed = _date.fromisoformat(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"term {field_name} {value!r} is not a YYYY-MM-DD date") from None
+        # fromisoformat also takes '20260401'; stored dates are compared as
+        # strings, so only the canonical form may be stored (the same trap
+        # calendar.validate_holiday documents for holidays).
+        if parsed.isoformat() != value:
+            raise ValueError(f"term {field_name} {value!r} is not a YYYY-MM-DD date")
+        return value
+
+    def _check_term(self, *, year: AcademicYear, name: str, start_date: str, end_date: str,
+                    exclude_term_id: Optional[str] = None) -> str:
+        """Returns the cleaned name, or raises ValueError. Caller holds
+        _conn_lock."""
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("a term needs a name")
+        self._iso_date(start_date, "start_date")
+        self._iso_date(end_date, "end_date")
+        if end_date < start_date:
+            raise ValueError(f"term end_date {end_date} is before its start_date {start_date}")
+        if start_date < year.start_date or end_date > year.end_date:
+            raise ValueError(
+                f"term {start_date} .. {end_date} falls outside the academic year "
+                f"({year.start_date} .. {year.end_date})")
+        for other in self.terms_for_year(year.id):
+            if other.id == exclude_term_id:
+                continue
+            if other.name.casefold() == name.casefold():
+                raise ValueError(f"this academic year already has a term named {other.name!r}")
+            # Inclusive ranges: sharing even one day is an overlap, or that
+            # day would belong to two terms and term_for_date would guess.
+            if start_date <= other.end_date and other.start_date <= end_date:
+                raise ValueError(
+                    f"term {start_date} .. {end_date} overlaps {other.name!r} "
+                    f"({other.start_date} .. {other.end_date})")
+        return name
+
+    def create_term(self, *, academic_year_id: str, name: str, start_date: str,
+                    end_date: str) -> Term:
+        year = self.get_academic_year(academic_year_id)
+        if year is None:
+            raise KeyError(academic_year_id)
+        with self._conn_lock:
+            name = self._check_term(year=year, name=name, start_date=start_date,
+                                    end_date=end_date)
+            t = Term(id=new_id("term"), school_id=year.school_id, academic_year_id=year.id,
+                     name=name, start_date=start_date, end_date=end_date)
+            self._exec(
+                "INSERT INTO terms (id, school_id, academic_year_id, name, start_date, end_date) "
+                "VALUES (?,?,?,?,?,?)",
+                (t.id, t.school_id, t.academic_year_id, t.name, t.start_date, t.end_date))
+        self._commit()
+        return t
+
+    def update_term(self, term_id: str, *, name: str, start_date: str, end_date: str) -> Term:
+        with self._conn_lock:
+            current = self.get_term(term_id)
+            if current is None:
+                raise KeyError(term_id)
+            year = self.get_academic_year(current.academic_year_id)
+            name = self._check_term(year=year, name=name, start_date=start_date,
+                                    end_date=end_date, exclude_term_id=term_id)
+            self._exec("UPDATE terms SET name=?, start_date=?, end_date=? WHERE id=?",
+                       (name, start_date, end_date, term_id))
+        self._commit()
+        return Term(id=current.id, school_id=current.school_id,
+                    academic_year_id=current.academic_year_id,
+                    name=name, start_date=start_date, end_date=end_date,
+                    manual_baseline_minutes=current.manual_baseline_minutes)
+
+    def set_term_baseline(self, term_id: str, minutes: Optional[float]) -> Term:
+        """Set, or clear with None, the minutes a teacher takes to set a paper
+        by hand for this term. Kept apart from update_term, whose callers send
+        name and dates only and must not be able to wipe it."""
+        if minutes is not None and not (0 < minutes <= 600):
+            raise ValueError(f"a baseline of {minutes} minutes is not a paper set by hand")
+        with self._conn_lock:
+            if self.get_term(term_id) is None:
+                raise KeyError(term_id)
+            self._exec("UPDATE terms SET manual_baseline_minutes=? WHERE id=?",
+                       (minutes, term_id))
+        self._commit()
+        return self.get_term(term_id)
+
+    def delete_term(self, term_id: str) -> None:
+        self._exec("DELETE FROM terms WHERE id=?", (term_id,))
+        self._commit()
+
+    def get_term(self, term_id: str) -> Optional[Term]:
+        r = self._fetchone("SELECT * FROM terms WHERE id=?", (term_id,))
+        return Term(**dict(r)) if r else None
+
+    def terms_for_year(self, academic_year_id: str) -> list[Term]:
+        rows = self._fetchall(
+            "SELECT * FROM terms WHERE academic_year_id=? ORDER BY start_date", (academic_year_id,))
+        return [Term(**dict(r)) for r in rows]
+
+    def term_for_date(self, school_id: str, date: str) -> Optional[Term]:
+        """The school's term containing `date` (inclusive), or None. Never a
+        guessed term: no term covering the date is None, not the nearest
+        one. Terms of one year cannot overlap; if two of the school's years
+        overlap and each has a term on this date, that is ambiguous too, and
+        also None rather than an arbitrary pick."""
+        rows = self._fetchall(
+            "SELECT * FROM terms WHERE school_id=? AND start_date<=? AND end_date>=? "
+            "ORDER BY start_date", (school_id, date, date))
+        return Term(**dict(rows[0])) if len(rows) == 1 else None
+
     # ---------------- grades ----------------
 
     def create_grade(self, *, academic_year_id: str, number: int,
                      section: Optional[str] = None) -> Grade:
+        """The grade and its first Section, named `section` when given, else
+        DEFAULT_SECTION_NAME: a grade is never without a class to enrol in."""
         g = Grade(id=new_id("grade"), academic_year_id=academic_year_id, number=number, section=section)
-        self._exec(
-            "INSERT INTO grades (id, academic_year_id, number, section) VALUES (?,?,?,?)",
-            (g.id, g.academic_year_id, g.number, g.section))
+        # Checked before anything is written: a refused name must not leave a
+        # grade row behind for the next commit to save.
+        name = self._clean_section_name(section) if section else DEFAULT_SECTION_NAME
+        with self._conn_lock:
+            self._exec(
+                "INSERT INTO grades (id, academic_year_id, number, section) VALUES (?,?,?,?)",
+                (g.id, g.academic_year_id, g.number, g.section))
+            year = self.get_academic_year(academic_year_id)
+            if year is not None:
+                self._insert_section(school_id=year.school_id, academic_year_id=academic_year_id,
+                                     grade_id=g.id, name=name)
         self._commit()
         return g
 
@@ -490,6 +754,138 @@ class CurriculumStore:
             "SELECT * FROM grades WHERE academic_year_id=? AND number=? AND section IS ?",
             (academic_year_id, number, section))
         return Grade(**dict(r)) if r else None
+
+    # ---------------- sections (M1.1) ----------------
+    # create/update raise ValueError (the route's 422) for a bad or repeated
+    # name, KeyError for an unknown id, and SectionInUse (409) for a delete
+    # that would strand students or leave the grade with no section. The
+    # check and the write share one _conn_lock hold, as the terms' do.
+
+    @staticmethod
+    def _clean_section_name(name: Optional[str]) -> str:
+        cleaned = " ".join((name or "").split())
+        if not cleaned:
+            raise ValueError("a section needs a name, such as A or Rose")
+        if len(cleaned) > SECTION_NAME_MAX:
+            raise ValueError(f"a section name is at most {SECTION_NAME_MAX} characters")
+        return cleaned
+
+    def _insert_section(self, *, school_id: str, academic_year_id: str, grade_id: str,
+                        name: str, class_teacher_id: Optional[str] = None) -> Section:
+        """Caller holds _conn_lock, has cleaned the name, and commits."""
+        from datetime import datetime, timezone
+        sec = Section(id=new_id("section"), school_id=school_id,
+                      academic_year_id=academic_year_id, grade_id=grade_id, name=name,
+                      class_teacher_id=class_teacher_id,
+                      created_at=datetime.now(timezone.utc).isoformat())
+        self._exec(
+            "INSERT INTO sections (id, school_id, academic_year_id, grade_id, name, "
+            "class_teacher_id, created_at) VALUES (?,?,?,?,?,?,?)",
+            (sec.id, sec.school_id, sec.academic_year_id, sec.grade_id, sec.name,
+             sec.class_teacher_id, sec.created_at))
+        return sec
+
+    def _check_section_name_free(self, grade_id: str, name: str,
+                                 exclude_section_id: Optional[str] = None) -> None:
+        for other in self.sections_for_grade(grade_id):
+            if other.id != exclude_section_id and other.name.casefold() == name.casefold():
+                raise ValueError(f"this class already has a section named {other.name!r}")
+
+    def create_section(self, *, grade_id: str, name: str,
+                       class_teacher_id: Optional[str] = None) -> Section:
+        name = self._clean_section_name(name)
+        with self._conn_lock:
+            grade = self.get_grade(grade_id)
+            year = self.get_academic_year(grade.academic_year_id) if grade else None
+            if grade is None or year is None:
+                raise KeyError(grade_id)
+            self._check_section_name_free(grade_id, name)
+            sec = self._insert_section(school_id=year.school_id, academic_year_id=year.id,
+                                       grade_id=grade_id, name=name,
+                                       class_teacher_id=class_teacher_id)
+        self._commit()
+        return sec
+
+    def get_section(self, section_id: str) -> Optional[Section]:
+        r = self._fetchone("SELECT * FROM sections WHERE id=?", (section_id,))
+        return Section(**dict(r)) if r else None
+
+    def school_id_for_section(self, section_id: str) -> Optional[str]:
+        r = self._fetchone("SELECT school_id FROM sections WHERE id=?", (section_id,))
+        return r["school_id"] if r else None
+
+    def sections_for_grade(self, grade_id: str) -> list[Section]:
+        rows = self._fetchall(
+            "SELECT * FROM sections WHERE grade_id=? ORDER BY name COLLATE NOCASE", (grade_id,))
+        return [Section(**dict(r)) for r in rows]
+
+    def sections_for_year(self, academic_year_id: str) -> list[Section]:
+        """In class order: grade number, then section name."""
+        rows = self._fetchall(
+            "SELECT s.* FROM sections s JOIN grades g ON s.grade_id = g.id "
+            "WHERE s.academic_year_id=? ORDER BY g.number, s.name COLLATE NOCASE",
+            (academic_year_id,))
+        return [Section(**dict(r)) for r in rows]
+
+    _UNCHANGED: Any = object()
+
+    def update_section(self, section_id: str, *, name: Any = _UNCHANGED,
+                       class_teacher_id: Any = _UNCHANGED) -> tuple[Section, Section]:
+        """Rename a section and/or set its class teacher (None clears it).
+        An argument left out is not changed. Returns (before, after), for
+        the audit entry."""
+        with self._conn_lock:
+            before = self.get_section(section_id)
+            if before is None:
+                raise KeyError(section_id)
+            new_name = before.name
+            if name is not self._UNCHANGED:
+                new_name = self._clean_section_name(name)
+                self._check_section_name_free(before.grade_id, new_name,
+                                              exclude_section_id=section_id)
+            new_teacher = (before.class_teacher_id if class_teacher_id is self._UNCHANGED
+                           else class_teacher_id)
+            self._exec("UPDATE sections SET name=?, class_teacher_id=? WHERE id=?",
+                       (new_name, new_teacher, section_id))
+        self._commit()
+        after = Section(id=before.id, school_id=before.school_id,
+                        academic_year_id=before.academic_year_id, grade_id=before.grade_id,
+                        name=new_name, class_teacher_id=new_teacher, created_at=before.created_at)
+        return before, after
+
+    def delete_section(self, section_id: str) -> Section:
+        """Refused while a student is enrolled in it (move them first: their
+        class would silently disappear), and for a grade's last section (a
+        grade always has a class to enrol in)."""
+        with self._conn_lock:
+            sec = self.get_section(section_id)
+            if sec is None:
+                raise KeyError(section_id)
+            if len(self.sections_for_grade(sec.grade_id)) <= 1:
+                raise SectionInUse("a class keeps at least one section; rename this one instead")
+            enrolled = self.enrollments_for_section(section_id)
+            if enrolled:
+                raise SectionInUse(
+                    f"{len(enrolled)} student(s) are enrolled in this section; "
+                    "enroll them in another section first")
+            self._exec("DELETE FROM sections WHERE id=?", (section_id,))
+        self._commit()
+        return sec
+
+    def enrollments_for_section(self, section_id: str) -> list[StudentEnrollment]:
+        rows = self._fetchall(
+            "SELECT * FROM student_enrollments WHERE section_id=? ORDER BY created_at",
+            (section_id,))
+        return [StudentEnrollment(**dict(r)) for r in rows]
+
+    def enrollment_counts_for_year(self, academic_year_id: str) -> dict[str, int]:
+        """Students enrolled per section of the year, by section id; a
+        section with none is absent."""
+        rows = self._fetchall(
+            "SELECT e.section_id, COUNT(*) AS n FROM student_enrollments e "
+            "JOIN sections s ON e.section_id = s.id WHERE s.academic_year_id=? "
+            "GROUP BY e.section_id", (academic_year_id,))
+        return {r["section_id"]: r["n"] for r in rows}
 
     # ---------------- subjects ----------------
 
@@ -519,16 +915,111 @@ class CurriculumStore:
                     publisher: Optional[str] = None,
                     source_doc_ids: Optional[list[str]] = None,
                     status: str = "selected") -> "Any":
-        from .models import Book
         b = Book(id=new_id("book"), subject_id=subject_id, board_id=board_id, title=title,
                 publisher=publisher, source_doc_ids=source_doc_ids or [], status=status)
-        self._exec(
-            "INSERT INTO books (id, subject_id, board_id, title, publisher, source_doc_ids, status) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (b.id, b.subject_id, b.board_id, b.title, b.publisher,
-             json.dumps(b.source_doc_ids), b.status))
+        with self._conn_lock:
+            # A subject's one book is its edition only implicitly (no
+            # book_selections row). Before a second book arrives, write that
+            # choice down: otherwise adding a book would leave the subject
+            # with two and no edition, and every screen using it would stop.
+            existing = self.books_for_subject(subject_id)
+            year_id = self.academic_year_id_for_subject(subject_id)
+            if (len(existing) == 1 and year_id is not None
+                    and self._selection_row(year_id, subject_id) is None):
+                self._write_selection(year_id, subject_id, existing[0].id)
+            self._exec(
+                "INSERT INTO books (id, subject_id, board_id, title, publisher, source_doc_ids, status) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (b.id, b.subject_id, b.board_id, b.title, b.publisher,
+                 json.dumps(b.source_doc_ids), b.status))
         self._commit()
         return b
+
+    # ---------------- book selection (PRD 12.7) ----------------
+
+    def academic_year_id_for_subject(self, subject_id: str) -> Optional[str]:
+        r = self._fetchone(
+            "SELECT g.academic_year_id FROM subjects s JOIN grades g ON s.grade_id = g.id "
+            "WHERE s.id=?", (subject_id,))
+        return r["academic_year_id"] if r else None
+
+    def _selection_row(self, academic_year_id: str, subject_id: str) -> Optional[dict]:
+        return self._fetchone(
+            "SELECT * FROM book_selections WHERE academic_year_id=? AND subject_id=?",
+            (academic_year_id, subject_id))
+
+    def _write_selection(self, academic_year_id: str, subject_id: str, book_id: str) -> None:
+        from datetime import datetime, timezone
+        # An upsert on the primary key: replacing the choice, never adding a
+        # second one for the same subject and year.
+        self._exec(
+            "INSERT INTO book_selections (academic_year_id, subject_id, book_id, selected_at) "
+            "VALUES (?,?,?,?) ON CONFLICT(academic_year_id, subject_id) "
+            "DO UPDATE SET book_id=excluded.book_id, selected_at=excluded.selected_at",
+            (academic_year_id, subject_id, book_id, datetime.now(timezone.utc).isoformat()))
+
+    def selected_book_for_subject(self, subject_id: str) -> Optional[Book]:
+        """The subject's edition for its academic year -- what every caller
+        uses instead of "the first book" (the web admin used books.first,
+        i.e. SQLite row order). The recorded choice if there is one; else the
+        subject's only book, which is every seeded subject today; else None:
+        no book, or several and no choice, is reported, never guessed."""
+        year_id = self.academic_year_id_for_subject(subject_id)
+        if year_id is None:
+            return None
+        row = self._selection_row(year_id, subject_id)
+        if row is not None:
+            return self.get_book(row["book_id"])
+        books = self.books_for_subject(subject_id)
+        return books[0] if len(books) == 1 else None
+
+    def select_book(self, book_id: str) -> BookSelection:
+        """Makes `book_id` its subject's edition for the subject's academic
+        year. Raises KeyError for an unknown book. Lessons already scheduled
+        from other editions, and teachers assigned to them, are left exactly
+        where they are -- the lessons were placed from those books' chapters
+        -- and counted per book in the result so the caller can say so.
+
+        Counted over every other book of the subject, not just the edition
+        chosen before this one: after A -> B -> C, A's lessons still exist,
+        and a first choice among several books has no previous edition."""
+        book = self.get_book(book_id)
+        if book is None:
+            raise KeyError(book_id)
+        year_id = self.academic_year_id_for_subject(book.subject_id)
+        if year_id is None:
+            raise KeyError(book.subject_id)
+        with self._conn_lock:
+            previous = self.selected_book_for_subject(book.subject_id)
+            self._write_selection(year_id, book.subject_id, book.id)
+        self._commit()
+        previous_id = previous.id if previous is not None else None
+        others = [b for b in self.books_for_subject(book.subject_id) if b.id != book.id]
+        lessons: dict[str, int] = {}
+        assignments: dict[str, int] = {}
+        if others:
+            ids = [b.id for b in others]
+            marks = ",".join("?" * len(ids))
+            for r in self._fetchall(
+                    f"SELECT book_id, COUNT(*) AS n FROM scheduled_lessons "
+                    f"WHERE academic_year_id=? AND book_id IN ({marks}) GROUP BY book_id",
+                    (year_id, *ids)):
+                lessons[r["book_id"]] = r["n"]
+            # Books already belong to one subject of one year, so these rows
+            # need no year filter.
+            for r in self._fetchall(
+                    f"SELECT book_id, COUNT(*) AS n FROM teacher_assignments "
+                    f"WHERE book_id IN ({marks}) GROUP BY book_id", tuple(ids)):
+                assignments[r["book_id"]] = r["n"]
+        editions = [OtherEdition(book_id=b.id, title=b.title,
+                                 scheduled_lessons=lessons.get(b.id, 0),
+                                 teacher_assignments=assignments.get(b.id, 0))
+                    for b in others]
+        return BookSelection(academic_year_id=year_id, subject_id=book.subject_id,
+                             book_id=book.id, previous_book_id=previous_id,
+                             previous_book_scheduled_lessons=(
+                                 lessons.get(previous_id, 0) if previous_id != book.id else 0),
+                             other_editions=editions)
 
     def get_book(self, book_id: str):
         from .models import Book
@@ -602,6 +1093,102 @@ class CurriculumStore:
         r = self._fetchone("SELECT * FROM chapters WHERE canonical_id=?", (canonical_id,))
         return Chapter(**dict(r)) if r else None
 
+    def chapter_for_syllabus_slug(self, *, school_id: str, grade_number: int,
+                                  subject_name: str, slug: str,
+                                  title_slug: Optional[str] = None,
+                                  on_date: Optional[str] = None) -> ChapterSlugMatch:
+        """One school's own Chapter row for a syllabus/catalog chapter slug.
+
+        The slug (`chemical-reactions-equations`) is the syllabus id, from
+        academicos-data/syllabus/*.json by way of
+        `GET /api/v1/catalog/{subject}/{grade}/chapters`; a school's own
+        chapters are keyed `chap_<uuid>`. The two meet on canonical_id,
+        which seed_cbse10.py writes as `{book_id}:chapter:{that same slug}`
+        -- a STORED mapping recorded when the curriculum was seeded from the
+        syllabus files, not a name match guessed at read time, so a chapter
+        the school has since renamed still resolves.
+
+        `title_slug` is the second try, for a book whose chapters came from
+        an ingested Table of Contents instead: extraction.py keys those by
+        the slug of the chapter TITLE ("chemical-reactions-and-equations"),
+        which is a different string from the syllabus id.
+
+        Searched inside the subject's CHOSEN edition only (PRD 12.7 / the
+        one-edition-per-subject-per-year rule): two editions have different
+        chapters, and a filter that silently read the unchosen one would
+        offer subtopics nobody in that class is being taught.
+
+        Never crosses schools: every lookup starts from this school's own
+        academic years, so the same official slug resolves to each school's
+        own rows and to nothing else.
+        """
+        # The year that contains `on_date` first, then the most recent --
+        # list.sort is stable, so the second sort keeps that order within
+        # each group.
+        years = sorted(self.academic_years_for_school(school_id),
+                       key=lambda y: y.start_date, reverse=True)
+        if on_date:
+            years.sort(key=lambda y: not (y.start_date <= on_date <= y.end_date))
+        # The year the school is actually in, if it has one -- the sort above
+        # has already put it first.
+        current = (years[0] if years and on_date
+                   and years[0].start_date <= on_date <= years[0].end_date else None)
+
+        # Any year may ANSWER: a half-set-up 2026-27 must never hide a fully
+        # set-up 2025-26 behind "not set up", so the loop runs on past the
+        # current year looking for an `ok`.
+        #
+        # But a REASON is advice, and advice belongs to the year the teacher
+        # is in. Ranking every year's reason and reporting the furthest one
+        # (what this did until 2026-09-23) tells a school whose current year
+        # has two editions and no choice -- the state the real
+        # academicos-data/curriculum/curriculum.sqlite is in -- that "your
+        # Class 10 Science book has no chapter 'X'", because last year's
+        # finished, fully-chosen edition ranks higher. That is a true
+        # sentence about a year nobody is teaching, and it never mentions
+        # the one action that would fix the year she is in. So when a year
+        # contains `on_date` and it did not resolve, its reason is the
+        # answer; the ranking is the fallback for a school between sessions,
+        # where there is no current year to prefer.
+        best = ChapterSlugMatch(reason="no_year")
+        current_found: Optional[ChapterSlugMatch] = None
+        for year in years:
+            found = self._chapter_for_slug_in_year(
+                year.id, grade_number=grade_number, subject_name=subject_name,
+                slug=slug, title_slug=title_slug)
+            if found.reason == "ok":
+                return found
+            if current is not None and year.id == current.id:
+                current_found = found
+            elif (CHAPTER_SLUG_REASONS.index(found.reason)
+                    > CHAPTER_SLUG_REASONS.index(best.reason)):
+                best = found
+        return current_found if current_found is not None else best
+
+    def _chapter_for_slug_in_year(self, academic_year_id: str, *, grade_number: int,
+                                  subject_name: str, slug: str,
+                                  title_slug: Optional[str]) -> ChapterSlugMatch:
+        grade = self.get_grade_by_number(academic_year_id, grade_number)
+        if grade is None:
+            return ChapterSlugMatch(reason="no_grade")
+        subject = self.get_subject_by_name(grade.id, subject_name)
+        if subject is None:
+            return ChapterSlugMatch(reason="no_subject")
+        if not self.books_for_subject(subject.id):
+            return ChapterSlugMatch(reason="no_book")
+        book = self.selected_book_for_subject(subject.id)
+        if book is None:
+            # Several editions and no recorded choice: guessing one here is
+            # exactly what select_book() exists to stop.
+            return ChapterSlugMatch(reason="no_edition_chosen")
+        for key in (slug, title_slug):
+            if not key:
+                continue
+            chapter = self.get_chapter_by_canonical_id(f"{book.id}:chapter:{key}")
+            if chapter is not None:
+                return ChapterSlugMatch(reason="ok", chapter=chapter, book=book)
+        return ChapterSlugMatch(reason="no_chapter", book=book)
+
     def school_id_for_book(self, book_id: str) -> Optional[str]:
         """Ownership-chain lookup (book -> subject -> grade -> academic_year
         -> school_id) -- what every write endpoint in routes.py uses to
@@ -633,10 +1220,35 @@ class CurriculumStore:
         return r["grade_id"] if r else None
 
     def book_ids_for_grade(self, grade_id: str) -> list[str]:
+        """Every book of every subject of the grade, abandoned editions
+        included. Reads that answer "what is this class taught?" want
+        selected_book_ids_for_grade instead."""
         rows = self._fetchall(
             "SELECT b.id FROM books b JOIN subjects s ON b.subject_id = s.id WHERE s.grade_id=?",
             (grade_id,))
         return [r["id"] for r in rows]
+
+    def selected_book_ids_for_grade(self, grade_id: str) -> list[str]:
+        """One book per subject of the grade: the edition the school chose
+        (PRD 12.7), or the subject's only book when no choice was recorded
+        -- selected_book_for_subject's rule, applied to a whole class.
+
+        Every read of "this class's books" goes through this rather than
+        book_ids_for_grade. The review of fc279a4 drove a student through
+        the real routes after a principal added a second edition: my-progress
+        returned two 'Mathematics' rows (2 lessons from the abandoned book,
+        3 from the chosen one) with nothing to tell them apart, and the class
+        calendar showed both editions' lessons on the same days. A subject
+        with several books and no recorded choice contributes nothing, the
+        same "report, never guess" answer selected_book_for_subject gives --
+        create_book records the implicit choice before a second book lands,
+        so that case needs a hand-written row to reach."""
+        out: list[str] = []
+        for s in self.subjects_for_grade(grade_id):
+            b = self.selected_book_for_subject(s.id)
+            if b is not None:
+                out.append(b.id)
+        return out
 
     def school_id_for_unit(self, unit_id: str) -> Optional[str]:
         r = self._fetchone(
@@ -885,6 +1497,42 @@ class CurriculumStore:
         rows = self._fetchall(
             "SELECT * FROM question_subtopic_links WHERE subtopic_id=?", (subtopic_id,))
         return [QuestionSubtopicLink(**dict(r)) for r in rows]
+
+    def tagged_question_counts(self, subtopic_ids: list[str], *,
+                               eligible_question_ids: Optional[set[str]] = None,
+                               ) -> dict[str, int]:
+        """How many distinct questions are tagged to each of these subtopics.
+
+        One query for a whole chapter rather than a query per subtopic --
+        the picker asks for every subtopic of every selected chapter at once.
+        Subtopics with nothing tagged are absent from the SQL result and are
+        filled in as 0 here, because "0" is the answer the caller needs to
+        show, not a missing key.
+
+        `eligible_question_ids` is the set of questions the caller could
+        actually return, and it is why this is not a bare COUNT(*). A link
+        row is (question_id, subtopic_id) and nothing deletes a link when
+        the question id it names stops existing: the 2026-09-21 bank rebuild
+        re-tagged Science 10 chapters and churned question ids, and a
+        rebuild is exactly what strands links. assessment/routes.py's
+        `POST /questions/search` intersects these links with the pool
+        candidates for the subject/grade/chapter, so a stranded link can
+        never contribute a question to a paper. Counting it anyway would
+        print "7 questions tagged" next to a subtopic that yields an empty
+        paper -- the same silent wrongness this count was added to remove.
+        Pass None only when the caller genuinely means "every link row"."""
+        counts = {sid: 0 for sid in subtopic_ids}
+        if not subtopic_ids:
+            return counts
+        placeholders = ",".join("?" * len(subtopic_ids))
+        rows = self._fetchall(
+            f"SELECT DISTINCT subtopic_id, question_id FROM question_subtopic_links "
+            f"WHERE subtopic_id IN ({placeholders})", subtopic_ids)
+        for r in rows:
+            if eligible_question_ids is not None and r["question_id"] not in eligible_question_ids:
+                continue
+            counts[r["subtopic_id"]] += 1
+        return counts
 
     def question_ids_for_subtopics(self, subtopic_ids: list[str]) -> list[str]:
         """The real "generate a paper from these subtopics" query: every
@@ -1349,28 +1997,62 @@ class CurriculumStore:
 
     # ---------------- student enrollment (§18 -- student visibility) ----------------
 
-    def enroll_student(self, *, school_id: str, student_id: str, grade_id: str) -> StudentEnrollment:
+    def enroll_student(self, *, school_id: str, student_id: str,
+                       grade_id: Optional[str] = None,
+                       section_id: Optional[str] = None) -> StudentEnrollment:
         """One enrollment per student -- re-enrolling (e.g. a promotion to
-        a new grade) replaces the existing row rather than erroring or
-        leaving two, since a real student is only ever in one class at a
-        time."""
-        existing = self._fetchone(
-            "SELECT * FROM student_enrollments WHERE student_id=?", (student_id,))
+        a new grade, or a move from 10-A to 10-B) replaces the existing row
+        rather than erroring or leaving two, since a real student is only
+        ever in one class at a time.
+
+        The enrollment is in a section (M1.1); the grade is the section's.
+        `grade_id` alone still works for a grade with one section, so the
+        callers that predate sections keep working; for a grade with
+        several it is a ValueError naming them, never a guess. Both given
+        must agree. KeyError for an unknown grade or section."""
         from datetime import datetime, timezone
-        if existing:
-            self._exec("UPDATE student_enrollments SET grade_id=?, school_id=? WHERE student_id=?",
-                              (grade_id, school_id, student_id))
-            self._commit()
-            return StudentEnrollment(id=existing["id"], school_id=school_id, student_id=student_id,
-                                     grade_id=grade_id, created_at=existing["created_at"])
-        e = StudentEnrollment(id=new_id("enroll"), school_id=school_id, student_id=student_id,
-                              grade_id=grade_id, created_at=datetime.now(timezone.utc).isoformat())
-        self._exec(
-            "INSERT INTO student_enrollments (id, school_id, student_id, grade_id, created_at) "
-            "VALUES (?,?,?,?,?)",
-            (e.id, e.school_id, e.student_id, e.grade_id, e.created_at))
+        with self._conn_lock:
+            section = self._section_for_enrollment(grade_id, section_id)
+            existing = self._fetchone(
+                "SELECT * FROM student_enrollments WHERE student_id=?", (student_id,))
+            if existing:
+                self._exec("UPDATE student_enrollments SET grade_id=?, section_id=?, school_id=? "
+                           "WHERE student_id=?",
+                           (section.grade_id, section.id, school_id, student_id))
+                e = StudentEnrollment(id=existing["id"], school_id=school_id,
+                                      student_id=student_id, grade_id=section.grade_id,
+                                      created_at=existing["created_at"], section_id=section.id)
+            else:
+                e = StudentEnrollment(id=new_id("enroll"), school_id=school_id,
+                                      student_id=student_id, grade_id=section.grade_id,
+                                      created_at=datetime.now(timezone.utc).isoformat(),
+                                      section_id=section.id)
+                self._exec(
+                    "INSERT INTO student_enrollments (id, school_id, student_id, grade_id, "
+                    "created_at, section_id) VALUES (?,?,?,?,?,?)",
+                    (e.id, e.school_id, e.student_id, e.grade_id, e.created_at, e.section_id))
         self._commit()
         return e
+
+    def _section_for_enrollment(self, grade_id: Optional[str],
+                                section_id: Optional[str]) -> Section:
+        if section_id is not None:
+            section = self.get_section(section_id)
+            if section is None:
+                raise KeyError(section_id)
+            if grade_id is not None and grade_id != section.grade_id:
+                raise ValueError("that section is not in that grade")
+            return section
+        if grade_id is None:
+            raise ValueError("say which section the student is in")
+        if self.get_grade(grade_id) is None:
+            raise KeyError(grade_id)
+        sections = self.sections_for_grade(grade_id)
+        if len(sections) != 1:
+            names = ", ".join(s.name for s in sections) or "none"
+            raise ValueError(f"this class has {len(sections)} sections ({names}); "
+                             "say which one the student is in")
+        return sections[0]
 
     def enrollment_for_student(self, student_id: str) -> Optional[StudentEnrollment]:
         r = self._fetchone(
@@ -1382,7 +2064,16 @@ class CurriculumStore:
     def get_coverage_report(self, *, school_id: str, academic_year_id: str,
                             as_of_date: Optional[str] = None) -> dict[str, Any]:
         """Planned vs. actually-taught coverage, variance, and completion %
-        aggregated by Subject and Chapter for school management (§17, §32)."""
+        aggregated by Subject and Chapter for school management (§17, §32).
+
+        Only the subject's chosen edition counts (PRD 12.7). The review of
+        fc279a4 ran this against a subject with an old and a new edition and
+        got ONE 'Mathematics' row titled after the chosen book whose chapter
+        list was ['Chapter new', 'Chapter old'] -- the abandoned edition's
+        work attributed to the chosen book on the principal's own Coverage &
+        Pace screen. A subject with no recorded choice keeps every book
+        (that is the seeded single-book case), and the per-subject key below
+        carries the book so two editions can never merge into one row."""
         from datetime import datetime, timezone
         if not as_of_date:
             as_of_date = datetime.now(timezone.utc).date().isoformat()
@@ -1403,6 +2094,12 @@ class CurriculumStore:
             JOIN subjects s ON b.subject_id = s.id
             JOIN grades g ON s.grade_id = g.id
             WHERE l.school_id = ? AND l.academic_year_id = ?
+              AND (l.book_id = (SELECT sel.book_id FROM book_selections sel
+                                 WHERE sel.academic_year_id = l.academic_year_id
+                                   AND sel.subject_id = s.id)
+                   OR NOT EXISTS (SELECT 1 FROM book_selections sel
+                                   WHERE sel.academic_year_id = l.academic_year_id
+                                     AND sel.subject_id = s.id))
             ORDER BY g.number, s.name, ch.name, l.date
             """,
             (school_id, academic_year_id),
@@ -1414,12 +2111,16 @@ class CurriculumStore:
         )
         teacher_for_book = {r["book_id"]: r["teacher_id"] for r in assignment_rows}
 
-        subjects_map: dict[str, dict[str, Any]] = {}
+        # Keyed on (subject, book), not the subject alone: an edition the
+        # school did not choose -- possible only with a hand-written books
+        # row, since the filter above keeps just the chosen one -- reports
+        # under its own title instead of being folded into another book's.
+        subjects_map: dict[tuple[str, str], dict[str, Any]] = {}
         for r in rows:
-            sid = r["subject_id"]
+            sid = (r["subject_id"], r["book_id"])
             if sid not in subjects_map:
                 subjects_map[sid] = {
-                    "subject_id": sid,
+                    "subject_id": r["subject_id"],
                     "subject_name": r["subject_name"],
                     "grade_number": r["grade_number"],
                     "book_id": r["book_id"],
@@ -1450,7 +2151,7 @@ class CurriculumStore:
         overall_variance = completed_to_date - planned_to_date
 
         subjects_out = []
-        for sid, sdata in subjects_map.items():
+        for sdata in subjects_map.values():
             s_lessons = sdata["lessons"]
             s_total = len(s_lessons)
             s_completed = sum(1 for l in s_lessons if l["status"] == "completed")
@@ -1479,7 +2180,7 @@ class CurriculumStore:
                 })
 
             subjects_out.append({
-                "subject_id": sid,
+                "subject_id": sdata["subject_id"],
                 "subject_name": sdata["subject_name"],
                 "grade_number": sdata["grade_number"],
                 "book_id": sdata["book_id"],
@@ -1529,7 +2230,8 @@ class CurriculumStore:
             SELECT l.id as lesson_id, l.date as scheduled_date, l.subtopic_id,
                    st.name as subtopic_name, tp.name as topic_name,
                    ch.name as chapter_name, s.name as subject_name,
-                   g.number as grade_number, b.id as book_id
+                   g.number as grade_number, b.id as book_id, b.title as book_title,
+                   s.id as subject_id
             FROM scheduled_lessons l
             JOIN subtopics st ON l.subtopic_id = st.id
             JOIN topics tp ON st.topic_id = tp.id
@@ -1551,6 +2253,19 @@ class CurriculumStore:
         )
         teacher_for_book = {r["book_id"]: r["teacher_id"] for r in assignment_rows}
 
+        # An edition the school stopped teaching keeps its overdue lessons
+        # (nothing deletes them), and the row said nothing about which book it
+        # came from: a principal chased work on a book nobody teaches. Coverage
+        # drops the old edition; this report names it instead, because an
+        # overdue lesson is a fact about the past either way.
+        chosen_cache: dict[str, Optional[str]] = {}
+
+        def _chosen(subject_id: str) -> Optional[str]:
+            if subject_id not in chosen_cache:
+                book = self.selected_book_for_subject(subject_id)
+                chosen_cache[subject_id] = book.id if book else None
+            return chosen_cache[subject_id]
+
         delayed = []
         for r in rows:
             sched_d = date.fromisoformat(r["scheduled_date"])
@@ -1564,6 +2279,9 @@ class CurriculumStore:
                 "chapter_name": r["chapter_name"],
                 "topic_name": r["topic_name"],
                 "subtopic_name": r["subtopic_name"],
+                "book_id": r["book_id"],
+                "book_title": r["book_title"],
+                "is_chosen_edition": _chosen(r["subject_id"]) == r["book_id"],
                 "teacher_id": teacher_for_book.get(r["book_id"]),
                 "teacher_name": None,
             })
@@ -1571,6 +2289,9 @@ class CurriculumStore:
         unscheduled = [{
             "lesson_id": r["lesson_id"],
             "last_planned_date": r["scheduled_date"],
+            "book_id": r["book_id"],
+            "book_title": r["book_title"],
+            "is_chosen_edition": _chosen(r["subject_id"]) == r["book_id"],
             "grade_number": r["grade_number"],
             "subject_name": r["subject_name"],
             "chapter_name": r["chapter_name"],

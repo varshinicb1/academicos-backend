@@ -8,81 +8,75 @@
       "unit_no": "I",
       "name": "Living Organisms and Life Processes",
       "marks": 25,
-      "chapters": [
-        {
-          "id": "nutrition-in-plants",
-          "name": "Nutrition in Plants"
-        },
-        {
-          "id": "nutrition-in-animals",
-          "name": "Nutrition in Animals"
-        },
-        {
-          "id": "respiration-in-organisms",
-          "name": "Respiration in Organisms"
-        },
-        {
-          "id": "transportation-animals-plants",
-          "name": "Transportation in Animals and Plants"
-        },
-        {
-          "id": "reproduction-in-plants",
-          "name": "Reproduction in Plants"
-        }
-      ]
+      "chapters": []
     },
     {
       "unit_no": "II",
       "name": "Materials and Matter",
       "marks": 20,
-      "chapters": [
-        {
-          "id": "heat",
-          "name": "Heat"
-        },
-        {
-          "id": "acids-bases-salts-7",
-          "name": "Acids, Bases and Salts"
-        },
-        {
-          "id": "physical-and-chemical-changes",
-          "name": "Physical and Chemical Changes"
-        }
-      ]
+      "chapters": []
     },
     {
       "unit_no": "III",
       "name": "Motion, Forces and Energy",
       "marks": 20,
-      "chapters": [
-        {
-          "id": "motion-and-time",
-          "name": "Motion and Time"
-        },
-        {
-          "id": "electric-current-effects",
-          "name": "Electric Current and its Effects"
-        },
-        {
-          "id": "light-7",
-          "name": "Light"
-        }
-      ]
+      "chapters": []
     },
     {
       "unit_no": "IV",
       "name": "Natural Resources and Environment",
       "marks": 15,
-      "chapters": [
-        {
-          "id": "forests-our-lifeline",
-          "name": "Forests: Our Lifeline"
-        },
-        {
-          "id": "wastewater-story",
-          "name": "Wastewater Story"
-        }
-      ]
+      "chapters": []
+    }
+  ],
+  "chapters": [
+    {
+      "id": "science-7/the-ever-evolving-world-of-science",
+      "name": "The Ever-Evolving World of Science"
+    },
+    {
+      "id": "science-7/exploring-substances-acidic-basic-and-neutral",
+      "name": "Exploring Substances: Acidic, Basic, and Neutral"
+    },
+    {
+      "id": "science-7/electricity-circuits-and-their-components",
+      "name": "Electricity: Circuits and their Components"
+    },
+    {
+      "id": "science-7/the-world-of-metals-and-non-metals",
+      "name": "The World of Metals and Non-metals"
+    },
+    {
+      "id": "science-7/changes-around-us-physical-and-chemical",
+      "name": "Changes Around Us: Physical and Chemical"
+    },
+    {
+      "id": "science-7/adolescence-a-stage-of-growth-and-change",
+      "name": "Adolescence: A Stage of Growth and Change"
+    },
+    {
+      "id": "science-7/heat-transfer-in-nature",
+      "name": "Heat Transfer in Nature"
+    },
+    {
+      "id": "science-7/measurement-of-time-and-motion",
+      "name": "Measurement of Time and Motion"
+    },
+    {
+      "id": "science-7/life-processes-in-animals",
+      "name": "Life Processes in Animals"
+    },
+    {
+      "id": "science-7/life-processes-in-plants",
+      "name": "Life Processes in Plants"
+    },
+    {
+      "id": "science-7/light-shadows-and-reflections",
+      "name": "Light: Shadows and Reflections"
+    },
+    {
+      "id": "science-7/earth-moon-and-the-sun",
+      "name": "Earth, Moon, and the Sun"
     }
   ]
 }

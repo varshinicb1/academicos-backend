@@ -124,6 +124,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
+from . import marking_split
+
 # See "PDF library" in the module docstring. pyproject.toml and uv.lock pin
 # the same version.
 VERIFIED_PYMUPDF = "1.28.2"
@@ -2354,6 +2356,14 @@ def to_bank_record(q: ExemplarQuestion, chapter_id: str = "",
     folder = f"class{q.grade}-{q.subject.lower()}"
     doc_id = f"ncert-exemplar:{folder}/{q.source_file}"
     answer_doc = f"ncert-exemplar:{folder}/{q.answer_file}"
+    # The book prints a multi-part answer part by part -- "(a) Long legs (b)
+    # Webbed feet (c) Blow holes" -- and those parts are the value points; see
+    # corpus/marking_split.py for what is split and what is left whole. The
+    # book prints no marks of its own (the question's are read off its section
+    # kind, MARKS_BY_KIND), so a part gets an equal share or the key stays
+    # whole; nothing is split that the book does not print as parts.
+    answer_text = marking_split.strip_stem_echo(q.stem, q.answer_text)
+    points, split_meta = marking_split.value_points(answer_text, marks, qid, q.stem)
     return {
         "id": qid,
         "questionBankId": doc_id,
@@ -2369,17 +2379,15 @@ def to_bank_record(q: ExemplarQuestion, chapter_id: str = "",
         "parts": parts,
         "answerScheme": {
             "totalMarks": marks,
-            "markingPoints": [{
-                "id": f"{qid}:mp1", "description": q.answer_text, "marks": marks,
-                "keyword": "", "isRequired": True, "synonyms": [],
-            }],
+            "markingPoints": points,
             "rubricLevels": [],
             "commonErrors": [],
             "alternativeAnswers": [],
-            "modelAnswer": q.answer_text,
+            "modelAnswer": answer_text,
             "modelAnswerLatex": "",
-            "hasPartialCredit": marks > 1,
-            "metadata": {"answerPage": q.answer_page, "answerFile": q.answer_file},
+            "hasPartialCredit": len(points) > 1,
+            "metadata": {"answerPage": q.answer_page, "answerFile": q.answer_file,
+                         **split_meta},
             "provenance": PROVENANCE,
             "sourcePaperCode": "",
             "sourceDocumentId": q.answer_file,

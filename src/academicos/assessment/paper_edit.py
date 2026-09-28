@@ -58,10 +58,13 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from . import grades
+from .competency import CBSE_COMPETENCY_TARGET, below_target, is_competency_question, \
+    share_summary
 from .mapping import to_question_schema
-from .paper import answer_key_entry, generated_question, or_answer_key_entry, render_text
+from .paper import answer_key_entry, competency_counts, generated_question, \
+    or_answer_key_entry, render_text, report_competency
 from .paper_templates import ScopeFilter, _all_competency, _content_fits, _fits, \
-    _is_competency, build_scope_filter, has_verified_key
+    build_scope_filter, has_verified_key
 from .pool import QuestionPool, get_pool, near_duplicate
 from .schemas import Camel, GeneratedPaper, GeneratedQuestionSchema, GeneratedSectionSchema, \
     QuestionSchema, TemplateScope, TemplateSection
@@ -271,7 +274,7 @@ def choose_swap(slot: Slot, rule: SlotRule, bank: Bank, printed: list[Printed],
         inside = rule.scope.in_scope(q)
         if q.id not in bank.keyed:
             counts.without_key += 1
-        elif all_cbq and not _is_competency(q):
+        elif all_cbq and not is_competency_question(q):
             counts.not_competency += 1
         elif q.id in on_paper:
             counts.on_paper += 1
@@ -349,7 +352,7 @@ def check_pick(slot: Slot, rule: SlotRule, bank: Bank, question_id: str,
         notes.append(f"{slot.label}: {question_id} is not a "
                      f"{'/'.join(t.replace('_', ' ') for t in section.question_types)} "
                      "question, which this section asks for.")
-    if _all_competency(section) and not _is_competency(q):
+    if _all_competency(section) and not is_competency_question(q):
         notes.append(f"{slot.label}: {question_id} is not competency-based, which this "
                      "section asks for.")
     if not rule.scope.in_scope(q):
@@ -362,11 +365,65 @@ def check_pick(slot: Slot, rule: SlotRule, bank: Bank, question_id: str,
 
 # ---- rewriting the paper
 
-def replace_question(paper: GeneratedPaper, old_id: str, new: QuestionSchema) -> GeneratedPaper:
+# The competency sentences generation puts in `paper.warnings`: the builder's
+# check ("Competency-based: c of n questions ..."), the per-set lines and
+# quick-generate's ("... has X% competency-based questions (CBSE target ...)"),
+# and the pre-selection ceiling ("This paper cannot reach CBSE's ...").
+_COMPETENCY_SENTENCE = re.compile(
+    r"^(Competency-based: \d+ of \d+ |Set [A-Z] competency-based: \d+ of \d+ "
+    # The shapes papers stored before 2026-09-28 carry (audit D79).
+    r"|Set [A-Z] has [\d.]+% competency-based questions"
+    r"|Selected paper has [\d.]+% competency-based questions)")
+# The paper's own sentence, split into its count and what generation said
+# about it: "Below CBSE's 50%." and, from the builder's check, why.
+_PAPER_SHARE = re.compile(r"^Competency-based: \d+ of \d+ questions? \(\d+%\)\. (Below CBSE's .*)$")
+# Selection's ceiling on the sections themselves, true whatever is swapped in.
+_CEILING_SENTENCE = re.compile(r"^This paper cannot reach CBSE's ")
+
+
+def _restamped(edited: GeneratedPaper, target: Optional[float]) -> GeneratedPaper:
+    """`edited`'s competency share recounted from what it now prints, when
+    generation stamped one (`paper.report_competency`); a paper stored
+    before the share existed keeps None. Without this a swap of a
+    competency-based question for a plain one left the old share on the
+    paper -- and on the template path, the builder's step-3 number.
+
+    The sentences are recounted with it. The web paper step renders
+    `paper.warnings` after every edit, so a generation-time "Below CBSE's
+    50%" left on a paper that now meets it, or "1 of 4" on a paper of 3, was
+    the only share a teacher saw -- and it contradicted the paper.
+
+    What generation said about WHY the paper is below 50% -- the whole
+    syllabus would give more, the bank has enough to swap in, the bank cannot
+    reach it, the sections cannot hold it -- is about the scope, the bank and
+    the template, not the questions picked, so it stays true through a swap
+    and is kept while the paper is still below. It used to be dropped at the
+    first edit (audit D78). Once the paper meets the target every below-target
+    sentence goes."""
+    if edited.competency_share is None:
+        return edited
+    target = CBSE_COMPETENCY_TARGET if target is None else target
+    set_lines = report_competency(edited, target, stated=True)
+    why = next((m.group(1) for m in map(_PAPER_SHARE.match, edited.warnings) if m), None)
+    ceiling = [w for w in edited.warnings if _CEILING_SENTENCE.match(w)]
+    kept = [w for w in edited.warnings
+            if not _COMPETENCY_SENTENCE.match(w) and not _CEILING_SENTENCE.match(w)]
+    lines = []
+    if not edited.competency_target_met:
+        c, n = competency_counts(edited)
+        lines.append(f"{share_summary(c, n)}. {why or below_target(target)}")
+        lines.extend(ceiling)
+    edited.warnings = [*lines, *set_lines, *kept]
+    return edited
+
+
+def replace_question(paper: GeneratedPaper, old_id: str, new: QuestionSchema, *,
+                     target: Optional[float] = None) -> GeneratedPaper:
     """`old_id` replaced by `new` wherever it prints -- compulsory or OR, in
     the paper and in each of its sets (a set rotates the questions and swaps
     primary and OR, so the same question sits at a different number there)
-    -- with its answer-key entry and the paper's text rebuilt to match."""
+    -- with its answer-key entry, the paper's text and its competency share
+    (against `target`, CBSE's 50% when None) rebuilt to match."""
     answer_key = dict(paper.answer_key)
     sections = []
     for section in paper.sections:
@@ -385,9 +442,9 @@ def replace_question(paper: GeneratedPaper, old_id: str, new: QuestionSchema) ->
         sections.append(section.model_copy(update={"questions": questions}))
     edited = paper.model_copy(update={
         "sections": sections, "answer_key": answer_key,
-        "sets": [replace_question(s, old_id, new) for s in paper.sets]})
+        "sets": [replace_question(s, old_id, new, target=target) for s in paper.sets]})
     edited.formatted_content = render_text(edited)
-    return edited
+    return _restamped(edited, target)
 
 
 # ---- removing
@@ -399,14 +456,16 @@ def printed_numbers(paper: GeneratedPaper) -> list[int]:
 _KEY_RE = re.compile(r"^(\d+)(_OR)?$")
 
 
-def drop_question(paper: GeneratedPaper, question_id: str) -> GeneratedPaper:
+def drop_question(paper: GeneratedPaper, question_id: str, *,
+                  target: Optional[float] = None) -> GeneratedPaper:
     """The printed question whose compulsory or OR id is `question_id` taken
     off, with its alternative, from the paper and each of its sets (a set
     rotates questions and turns OR pairs round, so it is found by id, not
     number). What follows is renumbered from 1 with no hole -- a printed
     paper that jumps from Q6 to Q8 reads as a misprint -- and the answer key
     moves with the numbers. A section left with no question is not printed;
-    the section's and the paper's marks are recounted."""
+    the section's and the paper's marks, and its competency share against
+    `target`, are recounted."""
     numbers: dict[int, int] = {}
     sections = []
     n = 0
@@ -432,18 +491,19 @@ def drop_question(paper: GeneratedPaper, question_id: str) -> GeneratedPaper:
         "sections": sections, "answer_key": answer_key,
         "metadata": paper.metadata.model_copy(update={
             "total_marks": sum(s.total_marks for s in sections)}),
-        "sets": [drop_question(s, question_id) for s in paper.sets]})
+        "sets": [drop_question(s, question_id, target=target) for s in paper.sets]})
     edited.formatted_content = render_text(edited)
-    return edited
+    return _restamped(edited, target)
 
 
 def drop_alternative(paper: GeneratedPaper, kept: GeneratedQuestionSchema,
-                     kept_key: str) -> GeneratedPaper:
+                     kept_key: str, *, target: Optional[float] = None) -> GeneratedPaper:
     """`kept`'s OR alternative taken off the paper and each of its sets;
     `kept` stays, now with no choice. A set that printed the pair the other
     way round (the alternative compulsory, `kept` as its OR) prints `kept`
     as the compulsory question again, with its own answer-key entry
-    (`kept_key`, the paper's). Marks and numbering do not change."""
+    (`kept_key`, the paper's), so that set's competency share is recounted
+    against `target`. Marks and numbering do not change."""
     alt = kept.internal_choice_question_id
     answer_key = dict(paper.answer_key)
     sections = []
@@ -464,6 +524,6 @@ def drop_alternative(paper: GeneratedPaper, kept: GeneratedQuestionSchema,
         sections.append(section.model_copy(update={"questions": questions}))
     edited = paper.model_copy(update={
         "sections": sections, "answer_key": answer_key,
-        "sets": [drop_alternative(s, kept, kept_key) for s in paper.sets]})
+        "sets": [drop_alternative(s, kept, kept_key, target=target) for s in paper.sets]})
     edited.formatted_content = render_text(edited)
-    return edited
+    return _restamped(edited, target)

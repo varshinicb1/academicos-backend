@@ -11,25 +11,30 @@ guessed-at superset.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from ..assessment.auth_routes import get_current_user, require_principal
+from ..assessment.auth_routes import get_current_user, require_principal, require_staff
 from ..assessment.authz import require_own_school, require_own_subtopics
+from ..assessment.pool import get_pool
 from ..assessment.users import User
 from ..config import Config
 from . import calendar as calendar_mod
+from . import decomposition_templates as templates_mod
 from . import extraction as extraction_mod
 from . import scheduling as scheduling_mod
 from .schemas import (
     AcademicYearResponse,
+    AddBookRequest,
     AddHolidayRequest,
     AddSubtopicRequest,
     AddTopicRequest,
     AdjustLessonRequest,
+    ApproveChapterTopicsResponse,
     ApproveRunRequest,
     ApproveRunResponse,
     AssignTeacherRequest,
@@ -56,6 +61,7 @@ from .schemas import (
     MyClassScheduleEntryResponse,
     MyProgressResponse,
     MyScheduleEntryResponse,
+    OtherEditionResponse,
     PeriodConfigurationResponse,
     ProposalResponse,
     PushScheduleRequest,
@@ -68,15 +74,23 @@ from .schemas import (
     RescheduleResultResponse,
     ScheduleBookRequest,
     ScheduleBookResponse,
+    SelectBookRequest,
+    SelectBookResponse,
     ScheduledLessonResponse,
     SeedCbse10Request,
     SeedCbse10Response,
+    SeedGradeRequest,
+    SubjectTemplateReportResponse,
     AddTimetableSlotRequest,
     SetPeriodConfigurationRequest,
     SetSubjectPeriodAllocationRequest,
     SubjectPeriodAllocationResponse,
     TimetableSlotResponse,
     StudentEnrollmentResponse,
+    CreateSectionRequest,
+    SectionResponse,
+    SectionStudentResponse,
+    UpdateSectionRequest,
     SubjectProgressResponse,
     SubjectResponse,
     SubtopicResponse,
@@ -85,13 +99,17 @@ from .schemas import (
     TaggedSubtopic,
     TeacherAssignmentResponse,
     TeachingTimeEstimateResponse,
+    TermBaselineRequest,
+    TermRequest,
+    TermResponse,
     TopicResponse,
     TopicWithSubtopicsResponse,
     UnitResponse,
     WorkingDaysResponse,
 )
-from .seed_cbse10 import seed_cbse_class_10
-from .store import CurriculumStore, get_curriculum_store
+from .models import CurriculumExtractionRun
+from .seed_cbse10 import SeedResult, seed_cbse_class_10, seed_cbse_grade
+from .store import CurriculumStore, SectionInUse, get_curriculum_store
 
 router = APIRouter(prefix="/api/v1/curriculum")
 
@@ -121,6 +139,8 @@ def _school_today() -> date:
 # global table is boards (no school_id column; CBSE is not any one school's
 # row, which is also why export_school_data omits it): any signed-in caller
 # may read it.
+
+log = logging.getLogger(__name__)
 
 _store: Optional[CurriculumStore] = None
 _cfg: Optional[Config] = None
@@ -251,12 +271,13 @@ def _topic_response(t) -> TopicResponse:
                          model_used=t.model_used, generation_version=t.generation_version)
 
 
-def _subtopic_response(s) -> SubtopicResponse:
+def _subtopic_response(s, tagged_question_count: Optional[int] = None) -> SubtopicResponse:
     return SubtopicResponse(id=s.id, canonical_id=s.canonical_id, topic_id=s.topic_id,
                             name=s.name, seq=s.seq, description=s.description,
                             source_type=s.source_type, source_reference=s.source_reference,
                             approved_by=s.approved_by, approved_at=s.approved_at,
-                            model_used=s.model_used, generation_version=s.generation_version)
+                            model_used=s.model_used, generation_version=s.generation_version,
+                            tagged_question_count=tagged_question_count)
 
 
 @router.get("/boards", response_model=list[BoardResponse])
@@ -291,6 +312,142 @@ def list_grades(academic_year_id: str,
     ]
 
 
+# ---------------- sections (M1.1, docs/plans/m1-school-data-model.md) ----------------
+# A section is the class a student sits in ("10-B"). Reads are staff-only: a
+# section carries its class teacher. Writes are the principal's, school-scoped
+# like every other curriculum write, and each is written to the audit log with
+# what it was before (REQUIREMENTS ROLE-3).
+
+
+def _require_school_owns_section(section_id: str, current: User):
+    section = _require().get_section(section_id)
+    if section is None:
+        raise HTTPException(404, "section not found")
+    if section.school_id != current.school_id:
+        raise HTTPException(403, "this section belongs to a different school")
+    return section
+
+
+def _require_class_teacher(user_id: Optional[str], principal: User) -> None:
+    """A class teacher is a teacher or the principal of the same school."""
+    if user_id is None:
+        return
+    from ..assessment.auth_routes import STAFF_ROLES
+    target = _require_users().get(user_id)
+    if target is None:
+        raise HTTPException(404, "class teacher not found")
+    if target.school_id != principal.school_id:
+        raise HTTPException(403, "that user belongs to a different school")
+    if target.role not in STAFF_ROLES:
+        raise HTTPException(422, "a class teacher must be a teacher or the principal")
+
+
+def _section_response(sec, grade_number: int, student_count: int) -> SectionResponse:
+    return SectionResponse(id=sec.id, academic_year_id=sec.academic_year_id,
+                           grade_id=sec.grade_id, grade_number=grade_number, name=sec.name,
+                           class_teacher_id=sec.class_teacher_id, student_count=student_count)
+
+
+def _section_audit(action: str, principal: User, details: dict[str, Any]) -> None:
+    from ..assessment.audit_log import get_audit_log
+    get_audit_log(_cfg.data_root).append(
+        action, actor=principal.id, details={"schoolId": principal.school_id, **details})
+
+
+def _section_fields(sec) -> dict[str, Any]:
+    return {"name": sec.name, "classTeacherId": sec.class_teacher_id}
+
+
+@router.get("/academic-years/{academic_year_id}/sections", response_model=list[SectionResponse])
+def list_sections(academic_year_id: str,
+                  current: User = Depends(require_staff)) -> list[SectionResponse]:
+    """Every section of the year, in class order, with how many students
+    are enrolled in each."""
+    _require_school_owns_academic_year(academic_year_id, current)
+    store = _require()
+    numbers = {g.id: g.number for g in store.grades_for_year(academic_year_id)}
+    counts = store.enrollment_counts_for_year(academic_year_id)
+    return [_section_response(sec, numbers.get(sec.grade_id, 0), counts.get(sec.id, 0))
+            for sec in store.sections_for_year(academic_year_id)]
+
+
+@router.post("/grades/{grade_id}/sections", response_model=SectionResponse)
+def create_section(grade_id: str, req: CreateSectionRequest,
+                   principal: User = Depends(require_principal)) -> SectionResponse:
+    _require_school_owns_grade(grade_id, principal)
+    _require_class_teacher(req.class_teacher_id, principal)
+    store = _require()
+    try:
+        sec = store.create_section(grade_id=grade_id, name=req.name,
+                                   class_teacher_id=req.class_teacher_id)
+    except KeyError:
+        raise HTTPException(404, "grade not found")
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    _section_audit("section_created", principal,
+                   {"sectionId": sec.id, "gradeId": grade_id, "after": _section_fields(sec)})
+    return _section_response(sec, store.get_grade(grade_id).number, 0)
+
+
+@router.patch("/sections/{section_id}", response_model=SectionResponse)
+def update_section(section_id: str, req: UpdateSectionRequest,
+                   principal: User = Depends(require_principal)) -> SectionResponse:
+    """Rename a section and/or set its class teacher. A field left out is
+    unchanged; classTeacherId null clears the class teacher."""
+    _require_school_owns_section(section_id, principal)
+    sent = req.model_fields_set
+    if "name" in sent and req.name is None:
+        raise HTTPException(422, "a section needs a name, such as A or Rose")
+    if "class_teacher_id" in sent:
+        _require_class_teacher(req.class_teacher_id, principal)
+    changes: dict[str, Any] = {}
+    if "name" in sent:
+        changes["name"] = req.name
+    if "class_teacher_id" in sent:
+        changes["class_teacher_id"] = req.class_teacher_id
+    store = _require()
+    try:
+        before, after = store.update_section(section_id, **changes)
+    except KeyError:
+        raise HTTPException(404, "section not found")
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    if _section_fields(before) != _section_fields(after):
+        _section_audit("section_updated", principal,
+                       {"sectionId": section_id, "before": _section_fields(before),
+                        "after": _section_fields(after)})
+    grade = store.get_grade(after.grade_id)
+    return _section_response(after, grade.number if grade else 0,
+                             len(store.enrollments_for_section(section_id)))
+
+
+@router.delete("/sections/{section_id}")
+def delete_section(section_id: str, principal: User = Depends(require_principal)) -> dict:
+    """409 while students are enrolled in it, or when it is its class's
+    last section."""
+    _require_school_owns_section(section_id, principal)
+    try:
+        sec = _require().delete_section(section_id)
+    except KeyError:
+        raise HTTPException(404, "section not found")
+    except SectionInUse as e:
+        raise HTTPException(409, str(e))
+    _section_audit("section_deleted", principal,
+                   {"sectionId": section_id, "gradeId": sec.grade_id,
+                    "before": _section_fields(sec)})
+    return {"ok": True}
+
+
+@router.get("/sections/{section_id}/students", response_model=list[SectionStudentResponse])
+def list_section_students(section_id: str,
+                          principal: User = Depends(require_principal)) -> list[SectionStudentResponse]:
+    """Who is enrolled in this section, and only this section."""
+    _require_school_owns_section(section_id, principal)
+    return [SectionStudentResponse(student_id=e.student_id, enrollment_id=e.id,
+                                   enrolled_at=e.created_at)
+            for e in _require().enrollments_for_section(section_id)]
+
+
 @router.get("/grades/{grade_id}/subjects", response_model=list[SubjectResponse])
 def list_subjects(grade_id: str,
                   current: User = Depends(get_current_user)) -> list[SubjectResponse]:
@@ -301,15 +458,112 @@ def list_subjects(grade_id: str,
     ]
 
 
+def _book_response(b, selected_id: Optional[str]) -> BookResponse:
+    return BookResponse(id=b.id, subject_id=b.subject_id, board_id=b.board_id, title=b.title,
+                        publisher=b.publisher, status=b.status, selected=b.id == selected_id)
+
+
 @router.get("/subjects/{subject_id}/books", response_model=list[BookResponse])
 def list_books(subject_id: str,
                current: User = Depends(get_current_user)) -> list[BookResponse]:
     _require_school_owns_subject(subject_id, current)
-    return [
-        BookResponse(id=b.id, subject_id=b.subject_id, board_id=b.board_id, title=b.title,
-                     publisher=b.publisher, status=b.status)
-        for b in _require().books_for_subject(subject_id)
-    ]
+    store = _require()
+    selected = store.selected_book_for_subject(subject_id)
+    selected_id = selected.id if selected is not None else None
+    return [_book_response(b, selected_id) for b in store.books_for_subject(subject_id)]
+
+
+# PRD 12.7 (decided 2026-09-18): "Book edition: one per subject per year,
+# chosen by the school." Adding a book and choosing it are two separate,
+# principal-only acts; the rule itself is book_selections' primary key.
+
+@router.post("/subjects/{subject_id}/books", response_model=BookResponse)
+def add_book(subject_id: str, req: AddBookRequest,
+             principal: User = Depends(require_principal)) -> BookResponse:
+    """Adds an edition the school may choose. Adding is not choosing: the
+    subject keeps its current edition until PUT .../selected-book."""
+    _require_school_owns_subject(subject_id, principal)
+    store = _require()
+    title = req.title.strip()
+    if not title:
+        raise HTTPException(422, "a book needs a title")
+    if store.get_board(req.board_id) is None:
+        raise HTTPException(422, f"unknown board {req.board_id!r}")
+    publisher = (req.publisher or "").strip() or None
+    # 'processing': no chapters yet -- they arrive via /books/{id}/toc/ingest.
+    b = store.create_book(subject_id=subject_id, board_id=req.board_id, title=title,
+                          publisher=publisher, status="processing")
+    selected = store.selected_book_for_subject(subject_id)
+    return _book_response(b, selected.id if selected is not None else None)
+
+
+@router.get("/subjects/{subject_id}/selected-book", response_model=BookResponse)
+def get_selected_book(subject_id: str,
+                      current: User = Depends(get_current_user)) -> BookResponse:
+    """The subject's edition for its year: the book every screen schedules,
+    assigns and reorders against, instead of whichever book came first."""
+    _require_school_owns_subject(subject_id, current)
+    b = _require().selected_book_for_subject(subject_id)
+    if b is None:
+        raise HTTPException(404, "this subject has no book, or several and none chosen: "
+                                 "choose its edition first")
+    return _book_response(b, b.id)
+
+
+@router.put("/subjects/{subject_id}/selected-book", response_model=SelectBookResponse)
+def select_book(subject_id: str, req: SelectBookRequest,
+                principal: User = Depends(require_principal)) -> SelectBookResponse:
+    """Chooses the subject's edition for its year, replacing any earlier
+    choice. Lessons already scheduled from any other edition are not
+    re-pointed (they were placed from its chapters) and not removed --
+    scheduling the new book does not remove them either (it replaces only
+    that book's own lessons) -- and teachers assigned to another edition
+    stay on it; so the response counts both, per book, and says so."""
+    _require_school_owns_subject(subject_id, principal)
+    store = _require()
+    book = store.get_book(req.book_id)
+    if book is None or book.subject_id != subject_id:
+        raise HTTPException(422, "that book is not one of this subject's books")
+    result = store.select_book(book.id)
+    return SelectBookResponse(
+        book=_book_response(book, book.id),
+        previous_book_id=result.previous_book_id,
+        previous_book_scheduled_lessons=result.previous_book_scheduled_lessons,
+        other_editions=[
+            OtherEditionResponse(book_id=e.book_id, title=e.title,
+                                 scheduled_lessons=e.scheduled_lessons,
+                                 teacher_assignments=e.teacher_assignments)
+            for e in result.other_editions],
+        other_editions_scheduled_lessons=result.other_editions_scheduled_lessons,
+        other_editions_teacher_assignments=result.other_editions_teacher_assignments,
+        warning=_edition_change_warning(result),
+    )
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'s' if n != 1 else ''}"
+
+
+def _edition_change_warning(result) -> Optional[str]:
+    """Words what still points at books other than the new edition, book by
+    book, or None when nothing does. Lessons and teacher assignments are
+    reported rather than moved: the lessons were placed from the old book's
+    chapters, and a teacher left on the old book keeps seeing its schedule
+    until the principal reassigns them."""
+    parts = []
+    for e in result.other_editions:
+        held = []
+        if e.scheduled_lessons:
+            held.append(_plural(e.scheduled_lessons, "lesson") + " scheduled this year")
+        if e.teacher_assignments:
+            held.append(_plural(e.teacher_assignments, "teacher assignment"))
+        if held:
+            parts.append(f"'{e.title}' still has {' and '.join(held)}")
+    if not parts:
+        return None
+    return ("; ".join(parts) + ". These were not moved to the new book or removed: "
+            "that schedule still belongs to the old book, and teachers assigned to it "
+            "stay on it until they are reassigned.")
 
 
 @router.get("/books/{book_id}/units", response_model=list[UnitResponse])
@@ -352,14 +606,57 @@ def seed_cbse10(req: SeedCbse10Request,
     action (§29), not something any caller should be able to trigger for
     an arbitrary school_id string.
     """
-    result = seed_cbse_class_10(
+    return _seed_response(seed_cbse_class_10(
         _require(), school_id=principal.school_id, academic_year_label=req.academic_year_label,
-        start_date=req.start_date, end_date=req.end_date)
+        start_date=req.start_date, end_date=req.end_date))
+
+
+@router.post("/seed/cbse", response_model=SeedCbse10Response)
+def seed_cbse_any_grade(req: SeedGradeRequest,
+                        principal: User = Depends(require_principal)) -> SeedCbse10Response:
+    """Seeds any grade 6-12 for the caller's own school -- PRD section 0
+    decision 4 ("all grades 6-12, all subjects"), which until 2026-09-22 the
+    product could not reach: `seed_cbse_all_grades` existed in seed_cbse10.py
+    wired to no route and no CLI command, and `POST /seed/cbse9` was a 404 even
+    though academicos-data/syllabus/ has held every grade's file all along.
+
+    Same posture as /seed/cbse10, which now delegates here: principal-gated,
+    school_id taken from the session and never from the body, idempotent on a
+    re-run. A subject with no syllabus file for the grade is reported in
+    `subjectsSkipped` rather than quietly dropped.
+
+    Also applies the committed decomposition templates
+    (decomposition_templates.py) to the chapters it creates, as proposals
+    PENDING this principal's approval -- so a new school can reach Topic and
+    Subtopic without an LLM key, without anything being approved on its behalf.
+    `topicTemplates` reports per subject what got topics and what did not.
+    """
+    return _seed_response(seed_cbse_grade(
+        _require(), school_id=principal.school_id, academic_year_label=req.academic_year_label,
+        start_date=req.start_date, end_date=req.end_date, grade_number=req.grade))
+
+
+def _seed_response(result: SeedResult) -> SeedCbse10Response:
     return SeedCbse10Response(
         board_id=result.board_id, academic_year_id=result.academic_year_id,
-        grade_id=result.grade_id, subjects_seeded=result.subjects_seeded,
+        grade_id=result.grade_id, grade=result.grade_number,
+        subjects_seeded=result.subjects_seeded,
         units_seeded=result.units_seeded, chapters_seeded=result.chapters_seeded,
         subjects_skipped=result.subjects_skipped,
+        chapters_with_topics=result.chapters_with_topics,
+        chapters_without_topics=result.chapters_without_topics,
+        topics_proposed=result.topics_proposed,
+        subtopics_proposed=result.subtopics_proposed,
+        topic_templates=[
+            SubjectTemplateReportResponse(
+                subject=t.subject, chapters=t.chapters,
+                chapters_with_topics=t.chapters_with_topics,
+                chapters_without_topics=t.chapters_without_topics,
+                topics_proposed=t.topics_proposed,
+                subtopics_proposed=t.subtopics_proposed,
+                provenance=t.provenance, note=t.note)
+            for t in result.topic_templates
+        ],
     )
 
 
@@ -376,20 +673,245 @@ def seed_cbse10(req: SeedCbse10Request,
 def list_topics(chapter_id: str,
                 current: User = Depends(get_current_user)) -> list[TopicWithSubtopicsResponse]:
     """The real, approved curriculum for a chapter -- what the question-
-    paper subtopic picker (§ end-to-end acceptance criteria) reads."""
+    paper subtopic picker (§ end-to-end acceptance criteria) reads.
+
+    Keyed by the school's own `chap_` id, which only a curriculum screen
+    has. The picker in assessment_create_page.dart holds a SYLLABUS slug
+    instead and uses by-slug/... below."""
     store = _require()
     _require_school_owns_chapter(chapter_id, current)
+    return _topics_with_subtopics(
+        store, chapter_id, eligible_question_ids=_bank_questions_for_chapter(store, chapter_id))
+
+
+@router.get("/chapters/by-slug/{subject}/{grade}/{slug}/topics",
+            response_model=list[TopicWithSubtopicsResponse])
+def list_topics_for_syllabus_chapter(
+        subject: str, grade: int, slug: str,
+        current: User = Depends(get_current_user)) -> list[TopicWithSubtopicsResponse]:
+    """The same approved Topics/Subtopics, reached by the SYLLABUS chapter
+    slug the Assessment Designer actually holds.
+
+    Three id spaces name one Class 10 Science chapter, and nothing joined
+    them until 2026-09-23:
+
+    * `chemical-reactions-equations` -- the syllabus id from
+      academicos-data/syllabus/Science_10.json, which
+      `GET /api/v1/catalog/{subject}/{grade}/chapters` returns and
+      assessment_create_page.dart stores as its chapter id;
+    * `chap_<uuid>` -- this school's own Chapter row, what the route above
+      takes;
+    * `science-10/chemical-reactions-and-equations` -- the question bank's
+      board-level `taxonomyChapterId`, with `topicIds`/`subtopicIds` under
+      it, which no route accepts as input.
+
+    The picker sent the first to the route that wants the second. Before
+    Task 101 that answered `200 []`, after it 404; either way the page
+    caught it and showed an empty picker, so PRD section 21's subtopic
+    filter had never once found a subtopic.
+
+    This joins on the STORED mapping: seed_cbse10.py writes each chapter's
+    canonical_id as `{book_id}:chapter:{syllabus slug}`, so the catalog's
+    slug is recorded on the school's own row at seed time -- a rename
+    cannot break it, and no title matching is guessed at read time. The
+    bank's taxonomy ids are deliberately NOT the join: they are
+    school-independent, so they could not resolve to a school's approved
+    subtopics at all, and only 109 of the 476 Class 10 Science questions in
+    the live bank carry any `subtopicIds` (measured 2026-09-23).
+
+    Resolved inside the caller's own school and its chosen edition only, so
+    the same official slug gives each school its own rows. A class the
+    school has not set up is a 404 whose message says what to do, never an
+    empty list that looks like "no subtopics exist"."""
+    store = _require()
+    match = store.chapter_for_syllabus_slug(
+        school_id=current.school_id, grade_number=grade, subject_name=subject,
+        slug=slug, title_slug=_syllabus_title_slug(subject, grade, slug),
+        on_date=_school_today().isoformat())
+    if match.chapter is None:
+        raise HTTPException(
+            404, _chapter_slug_detail(match.reason, subject, grade, slug, role=current.role))
+    return _topics_with_subtopics(
+        store, match.chapter.id,
+        eligible_question_ids=_bank_questions_for(subject, grade, [slug]))
+
+
+def _topics_with_subtopics(store: CurriculumStore, chapter_id: str, *,
+                           eligible_question_ids: Optional[set[str]],
+                           ) -> list[TopicWithSubtopicsResponse]:
+    topics = store.topics_for_chapter(chapter_id)
+    subtopics_by_topic = {t.id: store.subtopics_for_topic(t.id) for t in topics}
+    # Counted for the whole chapter in one query. This is what the Assessment
+    # Designer's picker needs to stop being a trap: POST /questions/search
+    # intersects the chapter's questions with question_subtopic_links, so a
+    # subtopic with 0 tagged questions narrows the paper to nothing. Until a
+    # client calls POST /chapters/{id}/questions/tag that table is empty for
+    # every real school, and the only thing standing between a teacher and a
+    # blank paper is this number being on screen.
+    #
+    # Counted against the same candidate set search uses, never the link
+    # table alone: see tagged_question_counts' docstring for why a link can
+    # name a question the bank no longer serves, and what promising one
+    # would do to the teacher who ticks that subtopic.
+    #
+    # None means the bank could not be read at all (see _bank_questions_for).
+    # Then no number is sent, and SubtopicResponse.tagged_question_count is
+    # already Optional for exactly this: the picker's _subtopicSubtitle
+    # renders the topic name alone for a null, which is "we don't know"
+    # rather than a "0" that reads as "nothing is tagged".
+    counts = None if eligible_question_ids is None else store.tagged_question_counts(
+        [s.id for subs in subtopics_by_topic.values() for s in subs],
+        eligible_question_ids=eligible_question_ids)
     out = []
-    for t in store.topics_for_chapter(chapter_id):
+    for t in topics:
         out.append(TopicWithSubtopicsResponse(
             id=t.id, canonical_id=t.canonical_id, chapter_id=t.chapter_id, name=t.name,
             seq=t.seq, description=t.description, source_type=t.source_type,
             source_reference=t.source_reference, approved_by=t.approved_by,
             approved_at=t.approved_at, model_used=t.model_used,
             generation_version=t.generation_version,
-            subtopics=[_subtopic_response(s) for s in store.subtopics_for_topic(t.id)],
+            subtopics=[_subtopic_response(s, None if counts is None else counts.get(s.id, 0))
+                       for s in subtopics_by_topic[t.id]],
         ))
     return out
+
+
+def _syllabus_title_slug(subject: str, grade: int, slug: str) -> Optional[str]:
+    """The slug of the chapter's official TITLE, as a second key to try.
+
+    A school whose book came from an ingested Table of Contents rather than
+    the CBSE seed has its chapters keyed by the slug of the chapter name
+    (extraction.py), which is a different string from the syllabus id:
+    `chemical-reactions-and-equations` vs `chemical-reactions-equations`.
+    None when the syllabus does not know this slug, or when the two are the
+    same string anyway."""
+    from ..syllabus.cbse_syllabus import _slug, load_syllabus
+    doc = load_syllabus(subject, grade)
+    if doc is None:
+        return None
+    for _unit, chapter in doc.all_chapters():
+        if chapter.id == slug:
+            title_slug = _slug(chapter.name)
+            return title_slug if title_slug != slug else None
+    return None
+
+
+def _bank_questions_for(subject: str, grade: int,
+                        chapter_slugs: list[str]) -> Optional[set[str]]:
+    """The questions `POST /questions/search` could return for this chapter.
+
+    Built from the same two lines that route builds its candidates from
+    (assessment/routes.py: `get_pool(...)` then `pool.filter(subject, grade,
+    chapter_ids)`), so "tagged" here means the same thing it means there.
+    The pool is memoised per (subject, grade) inside get_pool, so the picker
+    pays for it at most once per process -- the same cost the search on the
+    very next screen already pays.
+
+    None -- never an empty set -- when the bank could not be read. Listing a
+    chapter's topics never touched the question bank before this, and
+    build_pool deliberately re-raises a registry `OperationalError` rather
+    than caching a false "no questions exist" (pool.py, found live
+    2026-09-18). Letting that through would turn a transient lock into a 500
+    on the curriculum read itself, i.e. an empty picker again; returning
+    None sends the topics with no count instead, which says "we don't know"
+    where an empty set would say "nothing is tagged"."""
+    from ..assessment.routes import _int_grade_to_roman  # local: keeps the import one-way
+
+    if _cfg is None or not chapter_slugs:
+        # Also None, for the same reason: no configured bank, or a caller
+        # that could not name a single slug to look under, is "could not
+        # determine". An empty set here would be reported as a hard 0, which
+        # the picker renders as the red "selecting any of them here produces
+        # an empty paper" warning -- a claim about the school's tagging made
+        # from a fact about this process's configuration.
+        return None
+    grade_roman = _int_grade_to_roman(grade)
+    try:
+        pool = get_pool(_cfg, subject=subject, grade=grade_roman)
+    except Exception:
+        log.exception("could not read the question bank for %s grade %s; sending "
+                      "subtopics without a tagged-question count", subject, grade)
+        return None
+    return {q.id for q in pool.filter(subject=subject, grade=grade_roman,
+                                      chapter_ids=chapter_slugs)}
+
+
+def _bank_questions_for_chapter(store: CurriculumStore,
+                                chapter_id: str) -> Optional[set[str]]:
+    """The same candidate set, for a caller who has the school's own `chap_`
+    id rather than the syllabus slug.
+
+    Both writers of a chapter row put the bank's slug straight after
+    `:chapter:` in canonical_id -- seed_cbse10.py the syllabus id
+    (`chemical-reactions-equations`), extraction.py the slug of the chapter
+    title (`chemical-reactions-and-equations`) -- and the pool is keyed by
+    one or the other depending on which made this book. Both are offered, so
+    a count is not silently zeroed by the wrong id space.
+
+    None -- never an empty set -- whenever the chain cannot be walked, same
+    contract as `_bank_questions_for` above: a chapter row this process
+    cannot resolve says nothing about how many questions the school has
+    tagged, and "0 questions tagged" is what the picker turns into a red
+    "selecting any of them here produces an empty paper" warning."""
+    chapter = store.get_chapter(chapter_id)
+    if chapter is None:
+        return None
+    unit = store.get_unit(chapter.unit_id)
+    book = store.get_book(unit.book_id) if unit else None
+    subject = store.get_subject(book.subject_id) if book else None
+    grade = store.get_grade(subject.grade_id) if subject else None
+    if subject is None or grade is None:
+        return None
+    from ..syllabus.cbse_syllabus import _slug
+
+    canonical = chapter.canonical_id or ""
+    seeded_slug = canonical.split(":chapter:", 1)[1] if ":chapter:" in canonical else None
+    slugs = [s for s in (seeded_slug, _slug(chapter.name)) if s]
+    return _bank_questions_for(subject.name, grade.number, slugs)
+
+
+def _chapter_slug_detail(reason: str, subject: str, grade: int, slug: str, *,
+                         role: str) -> str:
+    """What the reader is told, and it has to be an instruction she can
+    carry out: this 404 is rendered verbatim in the picker
+    (assessment_create_page.dart), where "no subtopics" and "your school has
+    not set this class up" used to look identical -- both an empty list.
+
+    Branches on role because the picker is a teacher's screen (see
+    tests/test_curriculum_subtopic_filter.py::test_a_teacher_of_the_school_
+    reads_it_too) while every remedy is principal-gated: `POST /seed/cbse*`
+    and `PUT /subjects/{id}/selected-book` both Depend(require_principal).
+    Telling the majority reader to do something the server would refuse her
+    is not an instruction. The destination named is the one that exists --
+    the Principal console's Roster tab, which is where book_edition_card.dart
+    renders "Book editions"; there is no screen called "Curriculum"."""
+    principal = role == "principal"
+    where = "Principal > Roster > Book editions"
+    if reason == "no_edition_chosen":
+        if principal:
+            return (f"Choose the Class {grade} {subject} book edition under {where} "
+                    "to filter by subtopic")
+        return (f"Ask your principal to choose the Class {grade} {subject} book "
+                "edition, then you can filter by subtopic")
+    # The two branches below name no screen, because none of them can be acted
+    # on in the app today: setting a class up calls POST /curriculum/seed/cbse
+    # and adding a chapter calls POST /curriculum/books/{id}/toc/ingest, and
+    # nothing in frontend/lib calls either (checked by grep, 2026-09-23). The
+    # Book editions card only chooses among a subject's EXISTING books. An
+    # instruction that sends a principal to a screen where the action does not
+    # exist is worse than no instruction: it spends their time and their trust
+    # before it fails. Say what is true; name the screen again when the screen
+    # can do it.
+    if reason == "no_chapter":
+        return (f"Your Class {grade} {subject} book has no chapter '{slug}'. Pick a "
+                f"different chapter -- adding one is not something the app can do "
+                f"yet, so it needs support.")
+    if principal:
+        return (f"Class {grade} {subject} has not been set up for your school yet, so "
+                f"there are no subtopics to filter by. Setting a class up is not "
+                f"something the app can do yet -- it needs support.")
+    return (f"Class {grade} {subject} has not been set up for your school yet, so there "
+            f"are no subtopics to filter by. Ask your principal to have it added.")
 
 
 @router.post("/books/{book_id}/toc/ingest", response_model=IngestTocResponse)
@@ -446,7 +968,11 @@ def get_extraction_run(run_id: str,
         raise HTTPException(404, "extraction run not found")
     if store.school_id_for_chapter(run.chapter_id) != current.school_id:
         raise HTTPException(403, "this extraction run belongs to a different school")
-    proposals = store.proposals_for_run(run_id)
+    return _run_with_proposals(store, run)
+
+
+def _run_with_proposals(store: CurriculumStore, run: CurriculumExtractionRun,
+                        ) -> ExtractionRunWithProposalsResponse:
     return ExtractionRunWithProposalsResponse(
         run=ExtractionRunResponse(id=run.id, school_id=run.school_id, book_id=run.book_id,
                                   chapter_id=run.chapter_id, source_hash=run.source_hash,
@@ -458,7 +984,7 @@ def get_extraction_run(run_id: str,
                                     proposed_parent=p.proposed_parent, sequence=p.sequence,
                                     confidence=p.confidence, status=p.status,
                                     edited_name=p.edited_name, materialized_id=p.materialized_id)
-                  for p in proposals],
+                  for p in store.proposals_for_run(run.id)],
     )
 
 
@@ -480,6 +1006,48 @@ def approve_extraction_run(run_id: str, req: ApproveRunRequest,
     return ApproveRunResponse(run_id=result.run_id, topics_created=result.topics_created,
                               subtopics_created=result.subtopics_created,
                               topic_ids=result.topic_ids, subtopic_ids=result.subtopic_ids)
+
+
+@router.get("/chapters/{chapter_id}/proposed-topics",
+            response_model=list[ExtractionRunWithProposalsResponse])
+def list_proposed_topics(chapter_id: str,
+                         current: User = Depends(get_current_user),
+                         ) -> list[ExtractionRunWithProposalsResponse]:
+    """Every still-unapproved decomposition proposal for one chapter, so the web
+    admin can show "3 topics proposed from the NCERT headings -- approve?" next
+    to a chapter instead of the principal having to already know a run id.
+    Read-only, and school-scoped like every other chapter read here."""
+    store = _require()
+    _require_school_owns_chapter(chapter_id, current)
+    return [
+        _run_with_proposals(store, run)
+        for run in store.extraction_runs_for_chapter(chapter_id)
+        if run.status in ("pending", "reviewed")
+    ]
+
+
+@router.post("/chapters/{chapter_id}/topics/approve-all",
+             response_model=ApproveChapterTopicsResponse)
+def approve_chapter_templates(chapter_id: str,
+                              principal: User = Depends(require_principal),
+                              ) -> ApproveChapterTopicsResponse:
+    """"Approve all for this chapter": materializes the chapter's pending
+    TEMPLATE proposals in one action. A fresh Class 10 seed proposes topics for
+    46 chapters; approving those one proposal at a time is the difference
+    between a school finishing setup and giving up on it.
+
+    Template runs only -- an LLM run's proposals are a draft nobody has read and
+    still go through POST /extraction-runs/{id}/approve, which is where an admin
+    edits and rejects individually. Re-running is safe: a run already approved
+    is not approved again, so nothing is duplicated."""
+    store = _require()
+    _require_school_owns_chapter(chapter_id, principal)
+    result = templates_mod.approve_chapter_templates(
+        store, chapter_id, approved_by=principal.id)
+    return ApproveChapterTopicsResponse(
+        chapter_id=result.chapter_id, runs_approved=result.runs_approved,
+        topics_created=result.topics_created, subtopics_created=result.subtopics_created,
+        topic_ids=result.topic_ids, subtopic_ids=result.subtopic_ids)
 
 
 @router.post("/chapters/{chapter_id}/topics", response_model=TopicResponse)
@@ -767,6 +1335,115 @@ def list_holidays(academic_year_id: str,
             for h in store.holidays_for_calendar(cal.id)]
 
 
+# ---------------- terms (PRD 12.6, section 0 decision 11) ----------------
+# Exam coverage and time saved are measured "this term"; until Task 106 the
+# product had no term, so neither could be computed. A school declares its
+# own terms (nothing is seeded -- CBSE schools split the year differently).
+# Writes are principal-only, reads any signed-in user of the school, all
+# school-scoped like the rest of this file.
+
+
+def _term_response(t) -> TermResponse:
+    return TermResponse(id=t.id, school_id=t.school_id, academic_year_id=t.academic_year_id,
+                        name=t.name, start_date=t.start_date, end_date=t.end_date,
+                        manual_baseline_minutes=t.manual_baseline_minutes)
+
+
+def _require_school_owns_term(term_id: str, current: User):
+    term = _require().get_term(term_id)
+    if term is None:
+        raise HTTPException(404, "term not found")
+    if term.school_id != current.school_id:
+        raise HTTPException(403, "this term belongs to a different school")
+    return term
+
+
+@router.post("/academic-years/{academic_year_id}/terms", response_model=TermResponse)
+def create_term(academic_year_id: str, req: TermRequest,
+                principal: User = Depends(require_principal)) -> TermResponse:
+    _require_school_owns_academic_year(academic_year_id, principal)
+    try:
+        t = _require().create_term(academic_year_id=academic_year_id, name=req.name,
+                                   start_date=req.start_date, end_date=req.end_date)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return _term_response(t)
+
+
+@router.get("/academic-years/{academic_year_id}/terms", response_model=list[TermResponse])
+def list_terms(academic_year_id: str,
+               current: User = Depends(get_current_user)) -> list[TermResponse]:
+    _require_school_owns_academic_year(academic_year_id, current)
+    return [_term_response(t) for t in _require().terms_for_year(academic_year_id)]
+
+
+# Declared before /terms/{term_id} so "current" is never read as a term id
+# (today only PUT/DELETE take an id, but a later GET by id must not shadow it).
+@router.get("/terms/current", response_model=TermResponse)
+def current_term(on: Optional[str] = Query(None, alias="date"),
+                 current: User = Depends(get_current_user)) -> TermResponse:
+    """The caller's school's term containing `date` (default: the school's
+    today, IST). 404 when no term covers it -- never the nearest term,
+    because a coverage or time-saved figure for the wrong term is worse than
+    an honest "no term declared for this date"."""
+    if on is None:
+        day = _school_today().isoformat()
+    else:
+        try:
+            day = CurriculumStore._iso_date(on, "date")
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+    t = _require().term_for_date(current.school_id, day)
+    if t is None:
+        raise HTTPException(404, f"no term of this school covers {day}")
+    return _term_response(t)
+
+
+@router.put("/terms/{term_id}", response_model=TermResponse)
+def update_term(term_id: str, req: TermRequest,
+                principal: User = Depends(require_principal)) -> TermResponse:
+    _require_school_owns_term(term_id, principal)
+    try:
+        t = _require().update_term(term_id, name=req.name, start_date=req.start_date,
+                                   end_date=req.end_date)
+    except KeyError:
+        raise HTTPException(404, "term not found")
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return _term_response(t)
+
+
+@router.put("/terms/{term_id}/baseline", response_model=TermResponse)
+def set_term_baseline(term_id: str, req: TermBaselineRequest,
+                      principal: User = Depends(require_principal)) -> TermResponse:
+    """The minutes a teacher takes to set a paper by hand, this term, as the
+    principal declares it. The time-saved figure for the term is measured
+    against it (PRD decision 11: per term), and says it was the principal's
+    figure. Its own route because PUT /terms/{id} replaces name and dates and
+    its callers do not send a baseline. The change is audited: it moves the
+    saving a principal will quote."""
+    term = _require_school_owns_term(term_id, principal)
+    try:
+        t = _require().set_term_baseline(term_id, req.minutes)
+    except KeyError:
+        raise HTTPException(404, "term not found")
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    from ..assessment.audit_log import get_audit_log
+    get_audit_log(_cfg.data_root).append(
+        "paper_baseline_set", actor=principal.id,
+        details={"termId": term_id, "schoolId": principal.school_id,
+                 "minutes": req.minutes, "previous": term.manual_baseline_minutes})
+    return _term_response(t)
+
+
+@router.delete("/terms/{term_id}")
+def delete_term(term_id: str, principal: User = Depends(require_principal)) -> dict:
+    _require_school_owns_term(term_id, principal)
+    _require().delete_term(term_id)
+    return {"ok": True}
+
+
 @router.post("/academic-years/{academic_year_id}/period-configuration",
              response_model=PeriodConfigurationResponse)
 def set_period_configuration(academic_year_id: str, req: SetPeriodConfigurationRequest,
@@ -1052,7 +1729,16 @@ def get_my_schedule(start_date: str, end_date: str,
     (a fresh teacher account, or a principal who isn't also a teacher)
     honestly gets an empty list, not someone else's data."""
     store = _require()
-    book_ids = {a.book_id for a in store.assignments_for_teacher(current.id)}
+    # Through the subject's CHOSEN edition (PRD 12.7), not every assigned
+    # book: choosing an edition leaves the old assignment in place, and a
+    # teacher assigned to both saw each day twice -- "Chapter old" and
+    # "Chapter new" -- with no way to tell which one the school teaches.
+    book_ids = set()
+    for a in store.assignments_for_teacher(current.id):
+        book = store.get_book(a.book_id)
+        chosen = store.selected_book_for_subject(book.subject_id) if book else None
+        if chosen is not None:
+            book_ids.add(chosen.id)
     if not book_ids:
         return []
     lessons = [l for l in store.scheduled_lessons_for_date_range(current.school_id, start_date, end_date)
@@ -1211,12 +1897,29 @@ def enroll_student(req: EnrollStudentRequest,
         raise HTTPException(404, "student not found")
     if target.school_id != principal.school_id:
         raise HTTPException(403, "that user belongs to a different school")
-    if store.school_id_for_grade(req.grade_id) != principal.school_id:
+    if req.section_id is None and req.grade_id is None:
+        raise HTTPException(422, "say which section the student is in (sectionId)")
+    if req.section_id is not None:
+        _require_school_owns_section(req.section_id, principal)
+    if req.grade_id is not None and store.school_id_for_grade(req.grade_id) != principal.school_id:
         raise HTTPException(403, "that grade belongs to a different school")
-    e = store.enroll_student(school_id=principal.school_id, student_id=req.student_id,
-                             grade_id=req.grade_id)
+    previous = store.enrollment_for_student(req.student_id)
+    try:
+        e = store.enroll_student(school_id=principal.school_id, student_id=req.student_id,
+                                 grade_id=req.grade_id, section_id=req.section_id)
+    except KeyError:
+        raise HTTPException(404, "section not found")
+    except ValueError as err:
+        raise HTTPException(422, str(err))
+    if previous is None or previous.section_id != e.section_id:
+        from ..assessment.audit_log import get_audit_log
+        get_audit_log(_cfg.data_root).append(
+            "student_enrolled", student_id=req.student_id, actor=principal.id,
+            details={"schoolId": principal.school_id, "sectionId": e.section_id,
+                     "previousSectionId": previous.section_id if previous else None})
     return StudentEnrollmentResponse(id=e.id, school_id=e.school_id, student_id=e.student_id,
-                                     grade_id=e.grade_id, created_at=e.created_at)
+                                     grade_id=e.grade_id, section_id=e.section_id,
+                                     created_at=e.created_at)
 
 
 def _require_student_enrollment(store: CurriculumStore, current: User):
@@ -1239,7 +1942,10 @@ def get_my_class_schedule(start_date: str, end_date: str,
     remark about it."""
     store = _require()
     enrollment = _require_student_enrollment(store, current)
-    book_ids = set(store.book_ids_for_grade(enrollment.grade_id))
+    # The chosen edition per subject (PRD 12.7), not every book: with an old
+    # and a new edition on one subject this showed both editions' lessons on
+    # the same days, as if the class were taught twice.
+    book_ids = set(store.selected_book_ids_for_grade(enrollment.grade_id))
     lessons = [l for l in store.scheduled_lessons_for_date_range(current.school_id, start_date, end_date)
               if l.book_id in book_ids]
 
@@ -1275,7 +1981,11 @@ def get_my_progress(academic_year_id: str,
     store = _require()
     enrollment = _require_student_enrollment(store, current)
     as_of = _school_today().isoformat()
-    book_ids = store.book_ids_for_grade(enrollment.grade_id)
+    # One row per subject, from the edition the school chose (PRD 12.7).
+    # Enumerating every book gave a student two 'Mathematics' rows -- the
+    # abandoned edition's counts beside the real ones, with nothing in the
+    # response to say which was which.
+    book_ids = store.selected_book_ids_for_grade(enrollment.grade_id)
 
     subjects: list[SubjectProgressResponse] = []
     for book_id in book_ids:
@@ -1360,14 +2070,21 @@ def _curriculum_tree_for_export(store: CurriculumStore, school_id: str) -> list[
         year_dict["holidays"] = (
             [asdict(h) for h in store.holidays_for_calendar(calendar.id)] if calendar else []
         )
+        # A school's declared terms are its own data like its holidays.
+        year_dict["terms"] = [asdict(t) for t in store.terms_for_year(y.id)]
         for g in store.grades_for_year(y.id):
             grade_dict = asdict(g)
+            # Sections (M1.1) are the school's own classes.
+            grade_dict["sections"] = [asdict(sec) for sec in store.sections_for_grade(g.id)]
             grade_dict["subjects"] = []
             for s in store.subjects_for_grade(g.id):
                 subject_dict = asdict(s)
                 subject_dict["timetable_slots"] = [
                     asdict(slot) for slot in store.timetable_slots_for_subject(y.id, s.name)
                 ]
+                # The school's chosen edition (PRD 12.7) is its own data too.
+                chosen = store.selected_book_for_subject(s.id)
+                subject_dict["selected_book_id"] = chosen.id if chosen is not None else None
                 subject_dict["books"] = []
                 for b in store.books_for_subject(s.id):
                     book_dict = asdict(b)

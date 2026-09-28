@@ -24,6 +24,23 @@ own. The Exemplar chapter names are the pre-2024 books' ("Integers"), and the
 classes 6-9 trees are the new books ("The Other Side of Zero"), so the name
 cannot be looked up; the pooled text can be matched.
 
+The Exemplar chapter itself, where the map knows it. A pooled match is
+still a match, and it left most of the Exemplar bank untagged. But the book
+printed each of those questions under a numbered chapter, and
+``taxonomy/_exemplar_chapter_map.json`` says which chapter of the CURRENT book
+that is, decided once against the current books' contents pages
+(`exemplar_chapter_map`, 57 of its 144 rows). For those records `apply_tags`
+does not decide the chapter at all: it pins the map's, at confidence 1.0 and
+under ``tagMethod = "exemplar-chapter-map"``, and the tagger chooses the topic
+among THAT chapter's topics. Measured on the 90 gold Exemplar items the map
+covers, the map's chapter is right 85 times (0.944) against 69 of 72 for the
+accepted matches, and pinning raised accepted topics from 33 to 45 at the same
+precision (0.933 against 0.939); on the held-out audit both are 38/40. The
+other 87 rows are null -- the old chapter is split across two chapters of the
+new book, dropped, moved to another class, or keeps more than a tenth of its
+questions on content that class teaches elsewhere -- and those records are left
+to the match, which usually leaves them blank.
+
 A record with no Exemplar chapter gets the same kind of prior from the
 ``chapterIds`` it already carries (CBE and board banks). Those ids are of
 three kinds -- old syllabus slugs ("light-reflection-refraction", which the
@@ -67,6 +84,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from academicos.syllabus.exemplar_chapter_map import EXEMPLAR_MAP_METHOD, chapter_for
 from academicos.syllabus.tag_text import TOKENIZER_VERSION, tokens
 
 REPO = Path(__file__).resolve().parents[3]
@@ -298,6 +316,9 @@ class TagResult:
     confidence: dict
     accepted: dict
     evidence: dict
+    # the chapter was not decided here: the Exemplar chapter map named it, and
+    # the topic below was chosen among that chapter's topics
+    pinned: bool = False
 
     def to_proposal(self) -> dict:
         return {"chapterId": self.chapter_id, "topicId": self.topic_id,
@@ -378,12 +399,20 @@ class TopicTagger:
         return self._trees[key]
 
     # ---------------------------------------------------------------- tagging
-    def tag_records(self, records: list[dict]) -> list[TagResult | None]:
+    def tag_records(self, records: list[dict],
+                    pinned_chapters: list[str | None] | None = None) -> list[TagResult | None]:
         """Tag every record; None for one with no tree (another subject or class).
 
         Questions are pooled per Exemplar chapter, or else per existing chapter
         id, across ``records``, so pass a whole bank, not one question at a
         time, to get the full prior.
+
+        ``pinned_chapters`` is one chapter id (or None) per record: where it
+        names a chapter, that chapter is not decided here -- the Exemplar
+        chapter map already did, from the book's own contents page -- and the
+        topic is chosen among THAT chapter's topics. It defaults to None, so
+        ``tag_records`` alone stays the plain tagger the audits measure;
+        ``apply_tags`` is what passes the map.
         """
         pools: dict[tuple, collections.Counter] = collections.defaultdict(collections.Counter)
         members: collections.Counter = collections.Counter()
@@ -392,8 +421,9 @@ class TopicTagger:
                 pools[key].update(question_terms(rec))
                 pools[key].update(_heading_terms(self._prior_name(key)))
                 members[key] += 1
+        pins = pinned_chapters or [None] * len(records)
         out = []
-        for rec in records:
+        for rec, pin in zip(records, pins):
             subject, grade = question_subject(rec), question_grade(rec)
             tree = self.tree(subject, grade) if subject and grade else None
             if tree is None:
@@ -402,7 +432,8 @@ class TopicTagger:
             keys = [k for k in _pool_keys(rec)
                     if k[2] == "exemplar" or members[k] > 1 or tokens(self._prior_name(k))]
             out.append(self._tag(tree, question_terms(rec), [pools[k] for k in keys],
-                                 from_ids=bool(keys) and keys[0][2] == "chapterId"))
+                                 from_ids=bool(keys) and keys[0][2] == "chapterId",
+                                 pinned_chapter=pin))
         return out
 
     def _prior_name(self, key: tuple) -> str:
@@ -420,7 +451,8 @@ class TopicTagger:
         return " ".join(w for w in value.split("-") if not w.isdigit())
 
     def _tag(self, tree: Tree, terms: collections.Counter,
-             pools: list[collections.Counter], from_ids: bool = False) -> TagResult:
+             pools: list[collections.Counter], from_ids: bool = False,
+             pinned_chapter: str | None = None) -> TagResult:
         feats: dict = {"chapter": None, "topic": None, "subtopic": None}
         evidence: dict = {"chapter": [], "topic": [], "subtopic": []}
 
@@ -432,7 +464,13 @@ class TopicTagger:
                 prior = [a + b / len(pools) for a, b in zip(prior, tree.chapters.scores(pool)[0])]
             weight = ID_PRIOR_WEIGHT if from_ids else PRIOR_WEIGHT
             scores = [s + weight * p for s, p in zip(scores, prior)]
-        ci = max(range(len(scores)), key=lambda i: (scores[i], -i))
+        # An id the tree does not have falls back to the match rather than
+        # failing a whole bank on one row; tests/test_ncert_exemplar.py is what
+        # refuses a map id the committed taxonomy has not got.
+        pinned = next((i for i, n in enumerate(tree.chapters.nodes) if n.id == pinned_chapter),
+                      None) if pinned_chapter else None
+        ci = pinned if pinned is not None else max(range(len(scores)),
+                                                   key=lambda i: (scores[i], -i))
         chapter = tree.chapters.nodes[ci]
         feats["chapter"] = _features(scores)
         feats["chapter"]["heading"] = tree.chapters.heading_scores(terms)[ci]
@@ -472,20 +510,30 @@ class TopicTagger:
                     feats["subtopic"]["heading"] = under.heading_scores(terms)[order[0]]
                     evidence["subtopic"] = under.shared_terms(qv, order[0])
 
-        confidence = self._confidence(feats)
+        confidence = self._confidence(feats, pinned=pinned is not None)
         accepted = self._accept(confidence)
         return TagResult(chapter.id, topic.id if topic else None, [s.id for s in subtopics],
-                         feats, confidence, accepted, evidence)
+                         feats, confidence, accepted, evidence, pinned=pinned is not None)
 
-    def _confidence(self, feats: dict) -> dict:
+    def _confidence(self, feats: dict, pinned: bool = False) -> dict:
+        """P(right) per level, each multiplied by the levels above it.
+
+        A pinned chapter did not come from the match, so its own probability is
+        not the model's: the Exemplar chapter map read it off the current book's
+        contents page, and P(chapter right) is 1. The topic below it is then
+        P(topic right | chapter right) alone -- which is what the fitted topic
+        coefficients estimate -- so the topic threshold still means what it was
+        chosen to mean.
+        """
         conf = {"chapter": None, "topic": None, "subtopic": None}
         if not self.model:
-            return conf
+            return {**conf, "chapter": 1.0} if pinned else conf
         running = 1.0
         for level in LEVELS:
             if feats[level] is None:
                 break
-            running *= level_probability(self.model["coefficients"][level], feats[level])
+            if not (pinned and level == "chapter"):
+                running *= level_probability(self.model["coefficients"][level], feats[level])
             conf[level] = round(running, 4)
         return conf
 
@@ -518,13 +566,24 @@ def _syllabus_names(subject: str | None, grade: int | None) -> dict[str, str]:
     path = TAXONOMY_DIR.parent / f"{SUBJECTS[subject]}_{grade}.json"
     if not path.exists():
         return {}
+    doc = json.loads(path.read_text(encoding="utf-8"))
     names = {}
-    for unit in json.loads(path.read_text(encoding="utf-8")).get("units") or []:
+    for unit in doc.get("units") or []:
         if unit.get("name"):
             names["-".join(re.findall(r"[a-z]+", unit["name"].lower()))] = unit["name"]
         for ch in unit.get("chapters") or []:
             if ch.get("id") and ch.get("name"):
                 names[ch["id"]] = ch["name"]
+    # The book's chapters also live at the document's top level, where
+    # fb0107a put them for the eight files whose units carry CBSE's marks
+    # weightage and no chapter list of their own. Reading `units[]` alone lost
+    # every chapter name for those pairs, and the names are what the prior
+    # scores a question's words against -- without them it falls back to the
+    # slug's own words, which for Mathematics 6 were the OLD book's ids under
+    # the new book's names (the corruption fb0107a fixed).
+    for ch in doc.get("chapters") or []:
+        if ch.get("id") and ch.get("name"):
+            names[ch["id"]] = ch["name"]
     return names
 
 
@@ -539,8 +598,14 @@ def apply_tags(records: list[dict], tagger: TopicTagger, bank: str) -> tuple[lis
     left as it was. A record with no tree is returned unchanged. A record whose
     lowest available level was not accepted is queued, naming the first level
     that was not, with the proposal and its confidence.
+
+    An Exemplar record whose chapter the map knows does not have that chapter
+    decided here: it is the book's own filing, written with
+    ``tagMethod = "exemplar-chapter-map"`` and chapter confidence 1.0, and the
+    topic below it is still the tagger's, chosen among that chapter's topics.
     """
-    tags = tagger.tag_records(records)
+    pins = [chapter_for(rec) for rec in records]
+    tags = tagger.tag_records(records, pinned_chapters=pins)
     out, review = [], []
     for rec, tag in zip(records, tags):
         new = copy.deepcopy(rec)
@@ -552,7 +617,7 @@ def apply_tags(records: list[dict], tagger: TopicTagger, bank: str) -> tuple[lis
         new["topicIds"] = [tag.topic_id] if acc["topic"] and tag.topic_id else []
         new["subtopicIds"] = list(tag.subtopic_ids) if acc["subtopic"] else []
         new["tagConfidence"] = dict(tag.confidence)
-        new["tagMethod"] = TAG_METHOD
+        new["tagMethod"] = EXEMPLAR_MAP_METHOD if tag.pinned else TAG_METHOD
         out.append(new)
         pending = next((lv for lv in LEVELS
                         if tag.features[lv] is not None and not acc[lv]), None)
@@ -561,6 +626,14 @@ def apply_tags(records: list[dict], tagger: TopicTagger, bank: str) -> tuple[lis
                 "id": rec.get("id"), "bank": bank, "subject": rec.get("subject"),
                 "grade": rec.get("grade"), "level": pending,
                 "stem": (rec.get("stem") or "")[:300],
+                # How the proposal's CHAPTER was decided, per entry. A pinned
+                # record queued at the topic level carries a chapter the
+                # Exemplar map read off the book, not one this tagger matched,
+                # and a single method on the queue's header called all 7,744
+                # entries "tfidf_textbook_v2" -- 1,626 of the served records
+                # are the map's. The levels below the chapter are always this
+                # tagger's, whatever this says.
+                "method": EXEMPLAR_MAP_METHOD if tag.pinned else TAG_METHOD,
                 "proposed": tag.to_proposal(), "confidence": dict(tag.confidence),
                 "evidence": tag.evidence,
             })

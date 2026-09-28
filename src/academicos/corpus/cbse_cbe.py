@@ -61,6 +61,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Iterator, Optional
 
+from . import marking_split
+
 log = logging.getLogger(__name__)
 
 # "Maths6AS1", "Science10YP3", "English9JV4a", and -- importantly -- "English6SB"
@@ -427,9 +429,16 @@ def _extract_question_and_answer(block: str) -> tuple[str, list[str], str, str, 
         # The mark scheme restates the question, then an "Answer | Guidance"
         # table. In flattened text the answer is the option letter followed by
         # its text, or a short answer string before the guidance.
+        # In a MULTI-PART item the scheme restates every later sub-question
+        # before its own Answer|Guidance table, so the flattened tail reads
+        # "<answer to (a)> 1 (b) <the question again> Answer Guidance <answer
+        # to (b)> ...". Those restatements are the question printed inside its
+        # own key -- 59 of the 237 served multi-mark CBE records read that way
+        # at c734a69 -- and they are dropped BEFORE the 40-word cut below, so
+        # the words the cut keeps are answer rather than question.
         after = re.split(r"\n\s*Answer\s*\n\s*Guidance\s*\n", scheme_zone, maxsplit=1)
         if len(after) > 1:
-            tail = after[1]
+            tail = marking_split.strip_restated_questions(after[1])
             am = _ANSWER_ROW.search(tail)
             if am:
                 answer = f"{am.group(1)}. {am.group(2).strip()}"
@@ -441,7 +450,7 @@ def _extract_question_and_answer(block: str) -> tuple[str, list[str], str, str, 
             flat = " ".join(scheme_zone.split())
             gm = re.search(r"Answer\s+Guidance\s+(.*)$", flat)
             if gm:
-                tail = gm.group(1)
+                tail = marking_split.strip_restated_questions(gm.group(1))
                 am = _ANSWER_ROW.match(tail.strip())
                 answer = (f"{am.group(1)}. {am.group(2).strip()}" if am
                           else " ".join(tail.split()[:40]))
@@ -984,16 +993,13 @@ def to_bank_record(item: "CbeItem") -> dict:
     # being lost or passed off as this question's weight.
     if item.marks_unresolved:
         marks = 0
-    points = []
-    if item.answer:
-        points.append({
-            "id": f"{qid}:mp1",
-            "description": item.answer,
-            "marks": marks,
-            "keyword": "",
-            "isRequired": True,
-            "synonyms": [],
-        })
+    # The value points CBSE printed for this item, where it printed them
+    # ("Award 1 mark for each point, up to a maximum of 2 marks"), and one
+    # point holding the whole answer where it did not -- see corpus/
+    # marking_split.py. The stem goes in because a group item's marks are the
+    # GROUP's, and its key answers only the first sub-question.
+    answer = marking_split.strip_stem_echo(item.question, item.answer)
+    points, split_meta = marking_split.value_points(answer, marks, qid, item.question)
 
     metadata = {
         "itemId": item.item_id,
@@ -1039,8 +1045,7 @@ def to_bank_record(item: "CbeItem") -> dict:
             # An MCQ's mark scheme is the correct option, so it is a marking
             # point like any other. Without this the record's only answer
             # content was an empty `modelAnswer`.
-            "markingPoints": (points or (
-                [{"text": item.answer, "marks": marks}] if item.answer else [])),
+            "markingPoints": points,
             "rubricLevels": [],
             "commonErrors": [],
             "alternativeAnswers": [],
@@ -1052,11 +1057,12 @@ def to_bank_record(item: "CbeItem") -> dict:
             # attribution -- a question that reads as answerable and is not --
             # and it affected 259 served records. The option is printed for an
             # MCQ precisely because that IS the answer.
-            "modelAnswer": item.answer,
+            "modelAnswer": answer,
             "modelAnswerLatex": "",
-            "hasPartialCredit": False,
+            "hasPartialCredit": len(points) > 1,
             "metadata": {"guidance": item.guidance, "purpose": item.purpose,
-                         "calculator": item.calculator, "aoMarks": item.ao_marks},
+                         "calculator": item.calculator, "aoMarks": item.ao_marks,
+                         **split_meta},
             "provenance": (
                 "cbse_marking_scheme"
                 if (item.answer or "").strip() else "none"),

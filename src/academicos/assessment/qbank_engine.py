@@ -33,7 +33,10 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
+
+from .chapter_filing import UNMAPPED, ChapterFiling, name_key
 
 log = logging.getLogger(__name__)
 
@@ -99,31 +102,91 @@ def has_answer_key(rec: dict[str, Any]) -> bool:
     )
 
 
-def topics_of(rec: dict[str, Any]) -> list[str]:
+def topics_of(rec: dict[str, Any], chapter: str | None = None) -> list[str]:
     """Every topic label a question carries.
 
-    Chapters come from `chapterIds` (the keyword/embedding tagger) and the
-    learning-ladder reference from the CBSE CBE import; both are real mappings,
-    so both are exposed. Lives here rather than in `mcp/qbank_server.py`
-    because `?topic=` is now part of the one filter chain both surfaces run.
+    `chapter` is the chapter the record is filed under
+    (`QuestionBank.chapter_of`), and every caller with the bank to hand passes
+    it. Without it the labels are the record's raw `chapterIds`, which for six
+    of the ten class 6-10 Mathematics/Science pairs name a chapter of the
+    pre-2024 book: MCP listed 631 of 857 Mathematics 8 questions as "unmapped"
+    while the builder filed 491 of them under a chapter (audit D10, D39).
+    The learning-ladder reference from the CBSE CBE import is a real mapping
+    too, so it is exposed beside the chapter. Lives here rather than in
+    `mcp/qbank_server.py` because `?topic=` is part of the one filter chain
+    both surfaces run.
     """
-    out = [str(c) for c in (rec.get("chapterIds") or []) if c]
+    if chapter:
+        out = [chapter]
+    else:
+        out = [str(c) for c in (rec.get("chapterIds") or []) if c]
     for key in ("topic", "contentCode", "contentReference"):
         v = rec.get(key)
         if v:
             out.append(str(v))
-    return list(dict.fromkeys(out)) or ["unmapped"]
+    return list(dict.fromkeys(out)) or [UNMAPPED]
 
 
-def topic_matches(rec: dict[str, Any], topic: str) -> bool:
-    """Substring, case-insensitive, against any of a record's topic labels.
+def topic_matches(rec: dict[str, Any], topic: str, chapter: str | None = None) -> bool:
+    """Substring, case-insensitive, against any of a record's topic labels and
+    its raw `chapterIds`.
 
-    Deliberately looser than `chapter_id`, which is an exact id: an agent asks
-    for "Algebra" and means the chapter, the content code and the ladder
-    reference alike.
+    The loose end of `QuestionBank`'s topic filter, reached only when the topic
+    is neither a chapter of the class nor a label it lists: an agent asks for
+    "Algebra" and means the chapter, the content code and the ladder reference
+    alike. The raw ids stay in the haystack so an old slug a caller saved keeps
+    finding the questions that carry it.
     """
     needle = topic.strip().lower()
-    return any(needle in t.lower() for t in topics_of(rec))
+    labels = topics_of(rec, chapter) + [str(c) for c in (rec.get("chapterIds") or []) if c]
+    return any(needle in t.lower() for t in labels)
+
+
+def _class_key(rec: dict[str, Any]) -> tuple[str, int]:
+    return str(rec.get("subject") or ""), int(rec.get("grade") or 0)
+
+
+def _chapter_claims(rec: dict[str, Any]) -> tuple[str | None, list[str]]:
+    """(taxonomy tag, own chapter ids): what `ChapterFiling` files a record by."""
+    return rec.get("taxonomyChapterId"), [str(c) for c in (rec.get("chapterIds") or []) if c]
+
+
+@dataclass(frozen=True)
+class _ClassChapters:
+    """One class's chapters, filed the way the builder's picker files them.
+
+    `ids` is every chapter the picker can list for the class -- the syllabus's
+    and those its questions are filed under -- keyed lower-case, so a caller
+    need not match the slug's case. `names` maps a chapter's printed name to
+    its id, which is how an agent asks ("Life Processes", audit D10).
+    `labels` is every topic label the class's questions carry, lower-cased.
+    """
+    filing: ChapterFiling
+    filed: dict[str, str]
+    ids: dict[str, str]
+    names: dict[str, str]
+    labels: frozenset[str]
+
+    @classmethod
+    def build(cls, subject: str, grade: int,
+              records: list[dict[str, Any]]) -> "_ClassChapters":
+        try:
+            filing = ChapterFiling.for_class(subject, grade)
+        except (OSError, ValueError):
+            # A subject whose name cannot be a file name has no syllabus; with
+            # nothing known, the filing keeps each record's own first claim.
+            filing = ChapterFiling(known=frozenset())
+        filed = {str(r.get("id")): filing.chapter_of(*_chapter_claims(r)) for r in records}
+        chapters = set(filing.known) | set(filed.values())
+        names = dict(filing.by_name)
+        for cid in sorted(chapters - set(filing.known) - {UNMAPPED}):
+            # The picker's name for a chapter the syllabus does not list.
+            printed = filing.book_names.get(cid) or cid.replace("-", " ").title()
+            names.setdefault(name_key(printed), cid)
+        labels = frozenset(t.lower() for r in records
+                           for t in topics_of(r, filed[str(r.get("id"))]))
+        return cls(filing=filing, filed=filed,
+                   ids={c.lower(): c for c in chapters}, names=names, labels=labels)
 
 
 def source_document_of(rec: dict[str, Any]) -> str:
@@ -245,6 +308,9 @@ class QuestionBank:
         self._by_id = by_id
         self.records = list(by_id.values())
         self._sorted_ids = sorted(by_id)
+        # Built on the first chapter or topic question, not here: the pool
+        # builds a bank to read answer keys and never asks one.
+        self._classes: dict[tuple[str, int], _ClassChapters] | None = None
 
     # The module-level rule, bound here so the many existing
     # `QuestionBank.has_answer_key(rec)` call sites keep reading the way they
@@ -256,6 +322,81 @@ class QuestionBank:
 
     def get(self, question_id: str) -> dict[str, Any] | None:
         return self._by_id.get(question_id)
+
+    # -- chapters: the builder's filing, not the record's raw ids (D39) ------
+
+    def _chapter_index(self) -> dict[tuple[str, int], _ClassChapters]:
+        if self._classes is None:
+            groups: dict[tuple[str, int], list[dict[str, Any]]] = {}
+            for rec in self._by_id.values():
+                groups.setdefault(_class_key(rec), []).append(rec)
+            self._classes = {key: _ClassChapters.build(key[0], key[1], recs)
+                             for key, recs in groups.items()}
+        return self._classes
+
+    def chapter_of(self, rec: dict[str, Any]) -> str:
+        """The chapter the builder's picker files this record under.
+
+        `assessment/chapter_filing.py` is the rule; this is the bank applying
+        it, so `/v1`, the MCP server and the paper builder name one chapter
+        for one question. Until 2026-09-28 the first two matched raw
+        `chapterIds` and reached 1,266 of the 2,297 questions the builder
+        draws from the 124 named class 6-10 Mathematics/Science chapters
+        (audit D39).
+        """
+        cls = self._chapter_index().get(_class_key(rec))
+        if cls is not None and str(rec.get("id")) in cls.filed:
+            return cls.filed[str(rec.get("id"))]
+        return ChapterFiling(known=frozenset()).chapter_of(*_chapter_claims(rec))
+
+    def topics_of(self, rec: dict[str, Any]) -> list[str]:
+        """`topics_of`, with the chapter the builder files the record under."""
+        return topics_of(rec, self.chapter_of(rec))
+
+    def _in_chapter(self, chapter_id: str) -> Callable[[dict[str, Any]], bool]:
+        """`?chapter_id=`: in the chapter exactly when the builder would draw
+        it for a teacher who chose that chapter -- `ChapterFiling.selects`,
+        including its allowance for a pre-2024 slug a caller saved."""
+        tests = {key: c.filing.selects([chapter_id], set(c.filed.values()))
+                 for key, c in self._chapter_index().items()}
+        return lambda rec: tests[_class_key(rec)](*_chapter_claims(rec))
+
+    def _on_topic(self, topic: str) -> Callable[[dict[str, Any]], bool]:
+        """`topic`, read in the record's own class, first match wins:
+
+          1. a chapter id of the class -- exactly that chapter, as the builder
+             files it;
+          2. a label the class's questions carry -- exactly that label, so
+             `list_topics` and a search for what it listed agree ("10.1.1" was
+             listed at 1 and searched at 6, because "10.1.10" and "10.1.11"
+             contain it);
+          3. a chapter's printed name -- that chapter ("Life Processes" found 0
+             while "life-processes" found 69);
+          4. anything else -- a substring of the labels and the raw ids, the
+             deliberately loose search this has always been.
+        """
+        needle = topic.strip().lower()
+        key = name_key(topic)
+        rules: dict[tuple[str, int], tuple[str, str | None]] = {}
+        for ck, c in self._chapter_index().items():
+            if needle in c.ids:
+                rules[ck] = ("chapter", c.ids[needle])
+            elif needle in c.labels:
+                rules[ck] = ("label", None)
+            elif key and key in c.names:
+                rules[ck] = ("chapter", c.names[key])
+            else:
+                rules[ck] = ("substring", None)
+
+        def test(rec: dict[str, Any]) -> bool:
+            how, chapter = rules[_class_key(rec)]
+            if how == "chapter":
+                return self.chapter_of(rec) == chapter
+            if how == "label":
+                return any(t.lower() == needle for t in self.topics_of(rec))
+            return topic_matches(rec, topic, self.chapter_of(rec))
+
+        return test
 
     def page(
         self,
@@ -287,6 +428,8 @@ class QuestionBank:
         """
         after = decode_cursor(cursor) if cursor else None
         needle = (keyword or "").strip().lower()
+        in_chapter = self._in_chapter(chapter_id) if chapter_id else None
+        on_topic = self._on_topic(topic) if topic else None
 
         items: list[dict[str, Any]] = []
         total = 0
@@ -298,8 +441,8 @@ class QuestionBank:
             if not _matches(rec, subject=subject, grade=grade, marks=marks,
                             min_marks=min_marks, max_marks=max_marks,
                             type_=type_, difficulty=difficulty, bloom=bloom,
-                            chapter_id=chapter_id, subtopic_id=subtopic_id,
-                            topic=topic, source_document_id=source_document_id,
+                            in_chapter=in_chapter, subtopic_id=subtopic_id,
+                            on_topic=on_topic, source_document_id=source_document_id,
                             has_scheme=has_scheme,
                             key_provenance=key_provenance,
                             review_state=review_state, needle=needle):
@@ -332,6 +475,9 @@ class QuestionBank:
             "subject": {}, "grade": {}, "marks": {}, "type": {},
             "difficulty": {}, "bloomLevel": {}, "reviewState": {},
         }
+        chapter_id, topic = filters.get("chapter_id"), filters.get("topic")
+        in_chapter = self._in_chapter(chapter_id) if chapter_id else None
+        on_topic = self._on_topic(topic) if topic else None
         for rec in self._by_id.values():
             if not _matches(
                 rec,
@@ -341,9 +487,9 @@ class QuestionBank:
                 max_marks=filters.get("max_marks"),
                 type_=filters.get("type_"),
                 difficulty=filters.get("difficulty"), bloom=filters.get("bloom"),
-                chapter_id=filters.get("chapter_id"),
+                in_chapter=in_chapter,
                 subtopic_id=filters.get("subtopic_id"),
-                topic=filters.get("topic"),
+                on_topic=on_topic,
                 source_document_id=filters.get("source_document_id"),
                 has_scheme=filters.get("has_scheme"),
                 key_provenance=filters.get("key_provenance"),
@@ -452,10 +598,11 @@ class QuestionBank:
 
 
 def _matches(rec: dict[str, Any], *, subject, grade, marks, type_, difficulty,
-             bloom, chapter_id, subtopic_id, has_scheme, review_state,
+             bloom, in_chapter: Callable[[dict[str, Any]], bool] | None,
+             subtopic_id, has_scheme, review_state,
              needle: str, key_provenance: str | None = None,
              min_marks: int | None = None, max_marks: int | None = None,
-             topic: str | None = None,
+             on_topic: Callable[[dict[str, Any]], bool] | None = None,
              source_document_id: str | None = None) -> bool:
     """**The** filter chain, for every surface.
 
@@ -465,6 +612,10 @@ def _matches(rec: dict[str, Any], *, subject, grade, marks, type_, difficulty,
     differently -- which they did, on `keyword`. Only some of these are exposed
     as HTTP query parameters; the chain is shared whether or not both surfaces
     spell every filter.
+
+    The chapter and the topic arrive as tests the bank built
+    (`QuestionBank._in_chapter`, `._on_topic`), because both depend on the
+    class's chapter filing, which a single record cannot see.
     """
     if subject and str(rec.get("subject") or "").lower() != subject.lower():
         return False
@@ -476,7 +627,7 @@ def _matches(rec: dict[str, Any], *, subject, grade, marks, type_, difficulty,
         return False
     if max_marks is not None and int(rec.get("marks") or 0) > max_marks:
         return False
-    if topic and not topic_matches(rec, topic):
+    if on_topic is not None and not on_topic(rec):
         return False
     if source_document_id:
         if source_document_id.lower() not in source_document_of(rec).lower():
@@ -487,7 +638,7 @@ def _matches(rec: dict[str, Any], *, subject, grade, marks, type_, difficulty,
         return False
     if bloom and str(rec.get("bloomLevel") or "") != bloom:
         return False
-    if chapter_id and chapter_id not in (rec.get("chapterIds") or []):
+    if in_chapter is not None and not in_chapter(rec):
         return False
     if subtopic_id and subtopic_id not in (rec.get("subtopicIds") or []):
         return False

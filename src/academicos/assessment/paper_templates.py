@@ -30,6 +30,13 @@ A shortfall's reason names the constraint that left questions out, largest
 first, and `fixes` lists the changes that would close it (widen the scope,
 change the marks, relax the kind or the competency rule, ask for fewer).
 
+Beside the sections, the route attaches two answers the builder shows at its
+chapters step, while the scope can still change: the competency-based share
+the paper would print against CBSE's 50%, and whether the chapters or the
+bank are the limit (`competency_check`); and whether a Foundation or
+Advanced version could print anything else (`tier_check`). Neither changes
+`complete`.
+
 A section with internal choice (`choice_count`) pairs that many of its
 questions with an OR alternative, drawn from the same eligible pool and
 claimed like any pick, so availability counts the alternatives the paper
@@ -50,14 +57,18 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Literal, Optional
 
+from .competency import CBSE_COMPETENCY_TARGET, COMPETENCY_RULE_TEXT, competency_ceiling, \
+    competency_signal, is_competency_question, share_summary, whole_percent
 from .pool import near_duplicate
 from .schemas import Camel, DifficultyDistribution, PaperTemplateDraft, QuestionSchema, \
     QuestionType, TemplateScope, TemplateSection
+from .selection import difficulty_signal, tier_signals, tiers_note
 
 # Where the board-level topic taxonomy will live (being built in another
 # stream). Its absence is reported, never treated as "every id is invalid".
@@ -183,15 +194,75 @@ class SectionAvailability(Camel):
     fixes: list[SectionFix] = []
 
 
+CompetencyStatus = Literal["meets", "below_scope", "below_choice", "below_bank"]
+
+
+class CompetencyCheck(Camel):
+    """The competency-based share of the paper the report would print, against
+    CBSE's target (at least half), counted by the one rule
+    (`competency.competency_signal`).
+
+    Where a share below the target comes from decides what the teacher can do
+    about it at the builder's chapters step, so `status` says:
+
+      * ``meets`` -- the share reaches the target;
+      * ``below_scope`` -- the chosen chapters fall short, and the whole
+        syllabus, planned the same way, would reach it (widen the chapters);
+      * ``below_choice`` -- the bank holds enough competency-based questions
+        that fit the sections (`competency.competency_ceiling`), but the
+        sections ranked others first (swap or pick them in on the paper);
+      * ``below_bank`` -- the class and subject bank cannot reach it with
+        this template, whatever the chapters.
+
+    The share's denominator is the questions printed (compulsory, not their
+    OR alternatives), as `paper.report_competency` counts a generated paper,
+    so the check and the paper it becomes carry the same `share`."""
+    status: CompetencyStatus
+    target: float
+    printed: int
+    competency_based: int
+    share: float
+    # The whole-syllabus plan's, only when the scope names chapters, topics or
+    # subtopics (the second plan run); None otherwise.
+    whole_syllabus_printed: Optional[int] = None
+    whole_syllabus_competency_based: Optional[int] = None
+    # Keyed class+subject questions that fit some section, whatever the scope.
+    bank_usable: int
+    bank_competency_based: int
+    bank_share: float
+    # The printed competency-based questions, by the signal that counted them.
+    by_signal: dict[str, int] = {}
+    summary: str
+    detail: str
+    # What was counted (competency.COMPETENCY_RULE_TEXT).
+    counted: str
+
+
+class TierCheck(Camel):
+    """Could a Foundation or Advanced version print a different paper? Only
+    where questions of a section's marks differ in a difficulty or Bloom
+    level someone judged (`selection.tier_signals`). `sentence` says why no
+    version is offered, and is empty when one could be."""
+    available: bool
+    sentence: str = ""
+
+
 class AvailabilityReport(Camel):
     template_id: str
     grade: int
     subject: str
     bank_questions: int
     keyed_questions: int
+    # Every section filled. The competency and tier checks below never change
+    # it: it decides whether generation needs allowGaps.
     complete: bool
     sections: list[SectionAvailability]
     scope_notes: list[str] = []
+    # Beside the sections, not in them (see CompetencyCheck / TierCheck).
+    # None where no route attached them (`plan` alone) and in reports from
+    # before they existed.
+    competency: Optional[CompetencyCheck] = None
+    tiers: Optional[TierCheck] = None
 
 
 def has_verified_key(q: QuestionSchema) -> bool:
@@ -240,8 +311,10 @@ def build_scope_filter(scope: TemplateScope, candidates: list[QuestionSchema],
             notes.append("Subtopic filter not applied: no question is tagged to the "
                           "chosen subtopics yet, so the paper uses the chosen chapters.")
 
+    in_chapters = _chapter_selector(chapters, candidates) if chapters else None
+
     def in_scope(q: QuestionSchema) -> bool:
-        if chapters and not chapters.intersection(q.chapter_ids):
+        if in_chapters is not None and not in_chapters(q):
             return False
         if subtopic_ids is not None and q.id not in subtopic_ids:
             return False
@@ -250,6 +323,33 @@ def build_scope_filter(scope: TemplateScope, candidates: list[QuestionSchema],
         return True
 
     return ScopeFilter(in_scope=in_scope, notes=notes)
+
+
+def _chapter_selector(chosen: set[str], candidates: list[QuestionSchema],
+                      ) -> Callable[[QuestionSchema], bool]:
+    """In the chosen chapters as the chapter view files them
+    (assessment/chapter_filing.py), per class and subject among the
+    candidates. Matching `chapter_ids` alone reached 1,266 of the 2,297
+    questions the builder's picker counted (audit D24)."""
+    from .chapter_filing import ChapterFiling
+    by_class: dict[tuple[str, int], list[QuestionSchema]] = {}
+    for q in candidates:
+        by_class.setdefault((q.subject, q.grade), []).append(q)
+    tests = {}
+    for (subject, grade), qs in by_class.items():
+        filing = ChapterFiling.for_class(subject, grade)
+        filed = {filing.chapter_of(q.taxonomy_chapter_id, q.chapter_ids) for q in qs}
+        tests[(subject, grade)] = filing.selects(chosen, filed)
+
+    def test(q: QuestionSchema) -> bool:
+        selects = tests.get((q.subject, q.grade))
+        if selects is None:
+            # Not among the candidates the filter was built for: the record's
+            # own chapter ids, as before.
+            return not chosen.isdisjoint(q.chapter_ids)
+        return selects(q.taxonomy_chapter_id, q.chapter_ids)
+
+    return test
 
 
 def _topic_ids(q: QuestionSchema) -> list[str]:
@@ -302,13 +402,17 @@ def is_case_question(q: QuestionSchema) -> bool:
     """Source / passage / case based, by what the stem says. Only positive
     evidence counts: many real case studies open with a plain narrative
     ("In a coffee shop, coffee is served in two types of cups..."), so the
-    absence of these words is not evidence of a long answer."""
+    absence of these words is not evidence of a long answer.
+
+    A KIND check only -- which section a long-form question goes under
+    (`_content_fits`, `_admitting_type`, `_left_out`) -- never whether it is
+    competency-based. That is `competency.is_competency_question`, the one
+    rule, which reads only what a source printed: this regex also matches
+    text our merge prepends ("Read the passage below ...", bank_merge) and an
+    SQP stem whose extraction ran on into the next heading ("... Section E
+    consists of 3 case study based questions"), neither of which a source
+    calls competency-based."""
     return bool(_CASE_RE.search(q.stem) or _SUBPART_RE.search(q.stem))
-
-
-def _is_competency(q: QuestionSchema) -> bool:
-    from .selection import is_competency_question
-    return is_competency_question(q) or is_case_question(q)
 
 
 def _content_fits(q: QuestionSchema, types: list[str]) -> bool:
@@ -444,9 +548,14 @@ def _left_out(section: TemplateSection, pool: list[QuestionSchema]) -> _LeftOut:
             if not fits_kind and not map_section and not is_map_question(q):
                 admit = _admitting_type(q)
                 out.wrong_kind[admit] = out.wrong_kind.get(admit, 0) + 1
-        elif marks_matter and fits_kind and (not _all_competency(section) or _is_competency(q)):
-            if by_text and not (is_map_question(q) or _is_competency(q)):
-                continue  # at another mark value, only content evidence says "same kind"
+        elif marks_matter and fits_kind and (not _all_competency(section)
+                                             or is_competency_question(q)):
+            # At another mark value, only content evidence says "same kind":
+            # the text reads as map or source / case, or the source printed
+            # it competency-based.
+            if by_text and not (is_map_question(q) or is_case_question(q)
+                                or is_competency_question(q)):
+                continue
             out.other_marks[q.marks] = out.other_marks.get(q.marks, 0) + 1
     return out
 
@@ -500,9 +609,9 @@ def plan(template: PaperTemplateDraft, template_id: str, candidates: list[Questi
         # match is picked competency-first and reported by `_mix_notes`.
         not_competency = 0
         if _all_competency(section):
-            if eligible and not any(_is_competency(q) for q in eligible):
+            if eligible and not any(is_competency_question(q) for q in eligible):
                 not_competency, eligible = len(eligible), []
-            if outside and not any(_is_competency(q) for q in outside):
+            if outside and not any(is_competency_question(q) for q in outside):
                 outside = []
         without_key = sum(1 for q in fits_all if q.id not in keyed_ids and scope.in_scope(q))
         used_elsewhere = sum(1 for q in fits_all if q.id in claimed and scope.in_scope(q))
@@ -593,6 +702,92 @@ def plan(template: PaperTemplateDraft, template_id: str, candidates: list[Questi
     return report, plans
 
 
+# One rounding for every share this module writes (competency.whole_percent).
+_whole_percent = whole_percent
+
+
+def _printed(plans: list[SectionPlan]) -> list[QuestionSchema]:
+    """The compulsory questions a plan prints (OR alternatives not counted)."""
+    return [q for p in plans for q in (*p.picked, *p.borrowed)]
+
+
+def _bank_reaches(template: PaperTemplateDraft, usable: list[QuestionSchema],
+                  target: float) -> bool:
+    """Whether the questions that fit the template's sections could hold
+    `target` of what the template asks for, by `competency.competency_ceiling`
+    (the same estimate selection uses before choosing). Only then is a share
+    below target the sections' ranking rather than the bank's limit."""
+    asked = sum(s.question_count for s in template.sections)
+    if not asked:
+        return False
+    sections = [(s.question_count, [q for q in usable if _fits(q, s)], [])
+                for s in template.sections]
+    return competency_ceiling(sections, near_duplicate) / asked >= target
+
+
+def competency_check(template: PaperTemplateDraft, plans: list[SectionPlan],
+                     keyed: list[QuestionSchema],
+                     whole_plans: Optional[list[SectionPlan]] = None,
+                     target: float = CBSE_COMPETENCY_TARGET) -> Optional[CompetencyCheck]:
+    """The competency-based share of what `plans` print, and where a share
+    below `target` comes from (see `CompetencyCheck`). None when nothing prints.
+
+    `keyed` is the class+subject bank's keyed questions, whatever the scope:
+    the ones that fit some section are what the bank offers this template.
+    `whole_plans` is the same template planned over the whole syllabus, given
+    only when the scope names chapters, topics or subtopics; without it a
+    share below target is the bank's limit, not the scope's."""
+    printed = _printed(plans)
+    if not printed:
+        return None
+    signals = [s for s in map(competency_signal, printed) if s is not None]
+    n, c = len(printed), len(signals)
+    usable = [q for q in keyed if any(_fits(q, s) for s in template.sections)]
+    bc = sum(1 for q in usable if is_competency_question(q))
+    wn: Optional[int] = None
+    wc: Optional[int] = None
+    if whole_plans is not None:
+        whole = _printed(whole_plans)
+        wn, wc = len(whole), sum(1 for q in whole if is_competency_question(q))
+
+    t = f"{target * 100:g}"
+    if c / n >= target:
+        status, detail = "meets", f"CBSE asks for at least {t}%."
+    elif wn and wc is not None and wc / wn >= target:
+        status = "below_scope"
+        detail = (f"Below CBSE's {t}%. The whole syllabus would give {wc} of {wn} "
+                  f"({_whole_percent(wc, wn)}%).")
+    elif _bank_reaches(template, usable, target):
+        status = "below_choice"
+        detail = (f"Below CBSE's {t}%. The bank has enough competency-based questions for "
+                  f"this template ({bc} of the {len(usable)} it can use): swap or pick them "
+                  f"in on the paper step.")
+    else:
+        status = "below_bank"
+        detail = (f"Below CBSE's {t}%. The Class {template.grade} {template.subject} bank "
+                  f"cannot reach it with this template: {bc} of the {len(usable)} questions "
+                  f"it can use ({_whole_percent(bc, len(usable))}%) are competency-based.")
+    return CompetencyCheck(
+        status=status, target=target, printed=n, competency_based=c,
+        share=round(c / n, 3),
+        whole_syllabus_printed=wn, whole_syllabus_competency_based=wc,
+        bank_usable=len(usable), bank_competency_based=bc,
+        bank_share=round(bc / len(usable), 3) if usable else 0.0,
+        by_signal=dict(Counter(signals)),
+        summary=share_summary(c, n),
+        detail=detail, counted=COMPETENCY_RULE_TEXT,
+    )
+
+
+def tier_check(template: PaperTemplateDraft, keyed: list[QuestionSchema]) -> TierCheck:
+    """Whether a tier could change which of the class+subject bank's keyed
+    questions this template's sections take (`selection.tier_signals`), and
+    the sentence the builder shows when it could not."""
+    available = bool(tier_signals(keyed, {s.marks_each for s in template.sections})["available"])
+    return TierCheck(available=available,
+                     sentence="" if available else tiers_note(template.grade, template.subject))
+
+
 @dataclass
 class _FirstPass:
     """A section after its compulsory questions are picked, waiting for the
@@ -647,13 +842,13 @@ def _pair_choices(section: TemplateSection, printed: list[QuestionSchema],
     pairs: dict[str, QuestionSchema] = {}
     for primary in printed[len(printed) - want:]:
         chapters = set(primary.chapter_ids)
-        cbq = _is_competency(primary)
+        cbq = is_competency_question(primary)
         # First best by (fresh, same chapter, same competency-ness), ties to
         # the better-ordered question -- `left` is already best first. Only
         # the candidates actually reached are compared with the paper.
         ranked = sorted(range(len(left)), key=lambda i: (
             left[i].id in stale, not chapters & set(left[i].chapter_ids),
-            _is_competency(left[i]) != cbq, i))
+            is_competency_question(left[i]) != cbq, i))
         alt = next((left[i] for i in ranked if not clashes(left[i], on_paper)), None)
         if alt is None:
             break
@@ -738,10 +933,10 @@ def _pick(pool: list[QuestionSchema], section: TemplateSection, n: int, *,
         return True
 
     def take(from_list: list[QuestionSchema]) -> Optional[QuestionSchema]:
-        want_cbq = sum(1 for q in picked if _is_competency(q)) < cbq_target
+        want_cbq = sum(1 for q in picked if is_competency_question(q)) < cbq_target
         if want_cbq:
             for q in from_list:
-                if _is_competency(q) and usable(q):
+                if is_competency_question(q) and usable(q):
                     return q
         return next((q for q in from_list if usable(q)), None)
 
@@ -814,7 +1009,13 @@ def _mix_notes(section: TemplateSection, picked: list[QuestionSchema],
                left_out: _LeftOut) -> tuple[list[str], list[SectionFix]]:
     notes: list[str] = []
     fixes: list[SectionFix] = []
-    if section.difficulty_mix is not None and picked:
+    # Only a difficulty someone judged can be "too few at the requested level":
+    # the bank sets most from marks (difficultyInferred, CBE item banks), and
+    # the note then blamed it for a value it never claimed -- on 168 of 170
+    # class 6-10 preset sections, beside a tier sentence saying the same bank
+    # judged no difficulty.
+    if (section.difficulty_mix is not None and picked
+            and any(difficulty_signal(q) is not None for q in picked)):
         wanted = dict(_difficulty_targets(section.difficulty_mix, len(picked)))
         got = {d: sum(1 for q in picked if q.difficulty == d) for d in wanted}
         if got != wanted:
@@ -825,7 +1026,7 @@ def _mix_notes(section: TemplateSection, picked: list[QuestionSchema],
                 "too few at the requested level.")
     if section.competency_share and picked:
         target = round(section.competency_share * len(picked))
-        got_cbq = sum(1 for q in picked if _is_competency(q))
+        got_cbq = sum(1 for q in picked if is_competency_question(q))
         if got_cbq < target:
             note = (f"{section.title}: {got_cbq} competency-based question(s), "
                     f"the template asked for {target}.")

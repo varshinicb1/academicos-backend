@@ -8,81 +8,83 @@
       "unit_no": "I",
       "name": "Number System and Arithmetic",
       "marks": 25,
-      "chapters": [
-        {
-          "id": "rational-numbers",
-          "name": "Rational Numbers"
-        },
-        {
-          "id": "squares-and-square-roots",
-          "name": "Squares and Square Roots"
-        },
-        {
-          "id": "cubes-and-cube-roots",
-          "name": "Cubes and Cube Roots"
-        },
-        {
-          "id": "comparing-quantities",
-          "name": "Comparing Quantities"
-        },
-        {
-          "id": "exponents-and-powers",
-          "name": "Exponents and Powers"
-        },
-        {
-          "id": "direct-and-inverse-proportions",
-          "name": "Direct and Inverse Proportions"
-        }
-      ]
+      "chapters": []
     },
     {
       "unit_no": "II",
       "name": "Algebra",
       "marks": 25,
-      "chapters": [
-        {
-          "id": "linear-equations-one-variable",
-          "name": "Linear Equations in One Variable"
-        },
-        {
-          "id": "algebraic-expressions-identities",
-          "name": "Algebraic Expressions and Identities"
-        },
-        {
-          "id": "factorisation",
-          "name": "Factorisation"
-        }
-      ]
+      "chapters": []
     },
     {
       "unit_no": "III",
       "name": "Geometry and Mensuration",
       "marks": 20,
-      "chapters": [
-        {
-          "id": "understanding-quadrilaterals",
-          "name": "Understanding Quadrilaterals"
-        },
-        {
-          "id": "mensuration-8",
-          "name": "Mensuration"
-        }
-      ]
+      "chapters": []
     },
     {
       "unit_no": "IV",
       "name": "Statistics and Graphs",
       "marks": 10,
-      "chapters": [
-        {
-          "id": "data-handling",
-          "name": "Data Handling"
-        },
-        {
-          "id": "introduction-to-graphs",
-          "name": "Introduction to Graphs"
-        }
-      ]
+      "chapters": []
+    }
+  ],
+  "chapters": [
+    {
+      "id": "mathematics-8/a-square-and-a-cube",
+      "name": "A Square and A Cube"
+    },
+    {
+      "id": "mathematics-8/power-play",
+      "name": "Power Play"
+    },
+    {
+      "id": "mathematics-8/a-story-of-numbers",
+      "name": "A Story of Numbers"
+    },
+    {
+      "id": "mathematics-8/quadrilaterals",
+      "name": "Quadrilaterals"
+    },
+    {
+      "id": "mathematics-8/number-play",
+      "name": "Number Play"
+    },
+    {
+      "id": "mathematics-8/we-distribute-yet-things-multiply",
+      "name": "We Distribute, Yet Things Multiply"
+    },
+    {
+      "id": "mathematics-8/proportional-reasoning-1",
+      "name": "Proportional Reasoning-1"
+    },
+    {
+      "id": "mathematics-8/fractions-in-disguise",
+      "name": "Fractions in Disguise"
+    },
+    {
+      "id": "mathematics-8/the-baudhayana-pythagoras-theorem",
+      "name": "The Baudhāyana-pythagoras Theorem"
+    },
+    {
+      "id": "mathematics-8/proportional-reasoning-2",
+      "name": "Proportional Reasoning–2"
+    },
+    {
+      "id": "mathematics-8/exploring-some-geometric-themes",
+      "name": "Exploring Some Geometric Themes"
+    },
+    {
+      "id": "mathematics-8/tales-by-dots-and-lines",
+      "name": "Tales by Dots and Lines"
+    },
+    {
+      "id": "mathematics-8/algebra-play",
+      "name": "Algebra Play"
+    },
+    {
+      "id": "mathematics-8/area",
+      "name": "Area"
     }
   ]
 }

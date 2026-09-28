@@ -152,12 +152,20 @@ def evaluate_answer(question: QuestionSchema, scheme: AnswerSchemeSchema,
         # keyless question must fail safe: low confidence, forced review, and a
         # reason that names the missing scheme -- distinct from a genuine
         # zero-credit answer, which a real key still scores confidently.
+        # The model answer, when one is recorded, is the only key the teacher
+        # has; the 345 bundled no-point rows carry none, so it is optional.
+        # Verdict 'noCredit', not 'partialCredit': the review UI renders the
+        # verdict as a label, and "Partial Credit" on 0/N reads as a marking
+        # error. confidence=0.0 and needs_review carry the "unscored" signal,
+        # as in the keyword-less branch of _evaluate_descriptive.
+        model = (scheme.model_answer or "").strip()
         return Evaluation(
             question_id=question.id, awarded_marks=0, max_marks=max_marks,
-            verdict="partialCredit", confidence=0.0,
+            verdict="noCredit", confidence=0.0,
             reasoning=("This question has no marking scheme (no marking points) to "
                        "score against — it cannot be graded automatically; a teacher "
-                       "must mark it manually."),
+                       "must mark it manually."
+                       + (f" Model answer: '{model}'." if model else "")),
             ocr_warnings=ocr_flags, needs_review=True,
         )
 
@@ -194,9 +202,10 @@ def _evaluate_objective(question: QuestionSchema, scheme: AnswerSchemeSchema, an
         ambiguous = len(distinct) > 1
 
     if not key:
+        # 0 marks, so 'noCredit' (see the no-marking-points branch above).
         return Evaluation(
             question_id=question.id, awarded_marks=0, max_marks=max_marks,
-            verdict="partialCredit", confidence=0.0,
+            verdict="noCredit", confidence=0.0,
             reasoning="No correct option recorded in the marking scheme — teacher must set the key.",
             ocr_warnings=ocr_flags, needs_review=True,
         )
@@ -242,9 +251,68 @@ def _evaluate_objective(question: QuestionSchema, scheme: AnswerSchemeSchema, an
     )
 
 
+def _unmet(scheme: AnswerSchemeSchema, outcomes: list[MarkingPointOutcome],
+           awarded: int, max_marks: int) -> tuple[list[str], int]:
+    """The value points to report as missing, and how many were alternatives.
+
+    A scheme that records `anyOf` lists MORE points than it awards -- CBSE's
+    "Any two of the following" over five ways (Task 124,
+    `corpus/marking_split.value_points`, which writes those listed points
+    `isRequired=False`). Once the answer has earned every mark on offer, the
+    ways it did not take are not gaps: two of the five IS the whole answer,
+    and listing the other three as missing sends the teacher looking for work
+    the board never asked for.
+
+    Short of the marks on offer they stay, because another alternative would
+    still earn the next mark. Both signals are read, not just `isRequired`:
+    other builders (`assessment/marking.py`) use that flag for supporting
+    points in schemes that award every one of them, and those are missing when
+    they are missing.
+    """
+    any_of = bool((scheme.metadata or {}).get("anyOf"))
+    full = awarded >= max_marks
+    missing: list[str] = []
+    alternatives = 0
+    for point, outcome in zip(scheme.marking_points, outcomes):
+        if outcome.awarded:
+            continue
+        if any_of and full and not point.is_required:
+            alternatives += 1
+        else:
+            missing.append(outcome.description)
+    return missing, alternatives
+
+
 def _evaluate_descriptive(question: QuestionSchema, scheme: AnswerSchemeSchema, answer: str,
                           max_marks: int, ocr_flags: list[str],
                           concept_label: str | None) -> Evaluation:
+    # A point whose keyword and synonyms are all blank cannot be matched, so
+    # "not awarded" says nothing about the answer. When every point is like
+    # that (1,248 of the 2,544 descriptive board-paper questions in the
+    # bundled corpus, measured 2026-09-22, plus every CBE/SQP value point),
+    # the confidence formula below sees ratio 0 and returns 0.9: a confident
+    # 0 with no review. Hand it to the teacher instead. The Dart port
+    # (frontend/lib/core/local_engine/answer_evaluation.dart) returns the same
+    # shape. The outcomes are built fresh because _match_point's miss reason
+    # would read "no mention of '' or its variants" once per point.
+    if all(not (p.keyword or "").strip() and not any((s or "").strip() for s in p.synonyms)
+           for p in scheme.marking_points):
+        return Evaluation(
+            question_id=question.id, awarded_marks=0, max_marks=max_marks,
+            verdict="noCredit", confidence=0.2,
+            reasoning=("The marking scheme has no keywords to match, so this answer "
+                       "could not be scored automatically. Mark it by hand against the "
+                       f"official value point: '{scheme.marking_points[0].description}'."),
+            marking_points=[
+                MarkingPointOutcome(
+                    marking_point_id=p.id, description=p.description, awarded=False,
+                    marks=0, reason="no keyword in the scheme; mark by hand", similarity=0.0,
+                )
+                for p in scheme.marking_points
+            ],
+            ocr_warnings=ocr_flags, needs_review=True,
+        )
+
     words = _normalise(answer)
     low = answer.lower()
     outcomes = [_match_point(p, words, low) for p in scheme.marking_points]
@@ -277,22 +345,28 @@ def _evaluate_descriptive(question: QuestionSchema, scheme: AnswerSchemeSchema, 
         except Exception:  # catalogue is best-effort, never block scoring
             mis = []
 
+    missing, alternatives = _unmet(scheme, outcomes, awarded, max_marks)
+
     return Evaluation(
         question_id=question.id, awarded_marks=awarded, max_marks=max_marks, verdict=verdict,
         confidence=confidence,
-        reasoning=_reason(outcomes, awarded, max_marks),
+        reasoning=_reason(missing, awarded, max_marks, alternatives),
         marking_points=outcomes,
         strengths=[o.description for o in outcomes if o.awarded],
-        gaps=[o.description for o in outcomes if not o.awarded],
+        gaps=missing,
         misconceptions=mis,
         ocr_warnings=ocr_flags,
         needs_review=confidence < REVIEW_THRESHOLD or bool(ocr_flags),
     )
 
 
-def _reason(outcomes: list[MarkingPointOutcome], awarded: int, max_marks: int) -> str:
-    missing = [o.description for o in outcomes if not o.awarded]
+def _reason(missing: list[str], awarded: int, max_marks: int, alternatives: int = 0) -> str:
     if not missing:
+        if alternatives:
+            # "All marking points addressed" would be false: the key lists
+            # more than it awards, and this answer took the ones it needed.
+            return (f"Every mark on offer was awarded ({awarded}/{max_marks}); the key "
+                    f"lists {alternatives} further alternative(s) this answer did not need.")
         return f"All marking points addressed ({awarded}/{max_marks})."
     if awarded == 0:
         return ("None of the expected marking points were found: "

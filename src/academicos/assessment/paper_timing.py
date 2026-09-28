@@ -40,13 +40,49 @@ from __future__ import annotations
 import os
 import statistics
 import time
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Callable, Iterable, Optional
 
 from .audit_log import AuditLog, get_audit_log
 
-# The action the generation routes already append. Kept as one constant so the
-# writer and the reader cannot drift apart.
+# Schools keep IST. Audit timestamps are UTC, and a paper set at 01:00 IST is
+# on the school's next day, so a term window compares the school's date.
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def school_today() -> str:
+    """Today on the school's calendar, as an ISO date."""
+    return datetime.now(_IST).date().isoformat()
+
+
+def school_date(timestamp: str) -> Optional[str]:
+    """The school's calendar date (IST) of an audit timestamp, or None if the
+    timestamp cannot be read -- such an entry is outside every window rather
+    than guessed into one."""
+    try:
+        moment = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(_IST).date().isoformat()
+
+# The action quick generation appends, and `record_generation` writes.
 ACTION = "quick_paper_generated"
+
+# Every action a generation route appends, one per way the product makes a
+# paper, with the name the report gives that path. The report reads all of
+# them: the web app makes its papers through the guided builder and the
+# hand-picked path and never calls quick-generate, so reading ACTION alone
+# reported zero papers for every school using the web app (audit 2026-09-26).
+# tests/test_paper_timing.py scans src/ so a new path cannot go uncounted.
+GENERATION_ACTIONS = {
+    ACTION: "quick",
+    "template_paper_generated": "builder",
+    "id_curated_paper_generated": "hand-picked",
+}
 
 # The declared manual baseline, in minutes.
 #
@@ -78,10 +114,19 @@ class SavedTimeReport:
     baseline_provenance: str
     estimated_minutes_saved_per_paper: float
     estimated_minutes_saved_total: float
+    # How many of `papers` each generation path made ("quick", "builder",
+    # "hand-picked"); a path with none is absent.
+    papers_by_path: dict[str, int] = field(default_factory=dict)
+    # How many of `papers` were set for each (class, subject). A paper whose
+    # class and subject cannot be established is in `unattributed`, so the
+    # two always add up to `papers`.
+    papers_by_class_subject: dict[tuple[int, str], int] = field(default_factory=dict)
+    unattributed: int = 0
 
     def as_dict(self) -> dict:
         return {
             "papers": self.papers,
+            "papersByPath": dict(self.papers_by_path),
             "medianGenerationSeconds": round(self.median_generation_seconds, 2),
             "totalGenerationSeconds": round(self.total_generation_seconds, 2),
             "baselineMinutesPerPaper": self.baseline_minutes_per_paper,
@@ -158,29 +203,69 @@ def record_generation(*, data_root, school_id: str, user_id: str,
     )
 
 
+def class_subject(grade, subject) -> Optional[tuple[int, str]]:
+    """(class number, subject) from what a generation recorded, or None when
+    either is missing or the class is not a number."""
+    try:
+        number = int(grade)
+    except (TypeError, ValueError):
+        return None
+    name = str(subject or "").strip()
+    return (number, name) if name else None
+
+
 def report(data_root, *, school_id: str | None = None,
-           limit: int = 5_000) -> SavedTimeReport:
+           limit: int = 5_000,
+           start_date: str | None = None, end_date: str | None = None,
+           attribute: Callable[[str], Optional[tuple[str, int]]] | None = None,
+           baseline: tuple[float, str] | None = None) -> SavedTimeReport:
     """Aggregate the recorded generations into a saved-time figure.
 
     `school_id=None` aggregates everything, which is right for a single-tenant
     deployment and wrong for a multi-tenant one -- so it is explicit rather than
     defaulted silently.
+
+    `start_date`/`end_date` (ISO, inclusive) keep only papers set on those
+    days of the school's calendar -- a term. `attribute(assessment_id)`
+    returns (subject, class) for an entry written before generation recorded
+    them; an entry neither can place is counted as unattributed. `baseline`
+    is (minutes, where it came from) and replaces the deployment's declared
+    baseline, e.g. with the one the principal set for the term.
     """
     audit = get_audit_log(data_root)
-    entries = audit.for_action(ACTION)
+    entries = [(path, entry) for action, path in GENERATION_ACTIONS.items()
+               for entry in audit.for_action(action)]
     if limit and len(entries) > limit:
+        # The most recent `limit` across every path, not the first path's.
+        entries.sort(key=lambda pe: str(pe[1].get("timestamp") or ""), reverse=True)
         entries = entries[:limit]
 
     elapsed: list[float] = []
-    for entry in entries:
+    by_path: Counter[str] = Counter()
+    by_pair: Counter[tuple[int, str]] = Counter()
+    unattributed = 0
+    for path, entry in entries:
         details = entry.get("details") or {}
         if school_id is not None and details.get("schoolId") != school_id:
             continue
+        if start_date is not None or end_date is not None:
+            day = school_date(entry.get("timestamp"))
+            if day is None or (start_date and day < start_date) or (end_date and day > end_date):
+                continue
         value = details.get("generationSeconds")
         if isinstance(value, (int, float)) and value >= 0:
             elapsed.append(float(value))
+            by_path[path] += 1
+            pair = class_subject(details.get("grade"), details.get("subject"))
+            if pair is None and attribute is not None and entry.get("assessment_id"):
+                found = attribute(entry["assessment_id"])
+                pair = class_subject(found[1], found[0]) if found else None
+            if pair is None:
+                unattributed += 1
+            else:
+                by_pair[pair] += 1
 
-    baseline, provenance = baseline_minutes()
+    baseline, provenance = baseline if baseline is not None else baseline_minutes()
     if not elapsed:
         return SavedTimeReport(
             papers=0, median_generation_seconds=0.0, total_generation_seconds=0.0,
@@ -203,7 +288,44 @@ def report(data_root, *, school_id: str | None = None,
         # the figure that IS real.
         estimated_minutes_saved_per_paper=max(0.0, per_paper),
         estimated_minutes_saved_total=max(0.0, per_paper) * len(elapsed),
+        papers_by_path=dict(by_path),
+        papers_by_class_subject=dict(by_pair),
+        unattributed=unattributed,
     )
+
+
+def exam_coverage(rep: SavedTimeReport,
+                  universe: Iterable[tuple[int, str]] | None) -> dict:
+    """PRD 12.6 (a): which classes and subjects have had a paper set, and which
+    have not.
+
+    `universe` is the (class, subject) pairs the school itself declared for the
+    period -- None when it declared none, in which case what is missing cannot
+    be listed and the response says so (`classesDeclared: false`) rather than
+    showing an empty "not yet" list that reads as "nothing is missing".
+    Subjects compare without case, because the curriculum and the papers are
+    written by different screens.
+    """
+    declared = sorted({(g, s.strip()) for g, s in universe or () if s and s.strip()},
+                      key=lambda p: (p[0], p[1].casefold()))
+    school_spelling = {(g, s.casefold()): s for g, s in declared}
+    # Papers per (class, subject) regardless of case; the label is the
+    # school's own spelling where it declared the subject, else the spelling
+    # most papers used.
+    spellings: dict[tuple[int, str], Counter[str]] = {}
+    for (grade, subject), n in rep.papers_by_class_subject.items():
+        spellings.setdefault((grade, subject.casefold()), Counter())[subject] += n
+    covered = {key: (school_spelling.get(key) or names.most_common(1)[0][0],
+                     sum(names.values()))
+               for key, names in spellings.items()}
+    return {
+        "covered": [{"grade": g, "subject": name, "papers": n}
+                    for (g, _), (name, n) in sorted(covered.items())],
+        "notYet": [{"grade": g, "subject": s} for g, s in declared
+                   if (g, s.casefold()) not in covered],
+        "unattributed": rep.unattributed,
+        "classesDeclared": bool(declared),
+    }
 
 
 class generation_timer:

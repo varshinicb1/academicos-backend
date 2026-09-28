@@ -31,19 +31,30 @@ What counts
   `assessment.selection.optimize` fills it: exact marks, an allowed
   difficulty, and ``question_count`` + ``internal_choice_count`` distinct
   questions (the OR alternatives come out of the same pool).
+* What the merge REFUSED is counted here too, per reason and per class x
+  subject, from ``academicos-data/syllabus/_merge_excluded.json``. A bank
+  report that counts only what survived says a class is healthy without
+  saying that two thirds of its source records were thrown away, and which
+  rule threw them: "Mathematics 6 serves 555" is a different statement beside
+  "and 809 class 6 records were refused, 3,214 of them board questions with no
+  verified key". Nothing the gate removes disappears silently (Task 126).
 """
 from __future__ import annotations
 
 import collections
 from typing import Iterable
 
+from ..assessment.competency import CBSE_COMPETENCY_TARGET, COMPETENCY_RULE_TEXT, \
+    competency_ceiling, competency_signal
 from ..assessment.qbank_routes import QuestionBank
 from ..assessment.templates import EXAM_PRESETS
 from .tagger import SUBJECTS as TAGGER_SUBJECTS
 
 SUBJECTS = ("Mathematics", "Science", "Social Science", "English", "Hindi")
 GRADES = tuple(range(6, 11))
-MARK_BUCKETS = ("1", "2", "3", "4", "5+")
+# 5 is its own bucket: the board paper's long-answer section needs exactly 5
+# marks, and a 6-10 mark CBE item cannot fill it.
+MARK_BUCKETS = ("1", "2", "3", "4", "5", "6+")
 LEVEL_FIELDS = {"chapter": "taxonomyChapterId", "topic": "topicIds", "subtopic": "subtopicIds"}
 
 
@@ -70,7 +81,7 @@ def grade_of(rec: dict) -> int | None:
 
 def mark_bucket(marks) -> str:
     m = int(marks or 0)
-    return "5+" if m >= 5 else str(m)
+    return "6+" if m >= 6 else str(m)
 
 
 def has_answer_key(rec: dict) -> bool:
@@ -119,13 +130,25 @@ def _buckets(records: Iterable[dict]) -> dict:
     return {b: c.get(b, 0) for b in MARK_BUCKETS}
 
 
+def _competency_block(records: list[dict]) -> dict:
+    """How many of `records` are competency-based by the one rule
+    (`assessment.competency.competency_signal`), why, and at what marks."""
+    signals = [competency_signal(r) for r in records]
+    comp = [r for r, s in zip(records, signals) if s]
+    return {"n": len(records), "competency": len(comp), "pct": _pct(len(comp), len(records)),
+            "bySignal": dict(collections.Counter(s for s in signals if s)),
+            "byMarks": _buckets(comp)}
+
+
 def _paper_verdicts(keyed: list[dict], presets: dict) -> dict:
     out = {}
     for name, preset in presets.items():
         reasons = []
+        sections = []
         for label, sec_name, marks, count, difficulties, _choice, choice_count in preset["sections"]:
             at_marks = [r for r in keyed if int(r.get("marks") or 0) == marks]
             fit = [r for r in at_marks if not difficulties or r.get("difficulty") in difficulties]
+            sections.append((count, fit, []))
             need = count + choice_count
             if len(fit) >= need:
                 continue
@@ -136,8 +159,24 @@ def _paper_verdicts(keyed: list[dict], presets: dict) -> dict:
                 reason += (f" ({len(at_marks) - len(fit)} more at {marks} marks are outside "
                            f"difficulty {'/'.join(difficulties)})")
             reasons.append(reason)
-        out[name] = {"possible": not reasons, "reasons": reasons}
+        out[name] = {"possible": not reasons, "reasons": reasons,
+                     "competency": _preset_competency(sections)}
     return out
+
+
+def _preset_competency(sections: list[tuple[int, list[dict], list]]) -> dict:
+    """What competency-based share a preset could print from `keyed`: the
+    questions that fit its sections, how many of them count, and the most the
+    sections could hold (`competency_ceiling`, the estimate selection uses
+    before choosing; near-duplicates are not removed here, so it can read one
+    or two high). `need` is the compulsory questions, the share's denominator
+    on a printed paper (OR alternatives are not counted)."""
+    usable = list({r["id"]: r for _, fit, _ in sections for r in fit}.values())
+    comp = sum(1 for r in usable if competency_signal(r))
+    need = sum(count for count, _, _ in sections)
+    ceiling = competency_ceiling(sections)
+    return {"usable": len(usable), "competencyBased": comp, "pct": _pct(comp, len(usable)),
+            "need": need, "ceiling": ceiling, "ceilingPct": _pct(ceiling, need)}
 
 
 def _chapter_table(tree: dict, keyed: list[dict]) -> list[dict]:
@@ -163,8 +202,14 @@ def _chapter_table(tree: dict, keyed: list[dict]) -> list[dict]:
     return chapters
 
 
+def excluded_reason_counts(excluded: Iterable[dict]) -> dict[str, int]:
+    """Reason -> records, commonest first."""
+    counts = collections.Counter(str(e.get("reason") or "unknown") for e in excluded)
+    return dict(counts.most_common())
+
+
 def _cell(subject: str, grade: int, recs: list[tuple[str, dict]], tree: dict | None,
-          presets: dict, served: str | None) -> dict:
+          presets: dict, served: str | None, excluded: list[dict] | None = None) -> dict:
     records = [r for _, r in recs]
     keyed = [r for r in records if has_answer_key(r)]
     n = len(records)
@@ -208,26 +253,47 @@ def _cell(subject: str, grade: int, recs: list[tuple[str, dict]], tree: dict | N
         chapters=chapters,
         emptyChapters=[c["id"] for c in chapters if not c["questions"]],
         chaptersWithout3Mark=[c["id"] for c in chapters if not c["byMarks"]["3"]],
-        chaptersWithout5Mark=[c["id"] for c in chapters if not c["byMarks"]["5+"]],
+        chaptersWithout5Mark=[c["id"] for c in chapters if not c["byMarks"]["5"]],
         emptyTopics=[t["id"] for t in topics if not t["questions"]],
         topicsWithout3Mark=[t["id"] for t in topics if not t["byMarks"]["3"]],
-        topicsWithout5Mark=[t["id"] for t in topics if not t["byMarks"]["5+"]],
+        topicsWithout5Mark=[t["id"] for t in topics if not t["byMarks"]["5"]],
+        # The gap lists count only tagged questions. While keyed questions sit
+        # untagged, "no question in this chapter" may be a missing tag, not
+        # missing content -- so the lists are a lower bound, and say so.
+        chapterCountsComplete=cell["untaggedKeyed"] == 0,
     )
     papers = {"all": _paper_verdicts(keyed, presets)}
+    cell["competency"] = {"all": _competency_block(keyed)}
     if served is not None:
         served_keyed = [r for label, r in recs if label == served and has_answer_key(r)]
         cell["servedKeyed"] = len(served_keyed)
         papers["served"] = _paper_verdicts(served_keyed, presets)
+        cell["competency"]["served"] = _competency_block(served_keyed)
     cell["papers"] = papers
+    # What the merge refused for this class and subject. `None` means no
+    # exclusions file was given -- which is not the same as "it refused
+    # nothing", and the report must not print a zero for it.
+    if excluded is not None:
+        cell["excluded"] = {"n": len(excluded),
+                            "byReason": excluded_reason_counts(excluded)}
     return cell
 
 
 def build_report(banks: dict[str, list[dict]], trees: dict[tuple[str, int], dict], *,
-                 presets: dict | None = None, served: str | None = None) -> dict:
+                 presets: dict | None = None, served: str | None = None,
+                 exclusions: list[dict] | None = None) -> dict:
     """The health of ``banks`` ({label: records}) against the taxonomy ``trees``
     ({(subject, grade): tree}). ``served`` names the bank that is served today;
     its paper verdicts are given on their own as well as for all banks together.
-    A record id seen in an earlier bank is not counted again."""
+    A record id seen in an earlier bank is not counted again.
+
+    ``exclusions`` is ``_merge_excluded.json``'s ``excluded`` list -- every
+    record the merge's gate refused, with its reason. Given, each cell gets an
+    ``excluded`` count broken down by reason and the report gets the whole
+    tally, in scope and out; omitted, no cell claims to know (Task 126: every
+    record the gate removes is in the exclusions file with its reason, AND this
+    report counts it).
+    """
     presets = EXAM_PRESETS if presets is None else presets
     per_cell: dict[tuple[str, int], list[tuple[str, dict]]] = collections.defaultdict(list)
     seen: set[str] = set()
@@ -243,12 +309,39 @@ def build_report(banks: dict[str, list[dict]], trees: dict[tuple[str, int], dict
                 continue
             seen.add(rid)
             per_cell[(subject, grade)].append((label, r))
-    cells = [_cell(s, g, per_cell.get((s, g), []), trees.get((s, g)), presets, served)
+
+    # An exclusion entry carries the record's own `subject` and `grade` (see
+    # `bank_merge._excluded`), which is what `subject_family`/`grade_of` read,
+    # so an out-of-scope refusal -- class 12 Physics, a music paper -- is
+    # counted in the total and in no cell.
+    dropped: dict[tuple[str, int], list[dict]] | None = None
+    in_scope = 0
+    if exclusions is not None:
+        dropped = collections.defaultdict(list)
+        for e in exclusions:
+            subject, grade = subject_family(e), grade_of(e)
+            if subject is None or grade is None:
+                continue
+            dropped[(subject, grade)].append(e)
+            in_scope += 1
+
+    cells = [_cell(s, g, per_cell.get((s, g), []), trees.get((s, g)), presets, served,
+                   None if dropped is None else dropped.get((s, g), []))
              for s in SUBJECTS for g in GRADES]
-    return {"scope": {"subjects": list(SUBJECTS), "grades": list(GRADES)},
-            "served": served, "banks": list(banks), "duplicateIds": duplicates,
-            "presets": {k: v.get("name", k) for k, v in presets.items()},
-            "cells": cells}
+    report = {"scope": {"subjects": list(SUBJECTS), "grades": list(GRADES)},
+              "served": served, "banks": list(banks), "duplicateIds": duplicates,
+              "presets": {k: v.get("name", k) for k, v in presets.items()},
+              "competency": {"rule": COMPETENCY_RULE_TEXT, "target": CBSE_COMPETENCY_TARGET},
+              "cells": cells}
+    if exclusions is not None:
+        report["excluded"] = {
+            "records": len(exclusions), "inScope": in_scope,
+            "outOfScope": len(exclusions) - in_scope,
+            "byReason": excluded_reason_counts(exclusions),
+            "bySource": dict(collections.Counter(
+                str(e.get("source") or "unknown") for e in exclusions).most_common()),
+        }
+    return report
 
 
 # --------------------------------------------------------------------------- #
@@ -260,8 +353,7 @@ def tagging_accuracy(model: dict, audit_subtopic: dict, audit_chapter_topic: dic
     ``_tagger_model.json``) and the held-out audits of the tags actually
     written (``_tag_audit*.json``). The audits are the honest figure -- the
     gold set chose the thresholds -- so both are quoted, never one for the
-    other. A wrong topic tag is split by whether the question is taught in
-    another section of the class's book or in none of it."""
+    other. A wrong topic tag is bucketed by :func:`_wrong_topic_bucket`."""
     nested = {lv: dict(v) for lv, v in model["gold"]["nested"]["accepted"].items()}
 
     def held(m):
@@ -278,11 +370,34 @@ def tagging_accuracy(model: dict, audit_subtopic: dict, audit_chapter_topic: dic
         "nested": nested,
         "heldOut": held_out,
         "wrongTopics": {
-            "otherSection": sum(1 for it in wrong if it.get("topics")),
-            "noSection": sum(1 for it in wrong if not it.get("topics")),
-            "items": [{"id": it["id"], "note": it.get("note", "")} for it in wrong],
+            **{b: sum(1 for it in wrong if _wrong_topic_bucket(it) == b) for b in WRONG_BUCKETS},
+            "items": [{"id": it["id"], "note": it.get("note", ""),
+                       "bucket": _wrong_topic_bucket(it)} for it in wrong],
         },
     }
+
+
+WRONG_BUCKETS = ("otherSection", "otherChapter", "noSectionFits", "notInBook")
+
+
+def _wrong_topic_bucket(item: dict) -> str:
+    """Where a wrongly topic-tagged question is actually taught, read from the
+    audit's own fields: ``topics`` (sections that fit; empty = none fits) and
+    ``chapters`` (chapters of the class's book that teach it; empty = none),
+    compared with ``taggedAs['chapter']``.
+
+    - otherSection: a fitting section lies in the chapter it was tagged to
+    - otherChapter: fitting sections exist, all in other chapters of the book
+    - noSectionFits: some chapter teaches it, but no one section fits
+    - notInBook: no chapter of the class's book teaches it
+    """
+    tagged = (item.get("taggedAs") or {}).get("chapter")
+    topics = item.get("topics") or []
+    if topics:
+        if tagged and any(t.startswith(tagged + "/") for t in topics):
+            return "otherSection"
+        return "otherChapter"
+    return "noSectionFits" if item.get("chapters") else "notInBook"
 
 
 # --------------------------------------------------------------------------- #
@@ -302,6 +417,78 @@ def _yes_no(v: dict | None) -> str:
     if v is None:
         return "-"
     return "yes" if v["possible"] else "**no**"
+
+
+def _excluded_md(report: dict) -> list[str]:
+    """What the merge's gate refused, per reason and per class x subject.
+
+    Empty when no exclusions file was read: a report that has not been shown
+    the file says nothing about it rather than printing zeroes (Task 126)."""
+    ex = report.get("excluded")
+    if not ex:
+        return []
+    path = report.get("excludedPath", "_merge_excluded.json")
+    out = ["", "## What the merge left out", "",
+           f"Every record the gate refused, from `{path}` "
+           "(written by `scripts/merge_question_banks.py`). These are not in the served bank, so "
+           "they are in none of the counts above -- which is exactly why they are counted here: "
+           "a class whose sources were mostly refused reads as healthy otherwise.", "",
+           f"**{ex['records']:,} records refused**, {ex['inScope']:,} of them in scope "
+           f"(classes 6-10 x {', '.join(SUBJECTS)}) and {ex['outOfScope']:,} outside it.", "",
+           "| reason | records |", "|---|---:|"]
+    out += [f"| {reason} | {n:,} |" for reason, n in ex["byReason"].items()]
+    out += ["", "| source | records |", "|---|---:|"]
+    out += [f"| {source} | {n:,} |" for source, n in ex["bySource"].items()]
+    out += ["", "Per class and subject, with the three commonest reasons:", "",
+            "| subject | class | in the bank | left out | commonest reasons |",
+            "|---|---:|---:|---:|---|"]
+    for c in report["cells"]:
+        cell_ex = c.get("excluded")
+        if not cell_ex or not cell_ex["n"]:
+            continue
+        top = ", ".join(f"{reason} {n:,}"
+                        for reason, n in list(cell_ex["byReason"].items())[:3])
+        out.append(f"| {c['subject']} | {c['grade']} | {c['questions']:,} "
+                   f"| {cell_ex['n']:,} | {top} |")
+    return out
+
+
+def _competency_md(report: dict) -> list[str]:
+    """The competency-based share per class and subject (served when there is a
+    served bank), and the two lists a principal needs: where the share is below
+    CBSE's target, and where even a full board paper could not reach it."""
+    comp = report.get("competency")
+    if not comp:
+        return []
+    target = comp["target"]
+    t = f"{target * 100:g}"
+    scope = "served" if report.get("served") else "all"
+    out = ["", "## Competency-based questions", "",
+           f"{comp['rule']} CBSE asks that at least {t}% of a paper be competency-based. "
+           "Counts are by subject family (Mathematics includes Mathematics (Standard) and "
+           "(Basic)), so a count can exceed what the paper builder draws on for the plain "
+           "subject name. No Exemplar section heading says competency, so Exemplar records "
+           "count only by their printed type or labels.", "",
+           f"| subject | class | keyed ({scope}) | competency-based | share | by signal |",
+           "|---|---:|---:|---:|---:|---|"]
+    below, cannot = [], []
+    for c in report["cells"]:
+        block = (c.get("competency") or {}).get(scope)
+        if not block or not block["n"]:
+            continue
+        signals = ", ".join(f"{k} {v:,}" for k, v in sorted(block["bySignal"].items())) or "-"
+        out.append(f"| {c['subject']} | {c['grade']} | {block['n']:,} | {block['competency']:,} "
+                   f"| {block['pct']}% | {signals} |")
+        if block["pct"] < target * 100:
+            below.append(f"{c['subject']} {c['grade']} ({block['pct']}%)")
+        board = ((c["papers"].get(scope) or {}).get("board") or {}).get("competency")
+        if board and board["need"] and board["ceilingPct"] < target * 100:
+            cannot.append(f"{c['subject']} {c['grade']} (at most {board['ceiling']} of "
+                          f"{board['need']}, {board['ceilingPct']}%)")
+    out += ["", f"**Share below CBSE's {t}% ({len(below)}):** " + ("; ".join(below) or "none") + ".",
+            "", f"**Board paper cannot reach {t}% ({len(cannot)}):** "
+            + ("; ".join(cannot) or "none") + "."]
+    return out
 
 
 def render_markdown(report: dict) -> str:
@@ -340,8 +527,8 @@ def render_markdown(report: dict) -> str:
 
     out += ["", "## Summary", "",
             "| subject | class | questions | keyed | chapter | topic | subtopic | old chapterIds "
-            "| 1m | 2m | 3m | 4m | 5m+ | board paper (served / all) |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"]
+            "| 1m | 2m | 3m | 4m | 5m | 6m+ | board paper (served / all) |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"]
     for c in cells:
         t, m = c["tagged"], c["marks"]
         board = c["papers"]["all"].get("board")
@@ -350,7 +537,7 @@ def render_markdown(report: dict) -> str:
             f"| {c['subject']} | {c['grade']} | {c['questions']:,} | {c['keyedPct']}% "
             f"| {t['chapter']['pct']}% | {t['topic']['pct']}% | {t['subtopic']['pct']}% "
             f"| {t['oldChapterIds']['pct']}% | {m['1']} | {m['2']} | {m['3']} | {m['4']} "
-            f"| {m['5+']} | {_yes_no(sboard)} / {_yes_no(board)} |")
+            f"| {m['5']} | {m['6+']} | {_yes_no(sboard)} / {_yes_no(board)} |")
     no_q = [f"{c['subject']} {c['grade']}" for c in cells if not c["questions"]]
     if no_q:
         out += ["", f"**No question at all ({len(no_q)}):** " + ", ".join(no_q) + "."]
@@ -368,6 +555,8 @@ def render_markdown(report: dict) -> str:
         out += ["", "**No taxonomy tree** (no chapter list to count against): "
                 + ", ".join(no_tree) + "."]
 
+    out += _excluded_md(report)
+
     out += ["", "## Answer keys", "",
             "Keyed questions by where the key came from, and whether the key passed the "
             "answer-key verifier.", "",
@@ -382,6 +571,8 @@ def render_markdown(report: dict) -> str:
                else f"{v['passed']}/{v['of']} passed ({v['pct']}% of keyed; {v['unchecked']} unchecked)")
         out.append(f"| {c['subject']} | {c['grade']} | {c['questions']:,} | {c['keyed']:,} "
                    f"| {c['noKey']:,} | {prov} | {ver} |")
+
+    out += _competency_md(report)
 
     tagging = report.get("tagging")
     if tagging:
@@ -423,29 +614,33 @@ def render_markdown(report: dict) -> str:
         out += ["", f"### {c['subject']} class {c['grade']}", "",
                 f"{c['keyed']:,} keyed questions; {c['untaggedKeyed']:,} of them carry no "
                 "chapter tag and are counted in no chapter below." + never, "",
-                f"| {book_head}# | chapter | questions | marks | 1m | 2m | 3m | 4m | 5m+ "
+                f"| {book_head}# | chapter | questions | marks | 1m | 2m | 3m | 4m | 5m | 6m+ "
                 "| topics with a question |",
-                f"|{book_rule}---:|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
+                f"|{book_rule}---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
         for ch in c["chapters"]:
             b = ch["byMarks"]
             with_q = sum(1 for t in ch["topics"] if t["questions"])
             book = f"{ch.get('book')} | " if multi else ""
             out.append(f"| {book}{ch['number'] if ch['number'] is not None else ''} | {ch['name']} "
                        f"| {ch['questions']} | {ch['marks']} | {b['1']} | {b['2']} | {b['3']} "
-                       f"| {b['4']} | {b['5+']} | {with_q}/{len(ch['topics'])} |")
+                       f"| {b['4']} | {b['5']} | {b['6+']} | {with_q}/{len(ch['topics'])} |")
 
         def listing(title, ids):
             if ids:
                 out.extend(["", f"**{title} ({len(ids)}):** " + "; ".join(names[i] for i in ids) + "."])
 
-        listing("Chapters with no question", c["emptyChapters"])
-        listing("Chapters with no 3-mark question", c["chaptersWithout3Mark"])
-        listing("Chapters with no 5-mark question", c["chaptersWithout5Mark"])
-        listing("Topics with no question", c["emptyTopics"])
+        q = "question" if c["chapterCountsComplete"] else "tagged question"
+        if not c["chapterCountsComplete"] and (c["emptyChapters"] or c["emptyTopics"]):
+            out.extend(["", f"_The lists below are a lower bound: {c['untaggedKeyed']:,} keyed "
+                        "questions are untagged, and a chapter listed here may hold some of them._"])
+        listing(f"Chapters with no {q}", c["emptyChapters"])
+        listing(f"Chapters with no 3-mark {q}", c["chaptersWithout3Mark"])
+        listing(f"Chapters with no 5-mark {q}", c["chaptersWithout5Mark"])
+        listing(f"Topics with no {q}", c["emptyTopics"])
         empty = set(c["emptyTopics"])
-        listing("Topics with questions but no 3-mark question",
+        listing(f"Topics with questions but no 3-mark {q}",
                 [t for t in c["topicsWithout3Mark"] if t not in empty])
-        listing("Topics with questions but no 5-mark question",
+        listing(f"Topics with questions but no 5-mark {q}",
                 [t for t in c["topicsWithout5Mark"] if t not in empty])
     out.append("")
     return "\n".join(out)
@@ -455,7 +650,7 @@ def _tagging_md(t: dict) -> list[str]:
     ho, ne = t["heldOut"], t["nested"]
     topic = ho["topic"]
     wrong = t["wrongTopics"]
-    n_wrong = wrong["otherSection"] + wrong["noSection"]
+    n_wrong = sum(wrong.get(b, 0) for b in WRONG_BUCKETS)
     out = ["", "## How right are the tags?", "",
            "Two measurements, both labelled by an AI reviewer (Claude), not by a teacher. "
            "*Nested* is cross-validation on the gold set, with the choice of threshold inside "
@@ -474,10 +669,22 @@ def _tagging_md(t: dict) -> list[str]:
             f"({topic['right']}/{topic['tags']}), {side} the 90% the tagger aims for; the nested "
             f"gold-set figure is {ne['topic']['right']}/{ne['topic']['tags']}.")
     if n_wrong:
+        parts = []
+        if wrong["otherSection"]:
+            parts.append(f"in {wrong['otherSection']} another section of the same chapter does")
+        if wrong["otherChapter"]:
+            parts.append(f"in {wrong['otherChapter']} a section of another chapter of the same "
+                         "book does")
+        if wrong["noSectionFits"]:
+            n = wrong["noSectionFits"]
+            parts.append(f"{n} {'is' if n == 1 else 'are'} taught in a chapter of the book "
+                         "but fit no one section of it")
+        if wrong["notInBook"]:
+            n = wrong["notInBook"]
+            parts.append(f"{n} {'is' if n == 1 else 'are'} taught nowhere in the class's book")
+        body = parts[0] if len(parts) == 1 else "; ".join(parts[:-1]) + "; and " + parts[-1]
         line += (f" All {n_wrong} wrong topic tags put the question in a section of its class's "
-                 f"book that does not teach it: in {wrong['otherSection']} another section of "
-                 f"the same chapter does, and {wrong['noSection']} are taught in no section of "
-                 "the class's book at all.")
+                 f"book that does not teach it: {body}.")
     out += ["", line, ""]
     out += [f"- `{it['id']}`: {it['note']}" for it in wrong["items"]]
     return out

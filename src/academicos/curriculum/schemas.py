@@ -35,6 +35,44 @@ class GradeResponse(Camel):
     section: Optional[str] = None
 
 
+class CamelRequest(Camel):
+    """A request body that refuses a field it does not know. The older
+    curriculum requests ignore one (audit D7: a misspelled field is dropped
+    and the call succeeds); new ones start strict."""
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+
+
+class SectionResponse(Camel):
+    """One class of a grade ("10-B", M1.1). studentCount is how many
+    students are enrolled in it now."""
+    id: str
+    academic_year_id: str
+    grade_id: str
+    grade_number: int
+    name: str
+    class_teacher_id: Optional[str] = None
+    student_count: int = 0
+
+
+class CreateSectionRequest(CamelRequest):
+    name: str = Field(min_length=1, max_length=20)
+    class_teacher_id: Optional[str] = None
+
+
+class UpdateSectionRequest(CamelRequest):
+    """A field left out is unchanged; classTeacherId null clears it."""
+    name: Optional[str] = Field(default=None, min_length=1, max_length=20)
+    class_teacher_id: Optional[str] = None
+
+
+class SectionStudentResponse(Camel):
+    """A student enrolled in a section. Ids only: the console already
+    holds the school's user list, so no name or email travels twice."""
+    student_id: str
+    enrollment_id: str
+    enrolled_at: str
+
+
 class SubjectResponse(Camel):
     id: str
     grade_id: str
@@ -49,6 +87,43 @@ class BookResponse(Camel):
     title: str
     publisher: Optional[str] = None
     status: str
+    # Whether this is the subject's edition for its year (PRD 12.7). `status`
+    # is the book's content state and says nothing about the choice.
+    selected: bool = False
+
+
+class AddBookRequest(Camel):
+    title: str = Field(min_length=1)
+    # Publisher and/or edition, free text ("NCERT, 2026 reprint").
+    publisher: Optional[str] = None
+    board_id: str = Field(min_length=1)
+
+
+class SelectBookRequest(Camel):
+    book_id: str = Field(min_length=1)
+
+
+class OtherEditionResponse(Camel):
+    """A book of the subject that is not its edition, with what still
+    points at it: this year's scheduled lessons and teacher assignments."""
+    book_id: str
+    title: str
+    scheduled_lessons: int = 0
+    teacher_assignments: int = 0
+
+
+class SelectBookResponse(Camel):
+    book: BookResponse
+    previous_book_id: Optional[str] = None
+    # Lessons of this year scheduled from the edition chosen just before.
+    previous_book_scheduled_lessons: int = 0
+    # Every other book of the subject, not only the previous one: after
+    # A -> B -> C, A's lessons are still there. Nothing listed here is moved
+    # to the new book; `warning` says so whenever either total is above 0.
+    other_editions: list[OtherEditionResponse] = []
+    other_editions_scheduled_lessons: int = 0
+    other_editions_teacher_assignments: int = 0
+    warning: Optional[str] = None
 
 
 class UnitResponse(Camel):
@@ -97,6 +172,12 @@ class SubtopicResponse(Camel):
     approved_at: Optional[str] = None
     model_used: Optional[str] = None
     generation_version: Optional[str] = None
+    # How many questions are tagged to this subtopic in question_subtopic_links.
+    # POST /questions/search intersects on exactly that table, so 0 here means
+    # "picking this subtopic yields an empty paper" -- the picker has to be able
+    # to say so before a teacher generates one. None where it was not counted
+    # (the routes that return a subtopic on its own do not pay for the query).
+    tagged_question_count: Optional[int] = None
 
 
 class TopicWithSubtopicsResponse(TopicResponse):
@@ -202,14 +283,60 @@ class SeedCbse10Request(Camel):
     end_date: str
 
 
+class SeedGradeRequest(SeedCbse10Request):
+    """PRD section 0 decision 4 is all grades 6-12. The bound is pydantic's so
+    the answer to grade 5 or 13 is a 422 naming the range, before any row is
+    created -- there is no syllabus data outside it (seed_cbse10.MIN_GRADE /
+    MAX_GRADE, which raises the same bound for the CLI and library callers)."""
+    grade: int = Field(ge=6, le=12)
+
+
+class SubjectTemplateReportResponse(Camel):
+    """How far below chapter level the seed got for one subject, and why it
+    stopped where it did. `note` is the honest half: "Class 7 Science is
+    chapter-only because the only textbook tree is the 2024-25 NEP edition and
+    the syllabus JSON still lists the previous edition's chapter names"."""
+    subject: str
+    chapters: int
+    chapters_with_topics: int
+    chapters_without_topics: int
+    topics_proposed: int
+    subtopics_proposed: int
+    provenance: list[str]
+    note: Optional[str] = None
+
+
 class SeedCbse10Response(Camel):
+    """Also the response of the any-grade route. The topic-template fields were
+    added 2026-09-22 (new fields only -- an older client keeps working): a seed
+    that stops at chapters and a seed that reached Topic/Subtopic used to be
+    indistinguishable in this body, and on a fresh school it was always the
+    former."""
     board_id: str
     academic_year_id: str
     grade_id: str
+    grade: int
     subjects_seeded: int
     units_seeded: int
     chapters_seeded: int
     subjects_skipped: list[str]
+    # Proposed, pending the principal's approval -- never approved rows.
+    chapters_with_topics: int = 0
+    chapters_without_topics: int = 0
+    topics_proposed: int = 0
+    subtopics_proposed: int = 0
+    topic_templates: list[SubjectTemplateReportResponse] = Field(default_factory=list)
+
+
+class ApproveChapterTopicsResponse(Camel):
+    """Result of "Approve all for this chapter" -- possibly several runs, since
+    a chapter can carry one template run per provenance."""
+    chapter_id: str
+    runs_approved: int
+    topics_created: int
+    subtopics_created: int
+    topic_ids: list[str]
+    subtopic_ids: list[str]
 
 
 # ---------------- academic calendar (§10, §27-29) ----------------
@@ -251,6 +378,31 @@ class HolidayResponse(Camel):
     label: str
     kind: str
     end_date: Optional[str] = None
+
+
+class TermRequest(Camel):
+    """Create and update take the whole term: a term is three fields, and a
+    full replace keeps the overlap check about one complete range."""
+    name: str = Field(min_length=1)
+    start_date: str
+    end_date: str
+
+
+class TermResponse(Camel):
+    id: str
+    school_id: str
+    academic_year_id: str
+    name: str
+    start_date: str
+    end_date: str
+    manual_baseline_minutes: Optional[float] = None
+
+
+class TermBaselineRequest(Camel):
+    """Minutes a teacher takes to set a full paper by hand, for this term;
+    null clears it. Bounded to one sitting (10 hours): anything outside it is
+    a typo, and it would move the saving a principal quotes."""
+    minutes: Optional[float] = Field(..., gt=0, le=600)
 
 
 class SetPeriodConfigurationRequest(Camel):
@@ -450,8 +602,12 @@ class RescheduleHistoryEntryResponse(Camel):
 # transcript.
 
 class EnrollStudentRequest(Camel):
+    """sectionId is the class (M1.1). gradeId alone still works for a
+    grade with one section, as it did before sections existed; for a grade
+    with several it is a 422 naming them."""
     student_id: str = Field(min_length=1)
-    grade_id: str = Field(min_length=1)
+    grade_id: Optional[str] = Field(default=None, min_length=1)
+    section_id: Optional[str] = Field(default=None, min_length=1)
 
 
 class StudentEnrollmentResponse(Camel):
@@ -459,6 +615,7 @@ class StudentEnrollmentResponse(Camel):
     school_id: str
     student_id: str
     grade_id: str
+    section_id: Optional[str] = None
     created_at: str
 
 
@@ -572,6 +729,11 @@ class DelayedLessonResponse(Camel):
     chapter_name: str
     topic_name: str
     subtopic_name: str
+    # Which book this lesson belongs to, and whether the school still teaches
+    # that edition: an abandoned edition's lessons stay overdue for ever.
+    book_id: str = ""
+    book_title: str = ""
+    is_chosen_edition: bool = True
     teacher_id: Optional[str] = None
     teacher_name: Optional[str] = None
 
@@ -582,6 +744,9 @@ class UnscheduledLessonResponse(Camel):
     before it was dropped."""
     lesson_id: str
     last_planned_date: str
+    book_id: str = ""
+    book_title: str = ""
+    is_chosen_edition: bool = True
     grade_number: int
     subject_name: str
     chapter_name: str

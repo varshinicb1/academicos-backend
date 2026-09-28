@@ -8,85 +8,79 @@
       "unit_no": "I",
       "name": "Food and Living Organisms",
       "marks": 20,
-      "chapters": [
-        {
-          "id": "crop-production-management",
-          "name": "Crop Production and Management"
-        },
-        {
-          "id": "microorganisms-friend-foe",
-          "name": "Microorganisms: Friend and Foe"
-        },
-        {
-          "id": "conservation-plants-animals",
-          "name": "Conservation of Plants and Animals"
-        },
-        {
-          "id": "reproduction-in-animals",
-          "name": "Reproduction in Animals"
-        },
-        {
-          "id": "reaching-age-of-adolescence",
-          "name": "Reaching the Age of Adolescence"
-        }
-      ]
+      "chapters": []
     },
     {
       "unit_no": "II",
       "name": "Materials and Chemistry",
       "marks": 18,
-      "chapters": [
-        {
-          "id": "coal-and-petroleum",
-          "name": "Coal and Petroleum"
-        },
-        {
-          "id": "combustion-and-flame",
-          "name": "Combustion and Flame"
-        },
-        {
-          "id": "chemical-effects-electric-current",
-          "name": "Chemical Effects of Electric Current"
-        }
-      ]
+      "chapters": []
     },
     {
       "unit_no": "III",
       "name": "Physical Phenomena",
       "marks": 27,
-      "chapters": [
-        {
-          "id": "force-and-pressure",
-          "name": "Force and Pressure"
-        },
-        {
-          "id": "friction",
-          "name": "Friction"
-        },
-        {
-          "id": "sound-8",
-          "name": "Sound"
-        },
-        {
-          "id": "some-natural-phenomena",
-          "name": "Some Natural Phenomena"
-        },
-        {
-          "id": "light-8",
-          "name": "Light"
-        }
-      ]
+      "chapters": []
     },
     {
       "unit_no": "IV",
       "name": "Natural Resources and Environment",
       "marks": 15,
-      "chapters": [
-        {
-          "id": "pollution-air-water",
-          "name": "Pollution of Air and Water"
-        }
-      ]
+      "chapters": []
+    }
+  ],
+  "chapters": [
+    {
+      "id": "science-8/exploring-the-investigative-world-of-science",
+      "name": "Exploring the Investigative World of Science"
+    },
+    {
+      "id": "science-8/the-invisible-living-world-beyond-our-naked-eye",
+      "name": "The Invisible Living World: Beyond Our Naked Eye"
+    },
+    {
+      "id": "science-8/health-the-ultimate-treasure",
+      "name": "Health: The Ultimate Treasure"
+    },
+    {
+      "id": "science-8/electricity-magnetic-and-heating-effects",
+      "name": "Electricity: Magnetic and Heating Effects"
+    },
+    {
+      "id": "science-8/exploring-forces",
+      "name": "Exploring Forces"
+    },
+    {
+      "id": "science-8/pressure-winds-storms-and-cyclones",
+      "name": "Pressure, Winds, Storms, and Cyclones"
+    },
+    {
+      "id": "science-8/particulate-nature-of-matter",
+      "name": "Particulate Nature of Matter"
+    },
+    {
+      "id": "science-8/nature-of-matter-elements-compounds-and-mixtures",
+      "name": "Nature of Matter: Elements, Compounds, and Mixtures"
+    },
+    {
+      "id": "science-8/the-amazing-world-of-solutes-solvents-and-solutions",
+      "name": "The Amazing World of Solutes, Solvents, and Solutions"
+    },
+    {
+      "id": "science-8/light-mirrors-and-lenses",
+      "name": "Light: Mirrors and Lenses"
+    },
+    {
+      "id": "science-8/keeping-time-with-the-skies",
+      "name": "Keeping Time with the Skies"
+    },
+    {
+      "id": "science-8/how-nature-works-in-harmony",
+      "name": "How Nature Works in Harmony"
+    },
+    {
+      "id": "science-8/our-home-earth-a-unique-life-sustaining-planet",
+      "name": "Our Home: Earth, a Unique Life Sustaining Planet"
     }
   ]
 }

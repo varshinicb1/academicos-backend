@@ -12,6 +12,8 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
+from .competency import CBSE_COMPETENCY_TARGET
+
 BloomLevel = Literal["remember", "understand", "apply", "analyze", "evaluate", "create"]
 Difficulty = Literal["easy", "medium", "hard"]
 QuestionType = Literal[
@@ -89,7 +91,7 @@ class Blueprint(Camel):
     competency_weights: CompetencyWeights
     sections: list[SectionBlueprint] = Field(default_factory=list)
     tier: str = "standard"
-    competency_percentage: float = 0.50
+    competency_percentage: float = CBSE_COMPETENCY_TARGET
     exam_type: Optional[str] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -103,7 +105,7 @@ class BlueprintRequest(Camel):
     competency_weights: CompetencyWeights
     sections: list[SectionBlueprint] = Field(default_factory=list)
     tier: str = "standard"
-    competency_percentage: float = 0.50
+    competency_percentage: float = CBSE_COMPETENCY_TARGET
     exam_type: Optional[str] = None
     school_template: Optional[dict[str, Any]] = None
 
@@ -577,6 +579,15 @@ class GeneratedPaper(Camel):
 
 
 class QuickPaperRequest(Camel):
+    # A field name this request does not have is refused, not ignored:
+    # {"parallelSets": 5} returned 200 and a paper with no sets, so a teacher
+    # who asked for five papers got one and was told nothing (re-audit,
+    # 2026-09-23). The web client sends exactly the fields below
+    # (frontend/lib/domain/repositories/requests.dart), so nothing it sends is
+    # refused by this.
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True,
+                              extra="forbid")
+
     subject: str
     # Required: a missing grade used to become a class 10 paper.
     grade: int

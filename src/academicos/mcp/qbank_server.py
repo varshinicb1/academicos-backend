@@ -259,10 +259,15 @@ class Corpus:
                 continue
             if require_answer_key and not self.has_answer_key(rec):
                 continue
-            for topic in _topics_of(rec):
-                key = (str(rec.get("subject") or ""), int(rec.get("grade") or 0), topic)
+            for topic in self.topics_of(rec):
+                # One bucket per label whatever its case, because `search`
+                # matches a topic without case: "use standard notations ..."
+                # and "Use standard notations ..." were listed at 1 and 3 and
+                # each searched to 4.
+                key = (str(rec.get("subject") or ""), int(rec.get("grade") or 0),
+                       topic.lower())
                 b = buckets.setdefault(key, {
-                    "subject": key[0], "grade": key[1], "topic": topic,
+                    "subject": key[0], "grade": key[1], "topic": topic,  # first spelling seen
                     "count": 0, "marks": {}, "withAnswerKey": 0,
                 })
                 b["count"] += 1
@@ -281,6 +286,12 @@ class Corpus:
             })
         out.sort(key=lambda b: (b["subject"], b["grade"], b["topic"]))
         return out
+
+    def topics_of(self, rec: dict[str, Any]) -> list[str]:
+        """A record's topic labels, its chapter filed as the builder files it
+        (audit D39: raw `chapterIds` name the pre-2024 book for six of the ten
+        class 6-10 Mathematics/Science pairs)."""
+        return self._bank.topics_of(rec)
 
     def coverage(self) -> dict[str, Any]:
         """The honest state of the bank. Reported, never implied.
@@ -364,7 +375,7 @@ def build_server(corpus: Corpus):
             # An agent that misspells a filter is told so, rather than handed
             # a set it did not ask for.
             return {"error": str(exc)}
-        return {"count": len(rows), "questions": [_brief(r) for r in rows]}
+        return {"count": len(rows), "questions": [_brief(r, corpus) for r in rows]}
 
     @mcp.tool(
         name="get_question",
@@ -486,7 +497,7 @@ def build_server(corpus: Corpus):
                 if rid in used:
                     continue
                 used.add(rid)
-                chosen.append(_brief(rec))
+                chosen.append(_brief(rec, corpus))
                 picked += 1
                 if picked >= want_count:
                     break
@@ -525,7 +536,7 @@ def build_server(corpus: Corpus):
     return mcp
 
 
-def _brief(rec: dict[str, Any]) -> dict[str, Any]:
+def _brief(rec: dict[str, Any], corpus: Corpus | None = None) -> dict[str, Any]:
     """The list projection, including the scheme.
 
     Unlike the HTTP list, the scheme travels here. An agent assembling a paper
@@ -541,7 +552,7 @@ def _brief(rec: dict[str, Any]) -> dict[str, Any]:
         "type": rec.get("type"),
         "difficulty": rec.get("difficulty"),
         "stem": rec.get("stem"),
-        "topics": _topics_of(rec),
+        "topics": corpus.topics_of(rec) if corpus is not None else _topics_of(rec),
         # The shared rule, not a third inline copy of it: this one counted a
         # marking-points list of empty descriptions as an answer key, so a
         # record the search had already excluded would have been reported

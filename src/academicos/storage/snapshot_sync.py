@@ -17,9 +17,12 @@ here, not in the curriculum domain class, because it is storage mechanics:
 
 The owner keeps its connection and its lock. It constructs a SnapshotSync
 before opening the connection (the constructor is the restore) and routes
-every commit through SnapshotSync.commit(conn). That is the whole interface,
-so curriculum/store.py carries a constructor line and a one-line _commit
-hook and nothing else -- another stream edits that file heavily.
+every commit through SnapshotSync.commit(conn); a start-up migration's rows,
+which every instance derives the same way, go through commit_derived(conn),
+and `on_reload` re-applies the owner's migrations to a snapshot a conflict
+reloads. That is the whole interface, so curriculum/store.py carries a
+constructor line, its start-up commit and a one-line _commit hook and nothing
+else -- another stream edits that file heavily.
 
 The wording of errors and the empty-boot switch are the curriculum
 snapshot's: it is the only snapshot there is. `CurriculumNotDurable` (blobs.py)
@@ -35,7 +38,7 @@ import time
 import uuid
 import weakref
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import requests
 
@@ -60,14 +63,24 @@ _LIVE_LOCK = threading.Lock()
 
 class SnapshotSync:
     def __init__(self, purpose: str, key: str, db_path: Path,
-                 conn_lock: threading.RLock, *, debounce_seconds: float = 30.0):
+                 conn_lock: threading.RLock, *, debounce_seconds: float = 30.0,
+                 on_reload: Optional[Callable[[], None]] = None):
         """Restores `key` from the `purpose` blob store into `db_path` when the
         file does not exist yet. Call BEFORE opening the connection.
 
         `conn_lock` is the owner's connection lock (an RLock: the owner's
         helpers take it per call and this class nests inside it). Everything
-        here that touches the connection holds it."""
+        here that touches the connection holds it.
+
+        `on_reload` runs after a conflict has loaded another instance's
+        snapshot into the live connection, under the connection lock, before
+        its rows are counted as saved. The owner brings that snapshot up to
+        its own schema there (it may have been written by an older release
+        still serving during a rollout). It must only execute statements:
+        committing is done here, and uploading from inside it would deadlock
+        on the upload lock. Its rows are derived, like commit_derived's."""
         self.remote = durable_blob_store(purpose)
+        self._on_reload = on_reload
         self.purpose = purpose
         self.key = key
         self.db_path = db_path
@@ -176,6 +189,20 @@ class SnapshotSync:
                 self._committed_changes = conn.total_changes
                 self._commit_seq += 1
         self._maybe_upload()
+
+    def commit_derived(self, conn: sqlite3.Connection) -> None:
+        """Commit rows that every instance derives identically from the same
+        snapshot -- a start-up migration -- without marking the snapshot
+        pending. Uploading them at boot would bump the generation under the
+        instance being replaced, exactly what `commit` avoids for schema
+        no-ops: the old instance's next upload would be refused and its
+        unsaved edits moved to conflicts/. They reach the remote with the next
+        real edit, which uploads the whole file; until then a restart derives
+        them again from the same snapshot."""
+        with self._conn_lock:
+            conn.commit()
+            self._conn = conn
+            self._committed_changes = conn.total_changes
 
     def save_empty_boot(self, conn: sqlite3.Connection) -> None:
         """Publish the empty database this service started with, once.
@@ -345,6 +372,9 @@ class SnapshotSync:
             try:
                 data = self.remote.download(self.key)
                 self._load_snapshot_bytes(data)
+                if self._on_reload is not None:
+                    self._on_reload()
+                    self._conn.commit()
                 self._committed_changes = self._conn.total_changes
                 self._snapshot_seq = self._commit_seq
             except Exception:  # noqa: BLE001 - any failure here means "wedged"

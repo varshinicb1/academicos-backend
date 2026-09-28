@@ -8,81 +8,87 @@
       "unit_no": "I",
       "name": "Number System and Operations",
       "marks": 25,
-      "chapters": [
-        {
-          "id": "integers",
-          "name": "Integers"
-        },
-        {
-          "id": "fractions-and-decimals",
-          "name": "Fractions and Decimals"
-        },
-        {
-          "id": "rational-numbers-7",
-          "name": "Rational Numbers"
-        },
-        {
-          "id": "exponents-and-powers-7",
-          "name": "Exponents and Powers"
-        }
-      ]
+      "chapters": []
     },
     {
       "unit_no": "II",
       "name": "Algebra and Equations",
       "marks": 20,
-      "chapters": [
-        {
-          "id": "simple-equations",
-          "name": "Simple Equations"
-        },
-        {
-          "id": "algebraic-expressions-7",
-          "name": "Algebraic Expressions"
-        },
-        {
-          "id": "comparing-quantities-7",
-          "name": "Comparing Quantities"
-        }
-      ]
+      "chapters": []
     },
     {
       "unit_no": "III",
       "name": "Geometry and Measurement",
       "marks": 25,
-      "chapters": [
-        {
-          "id": "lines-and-angles-7",
-          "name": "Lines and Angles"
-        },
-        {
-          "id": "the-triangle-and-its-properties",
-          "name": "The Triangle and its Properties"
-        },
-        {
-          "id": "perimeter-and-area",
-          "name": "Perimeter and Area"
-        },
-        {
-          "id": "symmetry",
-          "name": "Symmetry"
-        },
-        {
-          "id": "visualising-solid-shapes",
-          "name": "Visualising Solid Shapes"
-        }
-      ]
+      "chapters": []
     },
     {
       "unit_no": "IV",
       "name": "Data Handling",
       "marks": 10,
-      "chapters": [
-        {
-          "id": "data-handling-7",
-          "name": "Data Handling"
-        }
-      ]
+      "chapters": []
+    }
+  ],
+  "chapters": [
+    {
+      "id": "mathematics-7/large-numbers-around-us",
+      "name": "Large Numbers Around Us"
+    },
+    {
+      "id": "mathematics-7/arithmetic-expressions",
+      "name": "Arithmetic Expressions"
+    },
+    {
+      "id": "mathematics-7/a-peek-beyond-the-point",
+      "name": "A Peek Beyond the Point"
+    },
+    {
+      "id": "mathematics-7/expressions-using-letter-numbers",
+      "name": "Expressions using Letter-Numbers"
+    },
+    {
+      "id": "mathematics-7/parallel-and-intersecting-lines",
+      "name": "Parallel and Intersecting Lines"
+    },
+    {
+      "id": "mathematics-7/number-play",
+      "name": "Number Play"
+    },
+    {
+      "id": "mathematics-7/a-tale-of-three-intersecting-lines",
+      "name": "A Tale of Three Intersecting Lines"
+    },
+    {
+      "id": "mathematics-7/working-with-fractions",
+      "name": "Working with Fractions"
+    },
+    {
+      "id": "mathematics-7/geometric-twins",
+      "name": "Geometric Twins"
+    },
+    {
+      "id": "mathematics-7/operations-with-integers",
+      "name": "Operations with Integers"
+    },
+    {
+      "id": "mathematics-7/finding-common-ground",
+      "name": "Finding Common Ground"
+    },
+    {
+      "id": "mathematics-7/another-peek-beyond-the-point",
+      "name": "Another Peek Beyond the Point"
+    },
+    {
+      "id": "mathematics-7/connecting-the-dots",
+      "name": "Connecting the Dots…"
+    },
+    {
+      "id": "mathematics-7/constructions-and-tilings",
+      "name": "Constructions and Tilings"
+    },
+    {
+      "id": "mathematics-7/finding-the-unknown",
+      "name": "Finding the Unknown"
     }
   ]
 }

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from .competency import CBSE_COMPETENCY_TARGET, below_target, share_summary
 from .schemas import (
     Blueprint,
     GeneratedPaper,
@@ -15,6 +16,39 @@ from .schemas import (
     QuestionSchema,
 )
 from .templates import default_sections
+
+
+def _key_note(scheme, marks: int) -> str:
+    """What the printed key must say about the value points above it.
+
+    Two things a marker cannot see from the points alone:
+
+      * `anyOf` -- the scheme lists more value points than it awards ("Any
+        other, Any two"), so a student who gives two of the five listed gets
+        full marks.
+      * one point worth every mark -- the source printed no split, so the key
+        really is all or nothing. Saying so is the point: a marking sheet that
+        shows "- <the whole answer> [5m]" and nothing else invites a marker to
+        assume steps exist and invent them.
+
+    Not said of an option key. An MCQ worth 2 marks has one point because the
+    student picked the right letter or did not, and "unless you set your own
+    value points" is advice a marker cannot take on it -- there is nothing to
+    divide. One served record is an objective scheme worth more than one mark
+    (cbe:q:Maths9SM1).
+    """
+    meta = getattr(scheme, "metadata", None) or {}
+    points = getattr(scheme, "marking_points", None) or []
+    any_of = meta.get("anyOf")
+    if any_of and points:
+        return (f"\n(Any {int(any_of)} of the above value points, "
+                f"{points[0].marks} mark(s) each.)")
+    if meta.get("objective"):
+        return ""
+    if len(points) == 1 and (marks or 0) > 1:
+        return ("\n(The source prints no split for this answer: it is all or nothing "
+                "unless you set your own value points.)")
+    return ""
 
 
 def generate_paper(*, paper_id: str, assessment_id: str, assessment_title: str,
@@ -166,17 +200,7 @@ def generate_paper_sets(*, paper_id: str, assessment_id: str, assessment_title: 
 
                 # Swap primary and OR questions on alternate sets for sections with internal choice
                 if idx % 2 == 1:
-                    for q in curr_list:
-                        if q.metadata.get("internal_choice_id") and q.metadata.get("internal_choice_stem"):
-                            old_stem = q.stem
-                            old_id = q.id
-                            old_scheme = q.answer_scheme.model_answer
-                            q.stem = q.metadata["internal_choice_stem"]
-                            q.id = q.metadata["internal_choice_id"]
-                            q.answer_scheme.model_answer = q.metadata.get("internal_choice_scheme", "")
-                            q.metadata["internal_choice_stem"] = old_stem
-                            q.metadata["internal_choice_id"] = old_id
-                            q.metadata["internal_choice_scheme"] = old_scheme
+                    curr_list = [_alternative_first(q) for q in curr_list]
 
             variant_questions.extend(curr_list)
 
@@ -199,6 +223,49 @@ def generate_paper_sets(*, paper_id: str, assessment_id: str, assessment_title: 
     if alternatives is not None:
         primary_paper.set_overlap = dict(zip(labels, overlaps))
     return primary_paper
+
+
+def _alternative_first(q: QuestionSchema) -> QuestionSchema:
+    """`q`'s OR alternative as the printed question, with `q` as its OR --
+    what sets B and D print for a question with internal choice.
+
+    The alternative is rebuilt from the full record the pairing stored
+    (metadata "internal_choice_question": selection.optimize and
+    selection._attach_choice on the quick/custom path,
+    paper_template_routes._attach_choices on the template path), so the set
+    prints the alternative's own id, type, bank id, marks, marking points and
+    competency flag. Moving only its stem, id and model answer onto `q`'s
+    record printed an Exemplar short answer as the CBE long answer it was
+    paired with, flagged competency-based, and keyed it with the primary's
+    value points (`answer_key_entry` reads the record's marking points).
+
+    Without the stored record (a primary paired before it was kept) the
+    stem, id and model answer are all there is to swap."""
+    from .selection import _CHOICE_KEYS
+
+    meta = q.metadata
+    if not (meta.get("internal_choice_id") and meta.get("internal_choice_stem")):
+        return q
+    record = meta.get("internal_choice_question")
+    if record:
+        alt = QuestionSchema.model_validate(record)
+        primary = q.model_copy(deep=True)
+        for key in _CHOICE_KEYS:
+            primary.metadata.pop(key, None)
+            alt.metadata.pop(key, None)
+        alt.metadata["internal_choice_id"] = primary.id
+        alt.metadata["internal_choice_stem"] = primary.stem
+        alt.metadata["internal_choice_scheme"] = primary.answer_scheme.model_answer
+        alt.metadata["internal_choice_question"] = primary.model_dump(by_alias=False)
+        return alt
+    old_stem, old_id, old_scheme = q.stem, q.id, q.answer_scheme.model_answer
+    q.stem = meta["internal_choice_stem"]
+    q.id = meta["internal_choice_id"]
+    q.answer_scheme.model_answer = meta.get("internal_choice_scheme", "")
+    meta["internal_choice_stem"] = old_stem
+    meta["internal_choice_id"] = old_id
+    meta["internal_choice_scheme"] = old_scheme
+    return q
 
 
 def generated_question(q: QuestionSchema, display_number: int, *,
@@ -224,18 +291,85 @@ def generated_question(q: QuestionSchema, display_number: int, *,
 
 
 def answer_key_entry(q: QuestionSchema) -> str:
-    """The answer-key text for a printed question: model answer, then its
-    marking points."""
+    """The answer-key text for a printed question: model answer, its marking
+    points, and what the source said about splitting them.
+
+    The note belongs to THIS helper, not to its callers: a question put on a
+    paper by a swap or a pick prints through here too, so a 5-mark answer
+    that says "all or nothing" when generated cannot lose that sentence
+    because a teacher swapped it in."""
     model_ans = q.answer_scheme.model_answer or "(model answer pending)"
     if q.answer_scheme.marking_points:
         pts = [f"• {mp.description} [{mp.marks}m]" for mp in q.answer_scheme.marking_points]
         model_ans = f"{model_ans}\n" + "\n".join(pts)
-    return model_ans.strip()
+    return (model_ans + _key_note(q.answer_scheme, q.marks)).strip()
 
 
 def or_answer_key_entry(model_answer: str | None) -> str:
     """The answer-key text for an OR alternative (its `<n>_OR` entry)."""
     return model_answer or "(model answer pending)"
+
+
+def competency_counts(paper: GeneratedPaper) -> tuple[int, int]:
+    """(competency-based, printed) over the questions `paper` prints: its
+    compulsory questions, each flagged by the one rule when it was put on the
+    paper (`generated_question`). OR alternatives are not counted."""
+    flags = [q.is_competency for s in paper.sections for q in s.questions]
+    return sum(flags), len(flags)
+
+
+def competency_share(paper: GeneratedPaper) -> float:
+    """The competency-based share of the questions `paper` prints
+    (`competency_counts`)."""
+    c, n = competency_counts(paper)
+    return round(c / n, 3) if n else 0.0
+
+
+def stamp_competency(paper: GeneratedPaper, target: float | None = None) -> None:
+    """`competency_share` and whether it meets `target` (CBSE's 50% when
+    None), on `paper` alone -- not its sets."""
+    target = CBSE_COMPETENCY_TARGET if target is None else target
+    paper.competency_share = competency_share(paper)
+    paper.competency_target_met = paper.competency_share >= target
+
+
+def report_competency(paper: GeneratedPaper, target: float | None, *,
+                      stated: bool = False) -> list[str]:
+    """The CBQ share of the printed questions and whether it meets `target`
+    (CBSE: at least 50%), stamped on the paper and each of its sets. Missed in
+    17/25 subject/grade pairs at the 2026-09-21 audit, with nothing on the
+    paper to say so.
+
+    Set B/C print other questions than set A, so each set gets its own share:
+    reporting set A's for all three said 0.45 where B and C held 0.25 and 0.15.
+    Returns a warning per set that misses the target.
+
+    Every generation path calls this one function -- quick-generate,
+    /papers/generate, generate-from-ids and generate-from-template -- so a
+    template paper carries the share the builder's availability check showed
+    (`paper_templates.competency_check`, same denominator).
+
+    Returns the paper's own line when it misses the target, then one per
+    other set that does. Set A is the paper itself (it carries the paper's
+    id), so it gets no line of its own: it had one, rounded another way than
+    the paper's ("11 of 37 questions (30%)" beside "Set A has 29.7%", audit
+    D79). `stated` is for a caller that has already written the paper's line
+    -- the builder's check, which also says why, or selection's -- so it is
+    not written twice. Every line is `competency.share_summary`'s.
+    """
+    target = CBSE_COMPETENCY_TARGET if target is None else target
+    warnings: list[str] = []
+    for p in [paper, *paper.sets]:
+        stamp_competency(p, target)
+        if p.competency_target_met:
+            continue
+        c, n = competency_counts(p)
+        if p is paper:
+            if not stated:
+                warnings.append(f"{share_summary(c, n)}. {below_target(target)}")
+        elif p.id != paper.id:
+            warnings.append(f"{share_summary(c, n, p.set_label)}. {below_target(target)}")
+    return warnings
 
 
 def render_text(paper: GeneratedPaper) -> str:
