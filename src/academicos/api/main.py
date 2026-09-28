@@ -41,6 +41,7 @@ from ..config import (Config, LLMNotEnabled, build_identity, enforce_production_
 from ..curriculum import routes as curriculum_routes
 from ..curriculum import school_model_routes
 from ..curriculum import cover_routes
+from ..operations import routes as operations_routes
 from ..graph.store import GraphStore
 from ..llm.budget import LLMBudgetExceeded, llm_budget
 from ..llm.telemetry import TELEMETRY
@@ -153,6 +154,7 @@ app.include_router(consent_routes.router)
 app.include_router(curriculum_routes.router)
 app.include_router(school_model_routes.router)
 app.include_router(cover_routes.router)
+app.include_router(operations_routes.router)
 app.include_router(paper_template_routes.router)
 # The question-bank API carries its own `/v1/...` paths and its own key auth,
 # so it is mounted at the root rather than under `/api/v1` -- its paths are
@@ -339,6 +341,7 @@ def init_runtime(config: Optional[Config] = None) -> None:
     auth_routes.init(cfg)
     consent_routes.init(cfg.data_root)
     curriculum_routes.init(cfg)
+    operations_routes.init(cfg)
     paper_template_routes.init(cfg)
     mobile_scan.configure_workdir(cfg.data_root / "scan-sessions")
     # The public question-bank API. Its own key store and its own scope

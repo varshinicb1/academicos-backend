@@ -89,7 +89,10 @@ logger = logging.getLogger(__name__)
 # The names the call sites use; the snapshot store is the only one that needs
 # the single-writer precondition (scan keys are unique per session, and a
 # re-captured page must overwrite its own earlier upload).
-_GUARDED = frozenset({"curriculum-snapshots"})
+# "operations-snapshots": the school-operations store (notifications, homework;
+# operations/store.py) is a whole-file snapshot like the curriculum and needs
+# the same single-writer guard during a rollout.
+_GUARDED = frozenset({"curriculum-snapshots", "operations-snapshots"})
 
 
 class BlobUnavailable(requests.exceptions.RequestException):

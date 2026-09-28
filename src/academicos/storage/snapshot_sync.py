@@ -64,7 +64,8 @@ _LIVE_LOCK = threading.Lock()
 class SnapshotSync:
     def __init__(self, purpose: str, key: str, db_path: Path,
                  conn_lock: threading.RLock, *, debounce_seconds: float = 30.0,
-                 on_reload: Optional[Callable[[], None]] = None):
+                 on_reload: Optional[Callable[[], None]] = None,
+                 allow_empty_boot: bool = False):
         """Restores `key` from the `purpose` blob store into `db_path` when the
         file does not exist yet. Call BEFORE opening the connection.
 
@@ -81,6 +82,10 @@ class SnapshotSync:
         on the upload lock. Its rows are derived, like commit_derived's."""
         self.remote = durable_blob_store(purpose)
         self._on_reload = on_reload
+        # A store that is new in this release (operations.sqlite) has no
+        # snapshot the first time any instance starts: that 404 is its first
+        # boot, not a migration left undone. The curriculum keeps the guard.
+        self._allow_empty_boot = allow_empty_boot
         self.purpose = purpose
         self.key = key
         self.db_path = db_path
@@ -132,7 +137,7 @@ class SnapshotSync:
                 # Supabase sees until someone copies the old snapshot across,
                 # and starting empty there serves a blank curriculum as if it
                 # were the school's. So an empty GCS boot must be asked for.
-                if (getattr(self.remote, "backend", None) == "gcs"
+                if (getattr(self.remote, "backend", None) == "gcs" and not self._allow_empty_boot
                         and os.environ.get("ACOS_CURRICULUM_ALLOW_EMPTY_BOOT", "").strip() != "1"):
                     logger.error("No curriculum snapshot in GCS; refusing to start "
                                  "empty without ACOS_CURRICULUM_ALLOW_EMPTY_BOOT=1")

@@ -22,6 +22,11 @@ from . import routes as cr
 from .cover import CoverError
 from .schemas import Camel
 
+
+def _notify(**kw: Any) -> None:
+    from ..operations.routes import notify_safely
+    notify_safely(**kw)
+
 router = APIRouter(prefix="/api/v1/curriculum")
 
 
@@ -304,6 +309,11 @@ def decide_leave(leave_id: str, req: LeaveDecisionRequest,
         raise HTTPException(409, str(e))
     _audit("leave_decided", principal, {"leaveId": leave_id, "before": "pending", "after": leave.status,
                                         "substitutions": len(subs)})
+    _notify(school_id=principal.school_id, user_ids=[leave.teacher_id], kind="leave_decided",
+            params={"decision": leave.status, "start": leave.start_date, "end": leave.end_date},
+            link="/leave", dedupe_key=f"leave:{leave.id}:{leave.status}")
+    for s in subs:
+        _notify_proposed(s)
     return LeaveDecisionResponse(leave=_leave(leave), substitutions=[_sub(s) for s in subs])
 
 
@@ -321,6 +331,19 @@ def cancel_leave(leave_id: str, current: User = Depends(require_staff)) -> Leave
 
 
 # ---------------- substitution (SCH-6) ----------------
+
+def _notify_proposed(s) -> None:
+    """Tell a proposed substitute: it is their next action (accept or decline)."""
+    if s.status != "proposed" or not s.substitute_id:
+        return
+    store = cr._require()
+    section = store.get_section(s.section_id)
+    subject = store.get_subject(s.subject_id)
+    _notify(school_id=s.school_id, user_ids=[s.substitute_id], kind="substitution_proposed",
+            params={"section": store._section_label(section) if section else "", "period": s.period,
+                    "date": s.date, "subject": subject.name if subject else ""},
+            link=f"/my-day?date={s.date}", dedupe_key=f"sub:{s.id}:{s.substitute_id}")
+
 
 @router.get("/substitutions", response_model=list[SubstitutionResponse])
 def list_substitutions(from_date: str = Query(alias="from"), to_date: str = Query(alias="to"),
@@ -362,6 +385,7 @@ def assign_substitute(sub_id: str, req: AssignRequest,
            {"substitutionId": sub_id, "before": {"substituteId": before.substitute_id, "mode": before.mode},
             "after": {"substituteId": after.substitute_id, "mode": after.mode},
             "lostPeriodId": lost.id if lost else None})
+    _notify_proposed(after)
     return AssignResponse(substitution=_sub(after), lost_period=_lost(lost) if lost else None)
 
 
@@ -376,6 +400,8 @@ def respond_to_substitution(sub_id: str, req: RespondRequest,
     except CoverError as e:
         raise HTTPException(409, str(e))
     _audit("substitution_answered", current, {"substitutionId": sub_id, "accepted": req.accept})
+    if not req.accept:
+        _notify_proposed(after)          # the next candidate
     return _sub(after)
 
 

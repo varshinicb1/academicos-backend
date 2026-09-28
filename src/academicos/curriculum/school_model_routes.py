@@ -546,6 +546,10 @@ def solve_timetable(academic_year_id: str, req: SolveRequest,
         _audit("timetable_solved", principal,
                {"academicYearId": academic_year_id, "sections": len(solving), "kept": result.kept,
                 "movedOrAdded": result.moved_or_added, "removed": result.removed})
+        from ..operations.routes import notify_safely
+        teachers = sorted({e.teacher_id for e in result.entries if e.teacher_id and e.section_id in solving})
+        notify_safely(school_id=principal.school_id, user_ids=teachers, kind="timetable_published", params={},
+                      link="/my-timetable")
     return SolveResponse(
         status=result.status, applied=applied, problems=result.problems, kept=result.kept,
         moved_or_added=result.moved_or_added, removed=result.removed, seconds=round(result.seconds, 2),
