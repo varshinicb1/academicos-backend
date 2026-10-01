@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from .postgres_kv import durable_table
 from .supabase_kv import SupabaseUnavailable
+from ..storage.secure_delete import secure_delete, truncate_wal
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +235,30 @@ class ConsentStore:
             ).fetchone()
 
         return ParentalConsentRecord.from_row(dict(r)) if r else None
+
+    def erase_student(self, school_id: str, student_id: str, *, dry_run: bool = False) -> int:
+        """Delete the student's consent record, remote and local copy both
+        (an outage can have left one in the local fallback). The record of
+        consent being given or withdrawn stays in the audit log, which is
+        what assessment/erasure.py keeps under its legal-retention reason.
+        Returns 1 when there was a record (would be, with dry_run), else 0.
+        A remote failure raises: an erasure that could not finish says so."""
+        found = False
+        if self._remote.enabled:
+            found = bool(self._remote.select(school_id=school_id, student_id=student_id))
+            if found and not dry_run:
+                self._remote.delete(school_id=school_id, student_id=student_id)
+        with self._conn_lock:
+            found = found or self.conn.execute(
+                "SELECT 1 FROM parental_consents WHERE school_id=? AND student_id=?",
+                (school_id, student_id)).fetchone() is not None
+            if not dry_run:
+                with secure_delete(self.conn):
+                    self.conn.execute("DELETE FROM parental_consents WHERE school_id=? AND student_id=?",
+                                      (school_id, student_id))
+                self.conn.commit()
+                truncate_wal(self.conn)
+        return int(found)
 
     def has_consent(self, school_id: str, student_id: str) -> bool:
         """True if verifiable parental consent is on file and active."""

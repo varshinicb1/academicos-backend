@@ -65,9 +65,11 @@ users table that doesn't survive a restart means every teacher account
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -82,6 +84,7 @@ import requests
 from .supabase_kv import SupabaseUnavailable
 from .postgres_kv import durable_table
 from ..config import demo_accounts_enabled
+from ..storage.secure_delete import secure_delete, truncate_wal
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +97,9 @@ _SESSION_LIFETIME = timedelta(days=30)
 INVITE_ROLES = ("teacher", "student", "parent")
 _INVITE_DEFAULT_DAYS = 14
 _INVITE_MAX_DAYS = 90
+# A school's ID: 3-60 lowercase letters, digits and hyphens (stmarys-hyd).
+_SCHOOL_ID = re.compile(r"[a-z0-9][a-z0-9-]{1,58}[a-z0-9]")
+_HAS_PRINCIPAL = "this school already has a principal; ask them for an invite"
 
 _DEMO_SEED_ENV = "ACOS_SEED_DEMO_USERS"
 
@@ -367,15 +373,22 @@ class UserStore:
         # _claim_invite); creating the account afterwards means a lost race
         # never leaves an account behind. If the create fails, the claim is
         # released so a storage error does not burn the principal's invite.
-        user_id = _new_user_id()
-        self._claim_invite(invite.code, user_id, backend)
-        try:
-            return self._insert_user(user_id=user_id, school_id=invite.school_id,
-                                     name=name, email=email, password=password,
-                                     role=invite.role)
-        except BaseException:
-            self._release_invite(invite.code, user_id, backend)
-            raise
+        # A principal invite makes the school's FIRST principal only: checked
+        # under the same lock as the key path, so two such invites (or an
+        # invite and the key) cannot both make a principal.
+        guard = self._bootstrap_lock if invite.role == "principal" else contextlib.nullcontext()
+        with guard:
+            if invite.role == "principal" and self._school_has_principal(invite.school_id):
+                raise RegistrationRefused(_HAS_PRINCIPAL)
+            user_id = _new_user_id()
+            self._claim_invite(invite.code, user_id, backend)
+            try:
+                return self._insert_user(user_id=user_id, school_id=invite.school_id,
+                                         name=name, email=email, password=password,
+                                         role=invite.role)
+            except BaseException:
+                self._release_invite(invite.code, user_id, backend)
+                raise
 
     def _register_first_principal(self, *, principal_key: str, school_id: Optional[str],
                                   role: Optional[str], name: str, email: str,
@@ -485,6 +498,9 @@ class UserStore:
             email=bound_email, created_by=created_by, created_at=now.isoformat(),
             expires_at=(now + timedelta(days=days)).isoformat(),
         )
+        return self._save_invite(invite)
+
+    def _save_invite(self, invite: Invite) -> Invite:
         row = asdict(invite)
         if self._remote_invites.enabled:
             # No local fallback when a remote store is configured, unlike
@@ -504,6 +520,29 @@ class UserStore:
                     tuple(row.values()))
                 self.conn.commit()
         return invite
+
+    def create_principal_invite(self, *, school_id: str, created_by: str = "operator",
+                                expires_in_days: Optional[int] = None) -> Invite:
+        """The operator's single-use invite for a new school's FIRST principal
+        (2026-10-01). The link carries the school and the role, so the
+        principal types no school ID and the operator's key never leaves the
+        operator. Refused once the school has a principal, and redeeming it
+        checks again under the same lock (_register_with_invite)."""
+        school_id = (school_id or "").strip().lower()
+        if not _SCHOOL_ID.fullmatch(school_id):
+            raise ValueError("a school ID is 3-60 lowercase letters, digits and hyphens, e.g. stmarys-hyd")
+        days = _INVITE_DEFAULT_DAYS if expires_in_days is None else expires_in_days
+        if isinstance(days, bool) or not isinstance(days, int) \
+                or not 1 <= days <= _INVITE_MAX_DAYS:
+            raise ValueError(f"expiresInDays must be a whole number from 1 to {_INVITE_MAX_DAYS}")
+        with self._bootstrap_lock:
+            if self._school_has_principal(school_id):
+                raise RegistrationRefused(_HAS_PRINCIPAL)
+            now = datetime.now(timezone.utc)
+            return self._save_invite(Invite(
+                code=secrets.token_urlsafe(16), school_id=school_id, role="principal", email="",
+                created_by=created_by, created_at=now.isoformat(),
+                expires_at=(now + timedelta(days=days)).isoformat()))
 
     def invites_for_school(self, school_id: str) -> list[Invite]:
         """Every invite the school has issued, used or not, newest first.
@@ -745,6 +784,61 @@ class UserStore:
             self._set_role(user_id, user.role[len(CLOSED_PREFIX):])
         return self.get(user_id)
 
+    # ---------------- erasure (assessment/erasure.py) ----------------
+
+    def invites_of(self, user: User) -> list[Invite]:
+        """The invites that name this person: sent to their email, or used to
+        create their account. Local and remote rows both, like
+        invites_for_school."""
+        # An unbound invite's email is "": a blank account email must not
+        # match every one of them, so the email is matched only when there is one.
+        email = user.email.strip().lower()
+        merged: dict[str, Invite] = {}
+        with self._conn_lock:
+            rows = self.conn.execute(
+                "SELECT * FROM invites WHERE school_id=? AND ((lower(email)=? AND ?<>'') OR used_by=?)",
+                (user.school_id, email, email, user.id)).fetchall()
+        for r in rows:
+            merged[r["code"]] = _row_to_invite(dict(r))
+        if self._remote_invites.enabled:
+            rows = self._remote_invites.select(school_id=user.school_id, used_by=user.id)
+            if email:
+                rows += self._remote_invites.select(school_id=user.school_id, email=email)
+            for r in rows:
+                merged[r["code"]] = _row_to_invite(r)
+        return list(merged.values())
+
+    def erase_invites(self, user: User) -> int:
+        """Delete the invites that name this person. Returns how many."""
+        invites = self.invites_of(user)
+        with self._conn_lock:
+            with secure_delete(self.conn):
+                for inv in invites:
+                    self.conn.execute("DELETE FROM invites WHERE code=?", (inv.code,))
+            self.conn.commit()
+            truncate_wal(self.conn)
+        if self._remote_invites.enabled:
+            for inv in invites:
+                self._remote_invites.delete(code=inv.code)
+        return len(invites)
+
+    def erase_account(self, user_id: str) -> None:
+        """Delete the account row itself, its name and email with it, and any
+        session left. The last step of an erasure: until it runs, the closed
+        account is still there for the principal to finish the erasure on.
+        Raises on a remote failure, so a half-done erasure is retried, not
+        reported as done."""
+        if self._remote_sessions.enabled:
+            self._remote_sessions.delete(user_id=user_id)
+        if self._remote.enabled:
+            self._remote.delete(id=user_id)
+        with self._conn_lock:
+            with secure_delete(self.conn):
+                self.conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+                self.conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+            self.conn.commit()
+            truncate_wal(self.conn)
+
     # ---------------- lookups ----------------
 
     def get(self, user_id: str) -> Optional[User]:
@@ -802,9 +896,15 @@ class UserStore:
         caller supplied the exact match. Constant-time compare so a wrong
         guess can't be timed to learn the real key; empty/`None` on either
         side always fails closed (never grants principal by default)."""
-        if not self._principal_key or not supplied:
+        # Whitespace around a key is never part of it. The live secret was
+        # stored with a trailing newline (`echo key | gcloud secrets create`),
+        # and the web trims what is typed, so every principal registration on
+        # live was refused with 403 until 2026-10-01.
+        configured = (self._principal_key or "").strip()
+        supplied = (supplied or "").strip()
+        if not configured or not supplied:
             return False
-        return secrets.compare_digest(supplied, self._principal_key)
+        return secrets.compare_digest(supplied, configured)
 
 
 def _is_unique_violation(exc: BaseException) -> bool:

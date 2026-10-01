@@ -1362,8 +1362,83 @@ def normalise(rec: dict) -> tuple[dict, str | None]:
             # Music (Vocal) XII 2023-24 Q8): the key ran on into the next section.
             return r, "answer-bleed"
 
+    if _VALUE_MISSING.search(r["stem"]):
+        r["metadata"] = meta
+        return r, "value-missing"
+    # Once only: a served record comes back through here on a rebuild.
+    if "extractionRepairs" not in meta:
+        r["stem"], fixed = repair_extraction(r["id"], r["stem"], r["type"])
+        if fixed:
+            meta["extractionRepairs"] = fixed
     r["metadata"] = meta
     return r, None
+
+
+# --------------------------------------------------------------------------- #
+# extraction repairs on a stem that is otherwise served
+# --------------------------------------------------------------------------- #
+
+# The CBE extraction put the source's marks column, or its question number, in
+# front of the text: "1 The sum of the zeros of the quadratic polynomial ..."
+# (33 served stems at 29e63db, every one a "1"), and in a case study in front of
+# each part: "... along the sides 1 (a) What are the possible ...". CBE records
+# only: an Exemplar stem's digit before a part label is content, "an inert gas
+# with atomic number 2 (e) An element whose ...".
+_LEAKED_LEAD_MARK = re.compile(r"^\s*1\s+(?=[A-Z‘'“])")
+# Never a digit an operator owns: "2x = y + 2 1 (a) Draw" loses its "1", and
+# the "2" left before "(a)" is the equation's (cbe:q:Maths10RK5).
+_LEAKED_PART_MARK = re.compile(r"(?<![-+−=×÷/*<>≤≥]\s)(?<=\s)[1-5]\s+(?=\([a-z]{1,3}\)\s+[A-Z‘'“])")
+# "(D) 76.8 cm2 (1 mark)", or a marks note set off by the table's spacing.
+_LEAKED_MARK_NOTE = re.compile(r"\s*\(\s*[1-5]\s*marks?\s*\)\s*$|\s{2,}\(\s*[1-5]\s*marks?\s*\)", re.I)
+# A unit's power read as a plain digit: "9856 m2", "88 cm3", "Rs 5 per m2".
+_UNIT_POWER = re.compile(r"(?:(?<=\d)|(?<=\d )|(?<=per ))(km|cm|mm|m)([23])\b")
+_UNIT_SUP = {"2": "²", "3": "³"}
+# A formula whose value the extraction lost: "(Using π= )" in cbe:q:Maths10AS8,
+# whose key also disagrees with its stem (Rs 8800 is 352 m at Rs 25, the stem
+# says Rs 50). No repair can know the value.
+_VALUE_MISSING = re.compile(r"=\s*\)")
+# Read one by one against the question's own arithmetic, where no rule is safe:
+# a power or a fraction bar or a degree sign the extraction flattened.
+_KNOWN_REPAIRS: dict[str, tuple[tuple[str, str], ...]] = {
+    "cbe:q:Maths10AR1": (("x2+x-12", "x²+x-12"),),
+    "cbe:q:Maths10RK3": (("x2-mx-5/4=0", "x²-mx-5/4=0"),),
+    "cbe:q:Maths10SS3": (("sec2θ", "sec²θ"),),
+    # Discriminant 9 - 44 < 0: the key's "no real roots". The minus is U+2212.
+    "cbe:q:Maths10PS3": (("x2 −3x + 11 = 0", "x² −3x + 11 = 0"),),
+    # (A + B) ≤ 90°: cos (A + B) = ½ gives A + B = 60°.
+    "cbe:q:Maths10AS5": (("≤ 900", "≤ 90°"),),
+    # 11323/250 = 45.292: three decimal places, the key's option C.
+    "cbe:q:Maths10AD2": (("11323 250", "11323/250"),),
+    # M = (-2, 9) = (1+s, t²) with t > 0 gives s = -3, t = 3.
+    "cbe:q:Maths9AN5": (("t2)", "t²)"), ("(s2,", "(s²,")),
+    "exemplar:q:8:mathematics:8:-:115": (("1673 1000000000000000000000000000",
+                                          "1673/1000000000000000000000000000"),),
+}
+
+
+def repair_extraction(record_id: str, stem: str, qtype: str) -> tuple[str, list[str]]:
+    """The stem with the extraction's known damage undone, and what was done.
+
+    Only damage with one reading is repaired; a stem that cannot be read one
+    way is refused instead (`value-missing`)."""
+    fixed: list[str] = []
+    for old, new in _KNOWN_REPAIRS.get(record_id, ()):
+        if old in stem:
+            stem = stem.replace(old, new)
+            fixed.append("known-repair")
+    if record_id.startswith("cbe:q:"):
+        new = _LEAKED_LEAD_MARK.sub("", stem)
+        if qtype != "mcq":
+            new = _LEAKED_PART_MARK.sub("", new)
+        new = _LEAKED_MARK_NOTE.sub("", new)
+        if new != stem:
+            stem = new
+            fixed.append("leaked-marks-stripped")
+    new = _UNIT_POWER.sub(lambda m: m.group(1) + _UNIT_SUP[m.group(2)], stem)
+    if new != stem:
+        stem = new
+        fixed.append("unit-power-restored")
+    return stem, fixed
 
 
 def _mcq_reason(r: dict, in_stem: dict[str, str] | None,

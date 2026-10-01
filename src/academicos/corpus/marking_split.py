@@ -261,6 +261,11 @@ _INTERNAL_CHOICE = re.compile(r"(?:^|\s)\(?\s*OR\s*\)?(?:\s|$)")
 # "1. Filtration and evaporation (2) or 2. Make aqueous solution ... (1)": two
 # items, and 4 marks each is not what the board awarded.
 _GROUP_PART = re.compile(r"\d\s*\(\s*[a-h]\s*\)")
+# Any sub-part label, "(b)". The served bank's extraction repair (bank_merge,
+# _LEAKED_PART_MARK, 2026-10-01) takes the "1 " off every label but the first,
+# so a repaired group stem reads "1 (a) ... (b) ... (c)": one numbered label,
+# then plain ones.
+_SUB_PART = re.compile(r"\(\s*[a-h]\s*\)")
 
 # "(1)", "(1 mark)", "(2 marks)": the per-point value CBE prints beside a value
 # point. Read only to be reconciled -- a set of printed marks that does not fit
@@ -352,7 +357,8 @@ def split_answer(answer: str, marks: int, stem: str = "") -> Split:
         return Split(points=(), marks=marks)
     if marks <= 1 or _GROUP_PART.search(text):
         return _one_point(text, marks)
-    if len(_GROUP_PART.findall(str(stem or ""))) > 1:
+    group_stem = str(stem or "")
+    if _GROUP_PART.search(group_stem) and len(_SUB_PART.findall(group_stem)) > 1:
         return _one_point(text, marks)
 
     if _half_mark_split(text, marks):

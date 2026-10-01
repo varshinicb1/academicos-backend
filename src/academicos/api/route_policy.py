@@ -105,6 +105,7 @@ ROUTE_POLICY: dict[tuple[str, str], Policy] = {
     ("GET", "/v1/coverage"): _p(API_KEY, "aggregate answer-key coverage; no question text crosses it"),
 
     # ---- assessment/auth_routes.py ----
+    ("POST", "/api/v1/auth/operator/school-invites"): _p(PUBLIC, "the operator key is checked in the route; rate-limited"),
     ("POST", "/api/v1/auth/register"): _p(PUBLIC, "needs an invite code or the bootstrap key (Task 301)"),
     ("POST", "/api/v1/auth/login"): _p(PUBLIC),
     ("POST", "/api/v1/auth/logout"): _p(PUBLIC, "deletes the bearer's own session if any; nothing to leak"),
@@ -112,6 +113,9 @@ ROUTE_POLICY: dict[tuple[str, str], Policy] = {
     ("GET", "/api/v1/auth/users"): _p(ADMIN["users"]),
     ("POST", "/api/v1/auth/users/{user_id}/close"): _p(ADMIN["users"]),
     ("POST", "/api/v1/auth/users/{user_id}/reopen"): _p(ADMIN["users"]),
+    # NFR-1: never delegated -- an erasure cannot be undone (assessment/erasure.py).
+    ("GET", "/api/v1/auth/users/{user_id}/erasure"): _p(PRINCIPAL, "what erasing a student or parent deletes"),
+    ("POST", "/api/v1/auth/users/{user_id}/erasure"): _p(PRINCIPAL, "DPDP erasure on the school's request"),
     ("POST", "/api/v1/auth/invites"): _p(ADMIN["users"]),
     ("GET", "/api/v1/auth/invites"): _p(ADMIN["users"]),
     ("DELETE", "/api/v1/auth/invites/{code}"): _p(ADMIN["users"]),

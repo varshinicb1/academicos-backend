@@ -38279,6 +38279,14 @@
    "subject": "Science",
    "grade": 10,
    "stem": "Select the incorrect statement"
+  },
+  {
+   "id": "cbe:q:Maths10AS8",
+   "source": "cbse_question_bank",
+   "reason": "value-missing",
+   "subject": "Mathematics",
+   "grade": 10,
+   "stem": "1 The area of a circular playground is 9856 m2. 1 (a) Find the radius of the circular field. (Using π= )  1 (b) Find the cost of fencing this ground at the rate of Rs 50 per m."
   }
  ],
  "counts": {
@@ -38312,6 +38320,7 @@
   "answer-is-question-text": 3,
   "duplicate-stem": 78,
   "figure-shown-below": 3,
-  "stem-empty-after-strip": 2
+  "stem-empty-after-strip": 2,
+  "value-missing": 1
  }
 }

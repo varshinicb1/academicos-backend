@@ -2111,6 +2111,30 @@ class CurriculumStore(SchoolModelMixin, CoverMixin, SchoolProfileMixin):
             "SELECT * FROM student_enrollments WHERE student_id=?", (student_id,))
         return StudentEnrollment(**dict(r)) if r else None
 
+    def erase_student_enrollment(self, student_id: str, *, dry_run: bool = False) -> int:
+        """Remove the student from their class on an erasure
+        (assessment/erasure.py). It is the only table here that names a
+        student. Returns 1 when there was an enrollment, else 0."""
+        from ..storage.secure_delete import secure_delete, truncate_wal
+        with self._conn_lock:
+            found = self._fetchone("SELECT 1 FROM student_enrollments WHERE student_id=?", (student_id,))
+            if found and not dry_run:
+                with secure_delete(self.conn):
+                    self._exec("DELETE FROM student_enrollments WHERE student_id=?", (student_id,))
+        if found and not dry_run:
+            # After the hold, as every write here commits (see the terms
+            # section): SnapshotSync's upload takes its own lock, then this one.
+            self._commit()
+            with self._conn_lock:
+                truncate_wal(self.conn)
+        return int(found is not None)
+
+    def flush_snapshot(self) -> bool:
+        """Upload the snapshot now rather than after the debounce; True when
+        the blob store holds every commit. Erasure calls it so a restart in
+        the next seconds cannot restore the rows it deleted."""
+        return self._snapshots.flush(raise_on_conflict=True)
+
     # ---------------- management reporting & variance (§17, §32) ----------------
 
     def get_coverage_report(self, *, school_id: str, academic_year_id: str,

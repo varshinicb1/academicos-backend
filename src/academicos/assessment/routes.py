@@ -754,6 +754,9 @@ def get_paper_timing(term_id: Optional[str] = Query(None, alias="termId"),
     `scopeNote`) -- an all-time number shown as "this term" would be the
     silent kind of wrong.
 
+    A paper counts once, while it still exists (`paper_timing.kept_papers`):
+    pressing Generate again, a regeneration, or a deleted paper adds nothing.
+
     Scoped to the caller's school. The response separates what was MEASURED
     (generation time, from a monotonic clock) from what was DECLARED (the
     manual baseline -- the principal's own for the term when set), and says so
@@ -793,7 +796,9 @@ def get_paper_timing(term_id: Optional[str] = Query(None, alias="termId"),
     rep = paper_timing.report(
         cfg.data_root, school_id=current.school_id, attribute=attribute, baseline=baseline,
         start_date=term.start_date if term else None,
-        end_date=term.end_date if term else None)
+        end_date=term.end_date if term else None,
+        # The papers that still exist, each once -- not every press (D42).
+        kept=paper_timing.kept_papers(store.list_by_school(current.school_id)))
     body = rep.as_dict()
     body["examCoverage"] = paper_timing.exam_coverage(rep, universe)
     if term is None:

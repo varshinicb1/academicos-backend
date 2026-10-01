@@ -30,6 +30,7 @@ from typing import Optional
 from .evaluate import Evaluation, MarkingPointOutcome
 from .schemas import QuestionSchema
 from .postgres_kv import durable_table
+from ..storage.secure_delete import secure_delete, truncate_wal
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS graded (
@@ -144,3 +145,20 @@ class GradedStore:
         with self._conn_lock:
             row = self.conn.execute("SELECT COUNT(DISTINCT assessment_id) AS n FROM graded").fetchone()
         return row["n"]
+
+    def erase_student(self, student_id: str, *, dry_run: bool = False) -> int:
+        """Delete every graded sheet of one student (assessment/erasure.py).
+        Returns how many sheets (would) go. A remote failure raises."""
+        if self._remote.enabled:
+            n = len(self._remote.select(student_id=student_id))
+            if n and not dry_run:
+                self._remote.delete(student_id=student_id)
+            return n
+        with self._conn_lock:
+            n = self.conn.execute("SELECT COUNT(*) FROM graded WHERE student_id=?", (student_id,)).fetchone()[0]
+            if n and not dry_run:
+                with secure_delete(self.conn):
+                    self.conn.execute("DELETE FROM graded WHERE student_id=?", (student_id,))
+                self.conn.commit()
+                truncate_wal(self.conn)
+        return n

@@ -178,3 +178,15 @@ class SupabaseStorage:
                          headers=self._headers(), timeout=30)
         r.raise_for_status()
         return r.content
+
+    def delete(self, key: str) -> None:
+        """Remove one object (erasure). Already gone is not an error: a 404,
+        or the 400 "not_found" older Storage answers (blobs.is_not_found)."""
+        from ..storage.blobs import is_not_found
+        r = requests.delete(f"{self._url}/storage/v1/object/{self.bucket}/{key}",
+                            headers=self._headers(), timeout=30)
+        try:
+            r.raise_for_status()
+        except requests.exceptions.HTTPError as exc:
+            if not is_not_found(exc):
+                raise

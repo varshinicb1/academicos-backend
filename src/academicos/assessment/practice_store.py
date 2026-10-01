@@ -34,6 +34,7 @@ from typing import Optional
 from .remediation import PracticeItem, PracticeSet
 from .schemas import QuestionSchema
 from .postgres_kv import durable_table
+from ..storage.secure_delete import secure_delete, truncate_wal
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS practice_sets (
@@ -127,3 +128,25 @@ class PracticeStore:
         if row is None:
             return None
         return self._decode(json.loads(row["practice_json"]))
+
+    def erase_student(self, student_id: str, *, dry_run: bool = False) -> int:
+        """Delete every remediation set made for one student
+        (assessment/erasure.py). The student is only inside the stored JSON,
+        and sets saved before the school_id column existed have none, so every
+        row is read, not just the school's. Returns how many sets (would) go."""
+        if self._remote.enabled:
+            ids = [r["id"] for r in self._remote.select()
+                   if (r.get("payload") or {}).get("student_id") == student_id]
+            if not dry_run:
+                for set_id in ids:
+                    self._remote.delete(id=set_id)
+            return len(ids)
+        with self._conn_lock:
+            ids = [r["id"] for r in self.conn.execute("SELECT id, practice_json FROM practice_sets").fetchall()
+                   if json.loads(r["practice_json"]).get("student_id") == student_id]
+            if ids and not dry_run:
+                with secure_delete(self.conn):
+                    self.conn.executemany("DELETE FROM practice_sets WHERE id=?", [(i,) for i in ids])
+                self.conn.commit()
+                truncate_wal(self.conn)
+        return len(ids)

@@ -7,7 +7,9 @@ for one student and one term, every paper of their class set in the term
 whose marks were entered, by subject and exam type, with each subject's
 total, percentage and CBSE grade band (the 8-point scale the marks analysis
 uses), and the term overall. A student marked absent for a paper reads "AB"
-and that paper counts for neither side.
+and that paper counts for neither side; so does a paper whose marks were
+only partly entered, which reads "incomplete" (v3 audit N-2-10: such a paper
+was totalled over the whole paper and graded).
 
 It says only what was measured: marks entered in AcademicOS for papers set
 this term. Co-scholastic areas, attendance and teachers' remarks are not
@@ -51,12 +53,13 @@ class PaperMark:
     title: str
     exam_type: str
     set_on: str
-    obtained: Optional[float]      # None: absent
+    obtained: Optional[float]      # None: absent, or incomplete
     maximum: int
+    incomplete: bool = False       # some of the paper's questions have marks, not all
 
     @property
     def absent(self) -> bool:
-        return self.obtained is None
+        return self.obtained is None and not self.incomplete
 
 
 @dataclass
@@ -66,11 +69,11 @@ class SubjectLine:
 
     @property
     def obtained(self) -> float:
-        return sum(p.obtained for p in self.papers if not p.absent)
+        return sum(p.obtained for p in self.papers if p.obtained is not None)
 
     @property
     def maximum(self) -> int:
-        return sum(p.maximum for p in self.papers if not p.absent)
+        return sum(p.maximum for p in self.papers if p.obtained is not None)
 
 
 def _percent(obtained: float, maximum: int) -> Optional[float]:
@@ -91,6 +94,7 @@ def build_card(*, student_id: str, grade: int, school_id: str, start: str, end: 
     """The card's subjects, from `papers` (the school's generated papers):
     those of the student's class set within [start, end] for which the
     student has marks or was marked absent."""
+    from ..assessment.marks_routes import is_complete
     lines: dict[str, SubjectLine] = {}
     for paper in papers:
         m = paper.metadata
@@ -101,11 +105,13 @@ def build_card(*, student_id: str, grade: int, school_id: str, start: str, end: 
         absent = student_id in absent_for(paper.id)
         if marks is None and not absent:
             continue
+        qids = [q.question_id for s in paper.sections for q in s.questions]
+        complete = not absent and is_complete(marks, qids)
         line = lines.setdefault(m.subject, SubjectLine(subject=m.subject))
         line.papers.append(PaperMark(paper_id=paper.id, title=m.assessment_title,
                                      exam_type=m.exam_type or "custom", set_on=set_on,
-                                     obtained=None if absent else float(sum(marks.values())),
-                                     maximum=_paper_total(paper)))
+                                     obtained=float(sum(marks[q] for q in qids)) if complete else None,
+                                     maximum=_paper_total(paper), incomplete=not absent and not complete))
     for line in lines.values():
         line.papers.sort(key=lambda p: (EXAM_TYPE_ORDER.index(p.exam_type) if p.exam_type in EXAM_TYPE_ORDER
                                         else len(EXAM_TYPE_ORDER), p.set_on))
@@ -206,6 +212,9 @@ class PaperMarkResponse(Camel):
     obtained: Optional[float] = None
     maximum: int
     absent: bool
+    # Marks entered for some of the paper's questions, not all: no total,
+    # and it counts for neither side, as an absence does.
+    incomplete: bool = False
 
 
 class SubjectLineResponse(Camel):
@@ -244,7 +253,8 @@ def _response(ctx: _Context, lines: list[SubjectLine]) -> ReportCardResponse:
             percent=_percent(l.obtained, l.maximum), band=_band(_percent(l.obtained, l.maximum)),
             papers=[PaperMarkResponse(paper_id=p.paper_id, title=p.title, exam_type=p.exam_type,
                                       exam_type_label=EXAM_TYPE_LABELS.get(p.exam_type, "Test"), set_on=p.set_on,
-                                      obtained=p.obtained, maximum=p.maximum, absent=p.absent)
+                                      obtained=p.obtained, maximum=p.maximum, absent=p.absent,
+                                      incomplete=p.incomplete)
                     for p in l.papers]) for l in lines],
         obtained=obtained, maximum=maximum, percent=pct, band=_band(pct))
 
@@ -318,7 +328,9 @@ def render_pdf(cards: list[ReportCardResponse], school_id: str) -> bytes:
         rows = [[Paragraph(f"<b>{h}</b>", cell) for h in ("Subject", "Papers", "Marks", "%", "Grade")]]
         for s in c.subjects:
             papers = "<br/>".join(
-                pdf_export.escape(f"{p.exam_type_label}: {'AB' if p.absent else _fmt(p.obtained)}/{p.maximum}")
+                pdf_export.escape(f"{p.exam_type_label}: "
+                                  f"{'AB' if p.absent else 'incomplete' if p.incomplete else _fmt(p.obtained)}"
+                                  f"/{p.maximum}")
                 for p in s.papers)
             rows.append([Paragraph(pdf_export.escape(s.subject), cell), Paragraph(papers, cell),
                          Paragraph(f"{_fmt(s.obtained)}/{s.maximum}", cell),

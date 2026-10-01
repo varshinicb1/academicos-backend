@@ -249,6 +249,22 @@ class KnowledgeStore:
         else:
             self._path(model.learner_id).write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
+    def erase(self, student_id: str, *, dry_run: bool = False) -> int:
+        """Delete the student's learner model (assessment/erasure.py): the
+        durable row, and the local file a store without a remote keeps.
+        Returns 1 when there was one (would be, with dry_run), else 0."""
+        with self._lock_for(student_id):
+            found = False
+            if self._remote:
+                found = bool(self._table.select(student_id=student_id, limit=1))
+                if found and not dry_run:
+                    self._table.delete(student_id=student_id)
+            path = self._path(student_id)
+            found = found or path.exists()
+            if not dry_run:
+                path.unlink(missing_ok=True)
+            return int(found)
+
     @staticmethod
     def _interactions(results: list[tuple[QuestionSchema, Evaluation]],
                       source: Optional[str]) -> list[Interaction]:

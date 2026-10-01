@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Optional
 
 from .postgres_kv import durable_table
+from ..storage.secure_delete import secure_delete, truncate_wal
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS scan_sessions (
@@ -194,3 +195,26 @@ class ScanSessionStore:
                 "SELECT session_json FROM scan_sessions WHERE id=?", (session_id,)
             ).fetchone()
         return self._decode(json.loads(row["session_json"])) if row else None
+
+    def payloads_of_student(self, student_id: str) -> list[dict]:
+        """Every stored session of one student, as its stored JSON (with the
+        storage keys and file paths erasure needs). The student is only inside
+        the JSON, and sessions saved before the school_id column have none, so
+        every row is read."""
+        if self._remote.enabled:
+            return [r["payload"] for r in self._remote.select()
+                    if (r.get("payload") or {}).get("student_id") == student_id]
+        with self._conn_lock:
+            rows = self.conn.execute("SELECT session_json FROM scan_sessions").fetchall()
+        return [d for d in (json.loads(r["session_json"]) for r in rows) if d.get("student_id") == student_id]
+
+    def delete(self, session_id: str) -> None:
+        """Remove one session row (assessment/erasure.py deletes its files)."""
+        if self._remote.enabled:
+            self._remote.delete(id=session_id)
+            return
+        with self._conn_lock:
+            with secure_delete(self.conn):
+                self.conn.execute("DELETE FROM scan_sessions WHERE id=?", (session_id,))
+            self.conn.commit()
+            truncate_wal(self.conn)

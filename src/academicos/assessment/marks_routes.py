@@ -5,8 +5,12 @@ needed. The grid is the section's roster by the paper's questions; a student
 can be marked absent. The analysis reads the same grid: per question (mean
 and facility), per chapter and topic (the bank's tags on each question),
 and per class (mean, median, highest, lowest, and the CBSE 8-point grade
-bands). Saving marks feeds each student's learning progress, replacing that
-paper's earlier marks (source "marks:{paper}:{student}"). Entering marks is
+bands). A row is graded only once every question has a mark (0 is a mark):
+a partly entered row is "incomplete", has no total, percent or band, and is
+left out of the class figures (v3 audit N-2-10: 5 of 38 cells read 5.0, 6.2%,
+band E, and were averaged in). Saving marks feeds each student's learning
+progress, replacing that paper's earlier marks (source
+"marks:{paper}:{student}"). Entering marks is
 processing a student's work, so it needs the parent's consent.
 """
 from __future__ import annotations
@@ -36,6 +40,14 @@ def band(percent: float) -> str:
     return next(label for label, floor in GRADE_BANDS if percent >= floor)
 
 
+def is_complete(marks: dict[str, float], question_ids) -> bool:
+    """Whether a student's marks cover every question of the paper -- the
+    only row that has a total. Marks for a question no longer on the paper
+    neither complete a row nor count."""
+    qids = list(question_ids)
+    return bool(qids) and all(q in marks for q in qids)
+
+
 class _Req(Camel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
 
@@ -63,6 +75,9 @@ class GridRow(Camel):
     name: str
     absent: bool
     marks: dict[str, float]
+    # True once every question has a mark. A row with only some cells
+    # entered is not graded: total, percent and band stay None.
+    complete: bool = False
     total: Optional[float] = None
     percent: Optional[float] = None
     band: Optional[str] = None
@@ -102,6 +117,9 @@ class GroupAnalysis(Camel):
 class ClassAnalysis(Camel):
     students: int
     absent: int
+    # Rows with only some marks entered: counted here, left out of the
+    # averages and the bands.
+    incomplete: int = 0
     mean_percent: Optional[float] = None
     median_percent: Optional[float] = None
     highest_percent: Optional[float] = None
@@ -160,16 +178,18 @@ def _roster(section_id: Optional[str], current: User, marked: set[str]) -> list[
 
 def _grid(paper, section_id: Optional[str], current: User) -> MarksGrid:
     qs = _questions(paper)
+    qids = [q.question_id for q in qs]
     total = sum(q.max_marks for q in qs)
     marks = ops().marks_for(paper.id)
     absent = ops().absent_for(paper.id)
     rows = []
     for sid, name in _roster(section_id, current, set(marks) | absent):
         m = marks.get(sid, {})
-        got = sum(m.values()) if m else None
+        complete = sid not in absent and is_complete(m, qids)
+        got = sum(m[q] for q in qids) if complete else None
         pct = round(100 * got / total, 1) if got is not None and total else None
-        rows.append(GridRow(student_id=sid, name=name, absent=sid in absent, marks=m, total=got, percent=pct,
-                            band=band(pct) if pct is not None else None))
+        rows.append(GridRow(student_id=sid, name=name, absent=sid in absent, marks=m, complete=complete, total=got,
+                            percent=pct, band=band(pct) if pct is not None else None))
     return MarksGrid(paper_id=paper.id, section_id=section_id, total_marks=total, questions=qs, rows=rows)
 
 
@@ -335,12 +355,19 @@ def enter_marks(paper_id: str, req: MarksRequest, section_id: Optional[str] = Qu
 
 def _tell_results(paper, assessment, students: set[str], all_marks: dict[str, dict[str, float]]) -> None:
     """Each student whose marks were entered, and their parents, hear their
-    total once per paper (SA-5: only homework results were ever sent). Later
-    corrections are seen in the app; they are not sent again."""
+    total once per paper (SA-5: only homework results were ever sent), once
+    every question has a mark. Later corrections are seen in the app; they
+    are not sent again -- so a partly entered total, sent, was the one they
+    kept (v3 audit N-2-10)."""
     from ..operations.routes import notify_parents_safely, notify_safely
-    total = sum(q.max_marks for q in _questions(paper))
+    qs = _questions(paper)
+    qids = [q.question_id for q in qs]
+    total = sum(q.max_marks for q in qs)
     for sid in sorted(students):
-        got = sum(all_marks.get(sid, {}).values())
+        m = all_marks.get(sid, {})
+        if not is_complete(m, qids):
+            continue
+        got = sum(m[q] for q in qids)
         params = {"title": paper.metadata.assessment_title, "subject": assessment.subject,
                   "marks": f"{got:g} out of {total}"}
         notify_safely(school_id=assessment.school_id, user_ids=[sid], kind="test_marks", params=params,
@@ -353,7 +380,8 @@ def _tell_results(paper, assessment, students: set[str], all_marks: dict[str, di
 def marks_grid(paper_id: str, section_id: Optional[str] = Query(default=None, alias="sectionId"),
                current: User = Depends(require_staff)) -> MarksGrid:
     """The grid: the section's students (or everyone marked) by the paper's
-    questions, with totals, percentages and grade bands."""
+    questions, with totals, percentages and grade bands for each complete
+    row."""
     from ..assessment.audit_log import get_audit_log, record_pii_read
     paper, _ = _paper(paper_id, current)
     grid = _grid(paper, section_id, current)
@@ -365,11 +393,13 @@ def marks_grid(paper_id: str, section_id: Optional[str] = Query(default=None, al
 @router.get("/papers/{paper_id}/analysis", response_model=PaperAnalysis)
 def analysis(paper_id: str, section_id: Optional[str] = Query(default=None, alias="sectionId"),
              current: User = Depends(require_staff)) -> PaperAnalysis:
-    """Results by question, chapter, topic and class. Absent students are
-    counted, not averaged in."""
+    """Results by question, chapter, topic and class. Absent students, and
+    students whose marks are only partly entered, are counted, not averaged
+    in. A question's mean and facility read the marks entered for it."""
     paper, assessment = _paper(paper_id, current)
     grid = _grid(paper, section_id, current)
-    sat = [r for r in grid.rows if not r.absent and r.total is not None]
+    sat = [r for r in grid.rows if not r.absent]
+    graded = [r for r in sat if r.complete]
     tags = _tags(assessment, [q.question_id for q in grid.questions])
     qa = []
     for q in grid.questions:
@@ -395,11 +425,12 @@ def analysis(paper_id: str, section_id: Optional[str] = Query(default=None, alia
             out.append(GroupAnalysis(key=name, name=name, max_marks=maxm, facility=fac, questions=len(xs)))
         return sorted(out, key=lambda g: (g.facility is None, g.facility or 0))
 
-    pcts = [r.percent for r in sat if r.percent is not None]
+    pcts = [r.percent for r in graded if r.percent is not None]
     bands = {label: 0 for label, _ in GRADE_BANDS}
     for p in pcts:
         bands[band(p)] += 1
     summary = ClassAnalysis(students=len(grid.rows), absent=sum(1 for r in grid.rows if r.absent),
+                            incomplete=sum(1 for r in sat if r.marks and not r.complete),
                             mean_percent=round(statistics.fmean(pcts), 1) if pcts else None,
                             median_percent=round(statistics.median(pcts), 1) if pcts else None,
                             highest_percent=max(pcts) if pcts else None, lowest_percent=min(pcts) if pcts else None,

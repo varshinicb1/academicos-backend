@@ -232,6 +232,7 @@ def _syllabus(current: User, year_id: str, scope: Scope, f: _Filter) -> Syllabus
 def _exams_and_time(current: User, year_id: str, scope: Scope, school: _School,
                     f: _Filter) -> tuple[Exams, TimeSaved]:
     from ..assessment import paper_timing
+    from ..assessment import routes as ar
     ops = store()
     scheduled = []
     for e in ops.exams_for_school(current.school_id):
@@ -249,8 +250,10 @@ def _exams_and_time(current: User, year_id: str, scope: Scope, school: _School,
         term = cr._require().get_term(scope.term_id)
         if term is not None and term.manual_baseline_minutes is not None:
             baseline = (float(term.manual_baseline_minutes), f"set by the principal for {term.name}")
+    # The papers that still exist, each once, as /paper-timing counts them (D42).
+    kept = paper_timing.kept_papers(ar._require()[1].list_by_school(current.school_id))
     rep = paper_timing.report(cr._cfg.data_root, school_id=current.school_id, baseline=baseline,
-                              start_date=scope.start_date, end_date=scope.as_of)
+                              start_date=scope.start_date, end_date=scope.as_of, kept=kept)
     # The same classes /paper-timing measures "not yet" against, so the two
     # screens cannot disagree about one term.
     universe = [(g, name) for g, name in school.subjects.values() if 1 <= g <= 10 and f.keep(g, name)]

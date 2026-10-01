@@ -345,6 +345,25 @@ class GcsBlobStore:
             self._generations[key] = generation
             return data
 
+    def delete(self, key: str) -> None:
+        """Remove one object. An object already gone is not an error, so an
+        erasure that stopped half way can simply be run again."""
+        with self._lock:
+            try:
+                self._store.delete(key)
+            except Exception as exc:
+                if getattr(exc, "code", None) != 404:
+                    raise BlobUnavailable(f"GCS delete of {self.name}/{key} failed: {exc}") from exc
+            self._generations[key] = 0
+
+    def keys(self, prefix: str) -> list[str]:
+        """The keys under `prefix` in this store, e.g. one scan session's
+        `<session id>/` (erasure sweeps it for objects no row names)."""
+        try:
+            return self._store.keys(prefix)
+        except Exception as exc:
+            raise BlobUnavailable(f"GCS list of {self.name}/{prefix} failed: {exc}") from exc
+
 
 def durable_blob_store(name: str, *, gcs_client=None):
     """The blob backend for one purpose ("scan-media", "curriculum-snapshots").

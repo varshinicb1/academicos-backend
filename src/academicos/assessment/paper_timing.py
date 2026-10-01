@@ -22,6 +22,15 @@ provenance with it. An "estimated" saving built on a declared baseline is a
 perfectly good management figure and a completely unacceptable engineering
 claim, and the difference is only visible if it is written down.
 
+What counts as a paper
+----------------------
+A paper that still exists, once (`kept_papers`) -- not a press of Generate.
+Every press used to count as a paper set and a full baseline saved (D42):
+Generate pressed again on the same choices made the same questions under a
+second paper id and counted twice, a regeneration on one assessment counted
+the paper it replaced, and a deleted paper still counted. The median
+generation time is over the same papers, one generation each.
+
 Where it is stored, and why not a new store
 -------------------------------------------
 In the existing audit log, under the action paper generation already records.
@@ -43,7 +52,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Iterable, Optional
+from typing import Callable, Hashable, Iterable, Mapping, Optional
 
 from .audit_log import AuditLog, get_audit_log
 
@@ -216,11 +225,34 @@ def class_subject(grade, subject) -> Optional[tuple[int, str]]:
     return (number, name) if name else None
 
 
+def kept_papers(assessments: Iterable) -> dict[str, Hashable]:
+    """Paper id -> what makes it one paper, for each paper that still exists:
+    the one an assessment holds now (`generated_paper_id`). The paper of a
+    deleted assessment, and one a later generation replaced on the same
+    assessment, are not here, so they no longer count.
+
+    Papers the same teacher generated with the same questions for the same
+    class and subject share a key and count once: that is Generate pressed
+    again on the same choices (generation is deterministic). "Make another
+    like this" prints other questions, so it is another paper.
+    """
+    out: dict[str, Hashable] = {}
+    for a in assessments:
+        paper_id = getattr(a, "generated_paper_id", None)
+        if not paper_id:
+            continue
+        questions = frozenset(getattr(a, "selected_question_ids", None) or ())
+        out[paper_id] = ((a.teacher_id, str(a.subject).strip().casefold(), str(a.grade), questions)
+                         if questions else paper_id)
+    return out
+
+
 def report(data_root, *, school_id: str | None = None,
            limit: int = 5_000,
            start_date: str | None = None, end_date: str | None = None,
            attribute: Callable[[str], Optional[tuple[str, int]]] | None = None,
-           baseline: tuple[float, str] | None = None) -> SavedTimeReport:
+           baseline: tuple[float, str] | None = None,
+           kept: Mapping[str, Hashable] | None = None) -> SavedTimeReport:
     """Aggregate the recorded generations into a saved-time figure.
 
     `school_id=None` aggregates everything, which is right for a single-tenant
@@ -233,19 +265,26 @@ def report(data_root, *, school_id: str | None = None,
     them; an entry neither can place is counted as unattributed. `baseline`
     is (minutes, where it came from) and replaces the deployment's declared
     baseline, e.g. with the one the principal set for the term.
+
+    `kept` (`kept_papers`) is the papers that still exist: only their
+    generations count, and papers sharing a key count once, at their first
+    generation in the window. None counts every recorded generation, for
+    a caller with no papers to check against; the routes always pass it.
     """
     audit = get_audit_log(data_root)
     entries = [(path, entry) for action, path in GENERATION_ACTIONS.items()
                for entry in audit.for_action(action)]
+    # Oldest first, so a paper made twice counts its first generation.
+    entries.sort(key=lambda pe: str(pe[1].get("timestamp") or ""))
     if limit and len(entries) > limit:
         # The most recent `limit` across every path, not the first path's.
-        entries.sort(key=lambda pe: str(pe[1].get("timestamp") or ""), reverse=True)
-        entries = entries[:limit]
+        entries = entries[-limit:]
 
     elapsed: list[float] = []
     by_path: Counter[str] = Counter()
     by_pair: Counter[tuple[int, str]] = Counter()
     unattributed = 0
+    counted: set[Hashable] = set()
     for path, entry in entries:
         details = entry.get("details") or {}
         if school_id is not None and details.get("schoolId") != school_id:
@@ -256,6 +295,11 @@ def report(data_root, *, school_id: str | None = None,
                 continue
         value = details.get("generationSeconds")
         if isinstance(value, (int, float)) and value >= 0:
+            if kept is not None:
+                key = kept.get(details.get("paperId"))
+                if key is None or key in counted:
+                    continue        # deleted, replaced, or a paper already counted
+                counted.add(key)
             elapsed.append(float(value))
             by_path[path] += 1
             pair = class_subject(details.get("grade"), details.get("subject"))

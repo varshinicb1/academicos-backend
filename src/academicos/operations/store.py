@@ -11,6 +11,7 @@ from typing import Optional
 from ..storage.snapshot_sync import SnapshotSync
 from .automations import AUTOMATIONS_SCHEMA, AutomationsMixin
 from .exams import EXAMS_SCHEMA, ExamsMixin
+from .forget import ForgetMixin
 from .grants import GRANTS_SCHEMA, GrantsMixin
 from .calendar_feed import FEEDS_SCHEMA, FeedsMixin
 from .guardians import GUARDIANS_SCHEMA, GuardiansMixin
@@ -27,7 +28,7 @@ from .question_reviews import QUESTION_REVIEWS_SCHEMA, QuestionReviewsMixin
 
 class OperationsStore(NotificationsMixin, HomeworkMixin, LearningMixin, GuardiansMixin, AutomationsMixin,
                       ReviewsMixin, MarksMixin, ExamsMixin, GrantsMixin,
-                      FeedsMixin, PhotosMixin, PracticeMixin, CodesMixin, QuestionReviewsMixin):
+                      FeedsMixin, PhotosMixin, PracticeMixin, CodesMixin, QuestionReviewsMixin, ForgetMixin):
     _SNAPSHOT_KEY = "operations.sqlite"
     _SNAPSHOT_DEBOUNCE_SECONDS = 20.0
 
@@ -71,6 +72,11 @@ class OperationsStore(NotificationsMixin, HomeworkMixin, LearningMixin, Guardian
 
     def _commit(self) -> None:
         self._snapshots.commit(self.conn)
+
+    def flush_snapshot(self) -> bool:
+        """Upload the snapshot now rather than after the debounce; True when
+        the blob store holds every commit (see CurriculumStore.flush_snapshot)."""
+        return self._snapshots.flush(raise_on_conflict=True)
 
     def close(self) -> None:
         self._snapshots.close()

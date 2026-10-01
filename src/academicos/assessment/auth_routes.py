@@ -16,7 +16,9 @@ works exactly as before.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -87,6 +89,51 @@ class AuthResponse(Camel):
 def _to_response(user: User) -> UserResponse:
     return UserResponse(id=user.id, school_id=user.school_id, name=user.name,
                          email=user.email, role=user.role)
+
+
+class SchoolInviteRequest(Camel):
+    school_id: str
+    expires_in_days: Optional[int] = None
+
+
+class SchoolInviteResponse(Camel):
+    school_id: str
+    code: str
+    expires_at: str
+    # Opens Create account with the code filled in; the school and the
+    # principal role come from the invite.
+    link: str
+
+
+@router.post("/operator/school-invites", response_model=SchoolInviteResponse,
+             dependencies=[Depends(rate_limit_login)])
+def create_school_invite(req: SchoolInviteRequest,
+                         operator_key: Optional[str] = Header(default=None, alias="X-Operator-Key")
+                         ) -> SchoolInviteResponse:
+    """The operator onboards a new school (2026-10-01): a single-use invite
+    for its first principal, as a link. Needs the operator key in
+    `X-Operator-Key` (scripts/new_school.py reads it from Secret Manager).
+    403 without it, 409 once the school has a principal, 422 for a bad ID."""
+    store = _require()
+    if not store._valid_principal_key(operator_key):
+        raise HTTPException(403, "operator key not accepted")
+    try:
+        invite = store.create_principal_invite(school_id=req.school_id,
+                                               expires_in_days=req.expires_in_days)
+    except RegistrationRefused as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    if _cfg is not None:
+        from .audit_log import get_audit_log
+        get_audit_log(_cfg.data_root).append(
+            "school_invite_created", actor="operator",
+            details={"schoolId": invite.school_id, "expiresAt": invite.expires_at})
+    origin = (os.environ.get("ACOS_WEB_ORIGIN")
+              or (os.environ.get("ACOS_CORS_ORIGINS") or "").split(",")[0].strip()
+              or "https://vidyuthlabs.web.app").rstrip("/")
+    return SchoolInviteResponse(school_id=invite.school_id, code=invite.code, expires_at=invite.expires_at,
+                                link=f"{origin}/#/login?invite={quote(invite.code)}")
 
 
 @router.post("/register", response_model=AuthResponse, dependencies=[Depends(rate_limit_register)])

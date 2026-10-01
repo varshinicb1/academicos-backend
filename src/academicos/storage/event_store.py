@@ -56,6 +56,7 @@ import requests
 
 from ..algorithms.learner_model import Interaction, LearnerModel
 from ..assessment.postgres_kv import durable_table
+from .secure_delete import secure_delete, truncate_wal
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +256,27 @@ class EventStore:
         for i in self.events(learner_id, since_seq=since):
             m.observe(i)
         return m
+
+    def erase_learner(self, learner_id: str, *, dry_run: bool = False) -> int:
+        """The one exception to append-only: delete every event of one learner
+        on the school's erasure request (assessment/erasure.py). Remote and
+        local rows both, since an outage writes to the local fallback.
+        Returns how many events (would) go; a remote failure raises."""
+        with self._lock_for(learner_id):
+            n = 0
+            if self._remote.enabled:
+                n = len(self._remote.select(learner_id=learner_id))
+                if n and not dry_run:
+                    self._remote.delete(learner_id=learner_id)
+            with self._conn_lock:
+                n += self.conn.execute("SELECT COUNT(*) FROM learner_events WHERE learner_id=?",
+                                       (learner_id,)).fetchone()[0]
+                if not dry_run:
+                    with secure_delete(self.conn):
+                        self.conn.execute("DELETE FROM learner_events WHERE learner_id=?", (learner_id,))
+                    self.conn.commit()
+                    truncate_wal(self.conn)
+            return n
 
     def close(self) -> None:
         self.conn.close()
