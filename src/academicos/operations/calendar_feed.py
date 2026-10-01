@@ -10,10 +10,12 @@ no marks, no other student's data.
 from __future__ import annotations
 
 import secrets
+from collections import Counter
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 
 from ..assessment.auth_routes import get_current_user
@@ -144,13 +146,29 @@ def _year(cs, school_id: str, today: date):
                 max(years, key=lambda y: y.start_date) if years else None)
 
 
-def build_calendar(user: User, today: date) -> str:
+@dataclass
+class CalEvent:
+    """One entry of a user's school calendar. `until` makes it weekly to that
+    day (a timetabled period); `end_day` spans whole days (a long holiday)."""
+    uid: str
+    kind: str  # period | holiday | cover | exam | invigilation | homework
+    title: str
+    day: date
+    start: Optional[str] = None
+    end: Optional[str] = None
+    until: Optional[date] = None
+    end_day: Optional[date] = None
+
+
+def calendar_events(user: User, today: date) -> list[CalEvent]:
+    """Everything on the user's own school calendar: the ICS feed and the
+    apps' "Coming up" list read the same events (TA-2, SA-1)."""
     cs = cr._require()
     ops = store()
-    cal = _Cal(f"School - {user.name}")
+    out: list[CalEvent] = []
     year = _year(cs, user.school_id, today)
     if year is None:
-        return cal.text()
+        return out
     ystart, yend = date.fromisoformat(year.start_date), date.fromisoformat(year.end_date)
     first_day = max(ystart, today - timedelta(days=today.weekday()))
     subjects: dict[str, str] = {}
@@ -183,20 +201,22 @@ def build_calendar(user: User, today: date) -> str:
         start, end = slot.start, slot.end
         first = first_day + timedelta(days=(t.day_of_week - first_day.weekday()) % 7)
         what = subject(t.subject_id) if user.role == "student" else f"{subject(t.subject_id)} {label(t.section_id)}"
-        cal.event(f"tt-{t.id}", what, day=first, start=start, end=end, until=yend)
+        out.append(CalEvent(f"tt-{t.id}", "period", what, first, start, end, until=yend))
 
     # holidays
     cal_row = cs.get_calendar_for_year(year.id)
     for h in (cs.holidays_for_calendar(cal_row.id) if cal_row else []):
         d = date.fromisoformat(h.date)
         if d >= today - timedelta(days=7):
-            cal.event(f"hol-{h.id}", h.label, day=d, end_day=date.fromisoformat(h.end_date) if h.end_date else None)
+            out.append(CalEvent(f"hol-{h.id}", "holiday", h.label, d,
+                                end_day=date.fromisoformat(h.end_date) if h.end_date else None))
 
     # substitution duties (staff)
     if user.role != "student":
         for s in cs.duties_for(user.id, today.isoformat(), (today + timedelta(days=60)).isoformat()):
-            cal.event(f"sub-{s.id}", f"Cover: {label(s.section_id)} {subject(s.subject_id)} (period {s.period})",
-                      day=date.fromisoformat(s.date))
+            out.append(CalEvent(f"sub-{s.id}", "cover",
+                                f"Cover: {label(s.section_id)} {subject(s.subject_id)} (period {s.period})",
+                                date.fromisoformat(s.date)))
 
     # exams and homework
     for ex in ops.exams_for_school(user.school_id):
@@ -206,24 +226,116 @@ def build_calendar(user: User, today: date) -> str:
             grade = cs.get_grade(section.grade_id).number
             for p in ops.exam_papers(ex["id"]):
                 if p["grade"] == grade:
-                    cal.event(f"exam-{p['id']}", f"Exam: {p['subject_name']} ({ex['name']})",
-                              day=date.fromisoformat(p["date"]), start=p["start_time"], end=p["end_time"])
+                    out.append(CalEvent(f"exam-{p['id']}", "exam", f"Exam: {p['subject_name']} ({ex['name']})",
+                                        date.fromisoformat(p["date"]), p["start_time"], p["end_time"]))
         elif user.role != "student":
             for r in ops.roster(ex["id"]):
                 if r["teacher_id"] == user.id:
-                    cal.event(f"inv-{r['exam_paper_id']}-{r['section_id']}",
-                              f"Invigilation: {label(r['section_id'])} {r['subject_name']}",
-                              day=date.fromisoformat(r["date"]), start=r["start_time"], end=r["end_time"])
+                    out.append(CalEvent(f"inv-{r['exam_paper_id']}-{r['section_id']}", "invigilation",
+                                        f"Invigilation: {label(r['section_id'])} {r['subject_name']}",
+                                        date.fromisoformat(r["date"]), r["start_time"], r["end_time"]))
     if user.role == "student" and section is not None:
         for hw in ops.homework_for_section(section.id):
             if hw.status == "published" and hw.due_date >= (today - timedelta(days=7)).isoformat():
-                cal.event(f"hw-{hw.id}", f"Homework due: {hw.title} ({hw.subject_name})",
-                          day=date.fromisoformat(hw.due_date))
+                out.append(CalEvent(f"hw-{hw.id}", "homework", f"Homework due: {hw.title} ({hw.subject_name})",
+                                    date.fromisoformat(hw.due_date)))
     elif user.role != "student":
         for hw in ops.homework_for_school(user.school_id, status="published"):
             if hw.teacher_id == user.id and hw.due_date >= (today - timedelta(days=7)).isoformat():
-                cal.event(f"hw-{hw.id}", f"Homework due: {hw.title}", day=date.fromisoformat(hw.due_date))
+                out.append(CalEvent(f"hw-{hw.id}", "homework", f"Homework due: {hw.title}",
+                                    date.fromisoformat(hw.due_date)))
+    return out
+
+
+def build_calendar(user: User, today: date) -> str:
+    cal = _Cal(f"School - {user.name}")
+    for e in calendar_events(user, today):
+        cal.event(e.uid, e.title, day=e.day, start=e.start, end=e.end, until=e.until, end_day=e.end_day)
     return cal.text()
+
+
+# ---------------- in the apps ----------------
+
+class CalendarItem(Camel):
+    kind: str
+    title: str
+    date: str
+    end_date: Optional[str] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+
+
+@router.get("/my-calendar", response_model=list[CalendarItem])
+def my_calendar(days: int = Query(42, ge=1, le=60),
+                current: User = Depends(get_current_user)) -> list[CalendarItem]:
+    """The caller's dated school events from today: holidays, cover and
+    invigilation duties, exam papers and homework due. The ICS feed carries
+    the same; the weekly periods are the timetable's, so they are left out."""
+    if current.role not in ("teacher", "principal", "student"):
+        raise HTTPException(403, "the school calendar is for staff and students")
+    today = cr._school_today()
+    last = today + timedelta(days=days)
+    items = [e for e in calendar_events(current, today)
+             if e.kind != "period" and (e.end_day or e.day) >= today and e.day <= last]
+    items.sort(key=lambda e: (e.day, e.start or "", e.title))
+    return [CalendarItem(kind=e.kind, title=e.title, date=e.day.isoformat(),
+                         end_date=e.end_day.isoformat() if e.end_day else None,
+                         start_time=e.start, end_time=e.end) for e in items]
+
+
+class LoadRow(Camel):
+    section_name: str
+    subject_name: str
+    periods_per_week: int
+
+
+class MyLoadResponse(Camel):
+    periods_per_week: int = 0
+    max_in_one_day: int = 0
+    # periods on each weekday, 0 = Monday
+    days_taught: dict[int, int] = {}
+    classes: list[LoadRow] = []
+    covers_this_week: int = 0
+    invigilations_ahead: int = 0
+
+
+@router.get("/my-load", response_model=MyLoadResponse)
+def my_load(current: User = Depends(get_current_user)) -> MyLoadResponse:
+    """A teacher's own load (TA-2): timetabled periods a week by class and
+    subject, the busiest day, cover duties this week and exam duties ahead.
+    Only the caller's own numbers; the whole staff's load stays the
+    principal's (ADM-5)."""
+    if current.role not in ("teacher", "principal"):
+        raise HTTPException(403, "a teaching load is for staff")
+    cs = cr._require()
+    today = cr._school_today()
+    year = _year(cs, current.school_id, today)
+    if year is None:
+        return MyLoadResponse()
+    entries = cs.timetable_for_teacher(current.id, year.id)
+    per_day = Counter(e.day_of_week for e in entries)
+    per_class = Counter((e.section_id, e.subject_id) for e in entries)
+
+    def section_name(sid: str) -> str:
+        s = cs.get_section(sid)
+        return cs._section_label(s) if s else ""
+
+    def subject_name(sid: str) -> str:
+        s = cs.get_subject(sid)
+        return s.name if s else ""
+
+    monday = today - timedelta(days=today.weekday())
+    covers = cs.duties_for(current.id, monday.isoformat(), (monday + timedelta(days=6)).isoformat())
+    ops = store()
+    ahead = sum(1 for ex in ops.exams_for_school(current.school_id) if ex["status"] == "published"
+                for r in ops.roster(ex["id"]) if r["teacher_id"] == current.id and r["date"] >= today.isoformat())
+    classes = [LoadRow(section_name=section_name(sec), subject_name=subject_name(sub), periods_per_week=n)
+               for (sec, sub), n in per_class.items()]
+    classes.sort(key=lambda r: (-r.periods_per_week, r.section_name, r.subject_name))
+    return MyLoadResponse(periods_per_week=len(entries), max_in_one_day=max(per_day.values(), default=0),
+                          days_taught=dict(sorted(per_day.items())), classes=classes,
+                          covers_this_week=len(covers),
+                          invigilations_ahead=ahead)
 
 
 @router.get("/ics/{token}.ics")

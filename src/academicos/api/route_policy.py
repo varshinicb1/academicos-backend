@@ -80,6 +80,11 @@ ROUTE_POLICY: dict[tuple[str, str], Policy] = {
     # staff and parents only (a student is a minor: their parent is messaged).
     ("GET", "/api/v1/me/contact"): _p(ANY_USER, "the caller's own number only; students refused in the handler"),
     ("PUT", "/api/v1/me/contact"): _p(ANY_USER, "the caller's own number only; students refused in the handler"),
+    # EX-8 report cards: the student, their parent, the principal or a reports
+    # admin, and the section's class teacher -- checked in the handler; logged.
+    ("GET", "/api/v1/report-cards/students/{student_id}"): _p(ANY_USER, "the student, their linked parent, a reports admin or the class teacher; logged"),
+    ("GET", "/api/v1/report-cards/students/{student_id}/pdf"): _p(ANY_USER, "as above; logged"),
+    ("GET", "/api/v1/report-cards/sections/{section_id}/pdf"): _p(ANY_USER, "a reports admin or the section's class teacher; logged"),
     ("GET", "/v1/registry/stats"): _p(ANY_USER, "one corpus-wide document count"),
     ("POST", "/v1/search"): _p(ANY_USER, "shared NCERT corpus, no school data"),
     ("POST", "/v1/agent/doubt"): _p(ANY_USER, "a student asking a doubt is the intended user"),
@@ -142,7 +147,7 @@ ROUTE_POLICY: dict[tuple[str, str], Policy] = {
     ("GET", "/api/v1/catalog/{subject}/{grade}/chapters"): _p(PUBLIC, "official CBSE chapter list"),
     ("GET", "/api/v1/syllabus/{subject}/{grade}"): _p(PUBLIC, "official CBSE syllabus"),
     ("GET", "/api/v1/syllabus/{subject}/{grade}/timetable"): _p(PUBLIC, "computed from the public syllabus"),
-    ("GET", "/api/v1/mail/status"): _p(PUBLIC, "configured yes/no per backend, no addresses or keys"),
+    ("GET", "/api/v1/mail/status"): _p(ANY_USER, "configured yes/no per backend; signed in only, it describes the deployment (NFR-2)"),
     ("POST", "/api/v1/mail/send-paper"): _p(STAFF),
     ("POST", "/api/v1/evaluations/answer"): _p(STAFF, "writes a mark for any student id in the body"),
     ("POST", "/api/v1/evaluations/sheet"): _p(STAFF, "writes a whole sheet's marks"),
@@ -283,6 +288,8 @@ ROUTE_POLICY: dict[tuple[str, str], Policy] = {
     ("GET", "/api/v1/calendar-feed"): _p(ANY_USER, "the callers own feed; staff and students"),
     ("POST", "/api/v1/calendar-feed/reset"): _p(ANY_USER, "the callers own feed"),
     ("GET", "/api/v1/ics/{token}.ics"): _p(PUBLIC, "the unguessable feed token is the key; the owners own dates only"),
+    ("GET", "/api/v1/my-calendar"): _p(ANY_USER, "the callers own dated events; staff and students"),
+    ("GET", "/api/v1/my-load"): _p(ANY_USER, "the callers own teaching load; staff only"),
     ("POST", "/v1/homework-sets"): _p(API_KEY, "questions:read"),
     ("POST", "/api/v1/my-homework/{homework_id}/photos"): _p(ANY_USER, "students only, own submission; needs consent"),
     ("GET", "/api/v1/my-homework/{homework_id}/photos"): _p(ANY_USER, "students only, own submission"),
@@ -473,6 +480,9 @@ def iter_routes(app) -> Iterable[tuple[str, str, object]]:
 # and their linked children's pages, each of which checks the link itself.
 PARENT_PATHS = frozenset({
     "/api/v1/auth/me",
+    # EX-8: a linked parent reads their child's report card (checked in the handler).
+    "/api/v1/report-cards/students/{student_id}",
+    "/api/v1/report-cards/students/{student_id}/pdf",
     "/api/v1/notifications",
     "/api/v1/notifications/{notification_id}/read",
     "/api/v1/notifications/read-all",

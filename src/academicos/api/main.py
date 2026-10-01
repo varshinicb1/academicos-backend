@@ -105,8 +105,19 @@ def _max_llm_calls() -> int:
     return max(1, value)
 
 
+def _doc_urls() -> dict[str, Any]:
+    """The interactive docs and the raw schema are for development (NFR-2):
+    on the live release they would hand anyone the whole route map. The
+    clients' copy of the schema is the committed contract/openapi.json, which
+    scripts/export_openapi.py writes from app.openapi() whatever these say."""
+    if is_production():
+        return {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    return {}
+
+
 app = FastAPI(title="AcademicOS", version="0.1.0",
-              description="CBSE/NCERT Academic Brain — evidence-grounded retrieval + reasoning")
+              description="CBSE/NCERT Academic Brain — evidence-grounded retrieval + reasoning",
+              **_doc_urls())
 
 
 @app.exception_handler(LLMBudgetExceeded)
@@ -389,6 +400,11 @@ error_tracking.install(app)
 from ..operations import messaging_routes  # noqa: E402
 
 app.include_router(messaging_routes.router)
+
+# EX-8: report cards from the marks entered.
+from ..operations import report_cards  # noqa: E402
+
+app.include_router(report_cards.router)
 
 
 class SearchRequest(BaseModel):

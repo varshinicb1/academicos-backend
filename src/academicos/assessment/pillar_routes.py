@@ -591,7 +591,10 @@ class MailBackendStatus(Camel):
 
 
 @router.get("/mail/status", response_model=MailBackendStatus)
-def mail_status() -> MailBackendStatus:
+def mail_status(current: User = Depends(get_current_user)) -> MailBackendStatus:
+    """Which mail backends are set up -- for the paper delivery sheet, which
+    only a signed-in user opens. Not public (NFR-2): it describes the
+    deployment to anyone who asks."""
     backends = mailer_mod.available_backends()
     return MailBackendStatus(
         backends=backends,
