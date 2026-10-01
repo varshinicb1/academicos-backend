@@ -29,6 +29,7 @@ from . import decomposition_templates as templates_mod
 from . import extraction as extraction_mod
 from . import scheduling as scheduling_mod
 from .schemas import (
+    BuildPlansRequest, BuildPlansResponse, PlanBuiltResponse,
     AcademicYearResponse,
     AddBookRequest,
     AddHolidayRequest,
@@ -151,6 +152,28 @@ def init(config: Config) -> None:
     global _store, _cfg
     _cfg = config
     _store = get_curriculum_store(config.data_root)
+    _store.staff_source = _staff_for_cover
+    _store.exam_source = _exam_papers_for_cover
+    from ..assessment.audit_log import get_audit_log
+    _store.plan_audit_log = get_audit_log(config.data_root)
+
+
+def _staff_for_cover(school_id: str) -> list[str]:
+    """The school's teachers, for the cover engine (cover.py): a teacher with
+    no class of their own -- a librarian, a PT teacher, a new joiner -- can
+    still sit with one (v3 audit N-3-16). The curriculum store cannot read
+    the user store, so it is handed this at boot."""
+    return [u.id for u in _require_users().users_for_school(school_id, role="teacher")]
+
+
+def _exam_papers_for_cover(school_id: str, academic_year_id: str) -> list[dict]:
+    """The year's published exam papers with their invigilators, for the
+    cover engine and the plans (cover.py): a class sitting a paper is not
+    taught, and an invigilator is not free (v3 audit N-3-12)."""
+    from ..operations import routes as ops_routes   # lazily: operations imports this package
+    if ops_routes._cfg is None:
+        return []
+    return ops_routes.store().published_papers(school_id, academic_year_id)
 
 
 def _require() -> CurriculumStore:
@@ -1791,6 +1814,103 @@ def schedule_book(book_id: str, academic_year_id: str, req: ScheduleBookRequest,
         lessons_kept=result.lessons_kept, past_lessons_kept=result.past_lessons_kept,
         all_subtopics_scheduled=result.all_subtopics_scheduled,
         warning=result.warning, section_id=result.section_id)
+
+
+def _minutes(hhmm: str) -> int:
+    h, m = hhmm.split(":")
+    return int(h) * 60 + int(m)
+
+
+@router.post("/academic-years/{academic_year_id}/lesson-plans", response_model=BuildPlansResponse)
+def build_lesson_plans(academic_year_id: str, req: BuildPlansRequest,
+                       principal: User = Depends(require_principal)) -> BuildPlansResponse:
+    """Every section's dated plan in one action (N-67-5). A school set up on
+    the web had none: seeding proposes topics but approving them was a
+    chapter-at-a-time step on another tab, and each section and subject was
+    then planned on its own. This does the same steps the Lesson plans page
+    does for one section, for all of them:
+
+    1. With `approveProposedTopics`, the principal approves the topic
+       proposals still pending on the year's chosen books. The principal's
+       own click is the approval; nothing is approved without it.
+    2. Each book's subtopics are timed against the year (idempotent), at the
+       most periods a week any section has for it.
+    3. Each section's plan is laid on its own week from its allocation.
+       What was taught, marked or has passed is kept (`force`).
+
+    A section and subject that cannot be planned is named in `notPlanned`
+    with the reason, never skipped silently."""
+    store = _require()
+    _require_school_owns_academic_year(academic_year_id, principal)
+    out = BuildPlansResponse()
+    allocations = store.allocations_for_year(academic_year_id)
+    books = {}
+    for a in allocations:
+        if a.subject_id not in books:
+            books[a.subject_id] = store.selected_book_for_subject(a.subject_id)
+    if req.approve_proposed_topics:
+        for book in {b.id: b for b in books.values() if b is not None}.values():
+            for chapter in store.chapters_for_book(book.id):
+                for run in store.extraction_runs_for_chapter(chapter.id):
+                    if run.status not in ("pending", "reviewed"):
+                        continue
+                    done = extraction_mod.approve_run(store, run.id, approved_by=principal.id)
+                    out.runs_approved += 1
+                    out.topics_created += done.topics_created
+                    out.subtopics_created += done.subtopics_created
+    if store.period_configuration_for_year(academic_year_id) is None:
+        # Timing a subtopic needs the period's length. The web never asks for
+        # it separately: the bell already says it, so the default bell's
+        # teaching period sets it (the most common length, if they differ).
+        bells = store.bell_schedules_for_year(academic_year_id)
+        bell = next((b for b in bells if b.is_default), bells[0] if bells else None)
+        lengths = [_minutes(s.end) - _minutes(s.start) for s in (bell.slots if bell else [])
+                   if s.kind == "teaching"]
+        if lengths:
+            store.create_period_configuration(school_id=principal.school_id, academic_year_id=academic_year_id,
+                                              period_minutes=max(set(lengths), key=lengths.count))
+    periods: dict[str, int] = {}
+    for a in allocations:
+        book = books.get(a.subject_id)
+        if book is not None:
+            periods[book.id] = max(periods.get(book.id, 0), a.periods_per_week)
+    timed: dict[str, str] = {}
+    for book_id, per_week in periods.items():
+        try:
+            calendar_mod.compute_teaching_time_estimates(store, academic_year_id=academic_year_id,
+                                                         book_id=book_id, periods_per_week=per_week,
+                                                         approved_by=principal.id)
+        except ValueError as e:
+            timed[book_id] = str(e)
+    today = _school_today().isoformat()
+    for a in sorted(allocations, key=lambda a: (store._section_label(store.get_section(a.section_id)), a.subject_id)):
+        section = store.get_section(a.section_id)
+        subject = store.get_subject(a.subject_id)
+        label = f"{store._section_label(section)} {subject.name if subject else ''}".strip()
+        book = books.get(a.subject_id)
+        if book is None:
+            out.not_planned.append(f"{label}: no book is chosen for the subject")
+            continue
+        if book.id in timed:
+            out.not_planned.append(f"{label}: {timed[book.id]}")
+            continue
+        try:
+            per_week = scheduling_mod._resolve_cadence(store, academic_year_id, book.id, None, a.section_id)
+        except ValueError:
+            per_week = a.periods_per_week
+        try:
+            r = scheduling_mod.schedule_book(store, school_id=principal.school_id, academic_year_id=academic_year_id,
+                                             book_id=book.id, periods_per_week=per_week, force=True,
+                                             from_date=today, section_id=a.section_id)
+        except ValueError as e:
+            out.not_planned.append(f"{label}: {e}")
+            continue
+        out.plans.append(PlanBuiltResponse(
+            section_id=a.section_id, section_name=store._section_label(section),
+            subject_name=subject.name if subject else "", lessons_created=r.lessons_created,
+            subtopics_without_estimate=len(r.subtopics_without_estimate),
+            last_scheduled_date=r.last_scheduled_date, warning=r.warning))
+    return out
 
 
 @router.get("/books/{book_id}/schedule", response_model=list[ScheduledLessonResponse])

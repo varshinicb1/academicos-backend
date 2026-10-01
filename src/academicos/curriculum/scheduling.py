@@ -524,6 +524,52 @@ def push_lessons_after(
                       lessons_dropped=tuple(dropped), reschedules=tuple(moves), section_id=section_id)
 
 
+def reflow_plan(store: CurriculumStore, audit_log: AuditLog, *, academic_year_id: str, book_id: str,
+                section_id: str, from_date: str, reason: str, changed_by: str) -> PushResult:
+    """Re-lays one section's plan of a book from `from_date` on, onto the
+    periods that now happen (calendar.teaching_slots_for_book: a lost period
+    and a period the class sits an exam paper in are off, a make-up period
+    is on). A lesson whose period went moves to the plan's next free period
+    and the rest follow, exactly as PUSH moves them, but no further day is
+    skipped: the period that went is already off the list. A lesson the
+    make-up period can teach moves into it, and the rest come forward.
+    Raises ValueError when no teaching period is left on or after from_date."""
+    cadence = _resolve_cadence(store, academic_year_id, book_id, None, section_id)
+    moves, dropped = _reflow(store, audit_log, academic_year_id=academic_year_id, book_id=book_id,
+                             periods_per_week=cadence, from_date=from_date, skip_disruption_day=False,
+                             reason=reason, changed_by=changed_by, section_id=section_id)
+    return PushResult(academic_year_id=academic_year_id, book_id=book_id, from_date=from_date,
+                      periods_per_week=cadence, lessons_pushed=len(moves), lessons_dropped=tuple(dropped),
+                      reschedules=tuple(moves), section_id=section_id)
+
+
+def replan_section(store: CurriculumStore, audit_log: AuditLog, *, academic_year_id: str, section_id: str,
+                   from_date: str, reason: str, changed_by: str,
+                   subject_id: Optional[str] = None) -> int:
+    """reflow_plan() for each of a section's plans -- every book of
+    `subject_id`, or every book when None. Run when what a period holds
+    changes: a period lost, given back or made up (cover.py), an exam
+    published or its datesheet changed (exam_routes.py). Returns how many
+    plans changed."""
+    books = sorted({r["book_id"] for r in store._fetchall(
+        "SELECT DISTINCT book_id FROM scheduled_lessons WHERE academic_year_id=? AND section_id=?",
+        (academic_year_id, section_id))})
+    changed = 0
+    for book_id in books:
+        book = store.get_book(book_id)
+        if book is None or (subject_id is not None and book.subject_id != subject_id):
+            continue
+        try:
+            result = reflow_plan(store, audit_log, academic_year_id=academic_year_id, book_id=book_id,
+                                 section_id=section_id, from_date=from_date, reason=reason, changed_by=changed_by)
+        except ValueError:
+            # No teaching period of this book is left on or after from_date
+            # (or the plan has no cadence to lay it at): nothing can move.
+            continue
+        changed += bool(result.lessons_pushed or result.lessons_dropped)
+    return changed
+
+
 def reschedule_history_for_lesson(audit_log: AuditLog, lesson_id: str) -> list[dict]:
     """Every real PUSH/ADJUST ever applied to this lesson (and a PUSH that
     left it 'unscheduled'), newest first --

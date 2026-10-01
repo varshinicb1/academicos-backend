@@ -167,6 +167,25 @@ class ExamsMixin:
                 " assigned_by=excluded.assigned_by", [(p, s, t, assigned_by) for p, s, t in rows])
             self._commit()
 
+    def published_papers(self, school_id: str, academic_year_id: str) -> list[dict]:
+        """Every paper of the year's published exams, each with its exam's
+        name and `duties`: the (section, invigilator) pairs that have one.
+        The cover engine plans around these (curriculum/cover.py): a class
+        sitting a paper is not taught then, and an invigilator is not free
+        (v3 audit N-3-12). A draft exam holds nothing until it is published."""
+        papers = self._fetchall(
+            "SELECT p.*, e.name AS exam_name FROM exam_papers p JOIN exams e ON e.id=p.exam_id"
+            " WHERE e.school_id=? AND e.academic_year_id=? AND e.status='published' ORDER BY p.date, p.start_time",
+            (school_id, academic_year_id))
+        duties: dict[str, list[tuple[str, str]]] = {}
+        for r in self._fetchall(
+                "SELECT i.exam_paper_id, i.section_id, i.teacher_id FROM invigilation i"
+                " JOIN exam_papers p ON p.id=i.exam_paper_id JOIN exams e ON e.id=p.exam_id"
+                " WHERE e.school_id=? AND e.academic_year_id=? AND e.status='published' AND i.teacher_id IS NOT NULL",
+                (school_id, academic_year_id)):
+            duties.setdefault(r["exam_paper_id"], []).append((r["section_id"], r["teacher_id"]))
+        return [{**p, "duties": duties.get(p["id"], [])} for p in papers]
+
     def publish_exam(self, exam_id: str) -> dict:
         with self._conn_lock:
             self.conn.execute("UPDATE exams SET status='published', published_at=COALESCE(published_at, ?) WHERE id=?",

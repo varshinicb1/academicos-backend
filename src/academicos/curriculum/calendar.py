@@ -303,11 +303,31 @@ def timetable_periods_by_weekday(store: CurriculumStore, academic_year_id: str,
 def teaching_slots_for_book(store: CurriculumStore, academic_year_id: str, book_id: str,
                             periods_per_week: int, section_id: Optional[str] = None) -> list[date]:
     """subject_teaching_slots() over the year's real working days and this
-    book's subject's timetable (the section's own week when given)."""
+    book's subject's timetable (the section's own week when given).
+
+    A section's plan is laid only on periods that happen: the periods
+    store.periods_held() says will not teach the subject (a lost period, or
+    the class sitting an exam paper) come off, and the extra ones it names
+    (make-up periods) are added."""
     wd = working_days_for_year(store, academic_year_id)
-    return subject_teaching_slots(
+    slots = subject_teaching_slots(
         [date.fromisoformat(s) for s in wd.dates], periods_per_week,
         timetable_periods_by_weekday(store, academic_year_id, book_id, section_id) or None)
+    book = store.get_book(book_id) if section_id is not None else None
+    if book is None:
+        return slots
+    away, extra = store.periods_held(academic_year_id, section_id, book.subject_id)
+    if not away and not extra:
+        return slots
+    out = []
+    for d in slots:
+        if away[d.isoformat()] > 0:
+            away[d.isoformat()] -= 1
+            continue
+        out.append(d)
+    working = set(wd.dates)
+    out += [date.fromisoformat(d) for d, n in extra.items() if d in working for _ in range(n)]
+    return sorted(out)
 
 
 def _largest_remainder(total: int, weights: list[float]) -> list[int]:

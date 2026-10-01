@@ -34,7 +34,7 @@ import base64
 import binascii
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Collection
 
 from .chapter_filing import UNMAPPED, ChapterFiling, name_key
 
@@ -67,6 +67,13 @@ CHECKED_PROVENANCE: frozenset[str] = frozenset({
     "teacher_verified",
 })
 KEY_PROVENANCE: frozenset[str] = PUBLISHED_PROVENANCE | CHECKED_PROVENANCE
+
+# The trust labels a served record can carry (`key_tier`): QB-5's "trust
+# label", one word per record. `"none"` is deliberately absent -- a record with
+# no answer key is not served by default (rule Q1), and asking for it is what
+# `has_scheme=false` is for, so `?trust=none` would be a second spelling of an
+# audit path rather than a level of trust.
+TRUST_LEVELS: frozenset[str] = frozenset({"published", "checked"})
 
 
 class InvalidCursor(ValueError):
@@ -228,6 +235,38 @@ def key_provenance_of(rec: dict[str, Any]) -> str:
     whether the record is servable, the label says which board published it.
     """
     return (rec.get("answerScheme") or {}).get("provenance") or "none"
+
+
+def trust_of(rec: dict[str, Any]) -> str:
+    """The trust label a surface reports and `?trust=` selects on.
+
+    `key_tier` reads the label alone, so a record carrying CBSE's label over an
+    empty scheme would read "published" -- the 259-record failure again. The
+    label counts only when the record has a key at all, which is what the list
+    projection always reported; the filter and the facet now say the same.
+    """
+    return key_tier(rec) if has_answer_key(rec) else "none"
+
+
+def book_of(rec: dict[str, Any]) -> str:
+    """The publication a question was printed in, as its rights record names it.
+
+    "NCERT, Exemplar Problems, Class X Science", "Central Board of Secondary
+    Education, sample question paper and marking scheme", and so on: every
+    record carries `rights.attribution`, and it is the only field that names
+    the book rather than the chapter. The NCERT textbook a chapter belongs to
+    is not on the record (it would come from `ncert_books.json`, which the
+    served tree does not carry), so `?book=` selects the book the question
+    came FROM; `?chapter_id=` already selects the book chapter it is filed
+    under.
+    """
+    return " ".join(str((rec.get("rights") or {}).get("attribution") or "").split())
+
+
+def _folded(value: Any) -> str:
+    """Case and runs of whitespace ignored, so a book name pasted from a facet
+    or typed by hand compares equal to the one on the record."""
+    return " ".join(str(value or "").split()).lower()
 
 
 # --------------------------------------------------------------------------- #
@@ -437,6 +476,13 @@ class QuestionBank:
         key_provenance: str | None = None,
         review_state: str | None = None,
         keyword: str | None = None,
+        topic_id: str | None = None,
+        competency: str | None = None,
+        source: str | None = None,
+        trust: str | None = None,
+        book: str | None = None,
+        grades: Collection[int] | None = None,
+        subjects: Collection[str] | None = None,
         cursor: str | None = None,
         limit: int = DEFAULT_LIMIT,
     ) -> tuple[list[dict[str, Any]], str | None, int]:
@@ -445,6 +491,10 @@ class QuestionBank:
         Ordered by `id`, which is stable and unique, so a cursor is simply "the
         last id I sent you" and paging cannot skip or duplicate a row when the
         bank is edited between requests.
+
+        `grades` and `subjects` are sets, not one value: they are an API key's
+        limits (`ApiKey.grades`, `.subjects`), applied under whatever single
+        `grade` or `subject` the caller asked for.
         """
         after = decode_cursor(cursor) if cursor else None
         needle = (keyword or "").strip().lower()
@@ -465,7 +515,10 @@ class QuestionBank:
                             on_topic=on_topic, source_document_id=source_document_id,
                             has_scheme=has_scheme,
                             key_provenance=key_provenance,
-                            review_state=review_state, needle=needle):
+                            review_state=review_state, needle=needle,
+                            topic_id=topic_id, competency=competency,
+                            source=source, trust=trust, book=book,
+                            grades=grades, subjects=subjects):
                 continue
             # `totalMatching` counts everything the filter matches, not just
             # what remains after the cursor, so a caller can size the result set
@@ -494,6 +547,10 @@ class QuestionBank:
         counts: dict[str, dict[str, int]] = {
             "subject": {}, "grade": {}, "marks": {}, "type": {},
             "difficulty": {}, "bloomLevel": {}, "reviewState": {},
+            # The vocabulary of the three open-ended filters added with
+            # `?source=`, `?book=` and `?trust=`: a consumer cannot guess a
+            # book's exact name, so the facet is where it is read from.
+            "source": {}, "book": {}, "keyTier": {},
         }
         chapter_id, topic = filters.get("chapter_id"), filters.get("topic")
         in_chapter = self._in_chapter(chapter_id) if chapter_id else None
@@ -515,14 +572,22 @@ class QuestionBank:
                 key_provenance=filters.get("key_provenance"),
                 review_state=filters.get("review_state"),
                 needle=(filters.get("keyword") or "").strip().lower(),
+                topic_id=filters.get("topic_id"),
+                competency=filters.get("competency"),
+                source=filters.get("source"), trust=filters.get("trust"),
+                book=filters.get("book"),
+                grades=filters.get("grades"), subjects=filters.get("subjects"),
             ):
                 continue
-            for key, field in (
-                ("subject", "subject"), ("grade", "grade"), ("marks", "marks"),
-                ("type", "type"), ("difficulty", "difficulty"),
-                ("bloomLevel", "bloomLevel"), ("reviewState", "reviewState"),
+            for key, value in (
+                ("subject", rec.get("subject")), ("grade", rec.get("grade")),
+                ("marks", rec.get("marks")), ("type", rec.get("type")),
+                ("difficulty", rec.get("difficulty")),
+                ("bloomLevel", rec.get("bloomLevel")),
+                ("reviewState", rec.get("reviewState")),
+                ("source", rec.get("source")), ("book", book_of(rec) or None),
+                ("keyTier", trust_of(rec)),
             ):
-                value = rec.get(field)
                 if value is None:
                     continue
                 counts[key][str(value)] = counts[key].get(str(value), 0) + 1
@@ -532,8 +597,14 @@ class QuestionBank:
             for k, d in counts.items()
         }
 
-    def coverage(self) -> dict[str, Any]:
+    def coverage(self, *, grades: Collection[int] | None = None,
+                 subjects: Collection[str] | None = None) -> dict[str, Any]:
         """The honest state of the bank, reported rather than implied.
+
+        `grades` and `subjects` are an API key's limits: a key limited to
+        class 10 Science is told the coverage of class 10 Science, not of the
+        bank it may not read. The MCP's `coverage_report` passes neither, so
+        Q5's "the same numbers on both surfaces" holds for every unlimited key.
 
         One computation for both surfaces (Q5): `GET /v1/coverage` and the
         MCP's `coverage_report` return this same dict, so a buyer reading the
@@ -555,7 +626,8 @@ class QuestionBank:
         same collection; this spells out which one is authoritative, so the
         two cannot drift apart again if that ever changes.
         """
-        served = list(self._by_id.values())
+        served = [r for r in self._by_id.values()
+                  if _within(r, grades=grades, subjects=subjects)]
         total = len(served)
         with_key = sum(1 for r in served if has_answer_key(r))
         official = sum(1 for r in served
@@ -617,13 +689,33 @@ class QuestionBank:
         }
 
 
+def _within(rec: dict[str, Any], *, grades: Collection[int] | None,
+            subjects: Collection[str] | None) -> bool:
+    """Inside an API key's limits. `subjects` arrives lower-cased.
+
+    A limit that is set refuses a record that lacks the field: a record with
+    no grade is not "in class 10", and treating it as inside would hand a
+    limited key exactly the records nobody could place.
+    """
+    if grades is not None and rec.get("grade") not in grades:
+        return False
+    if subjects is not None and str(rec.get("subject") or "").lower() not in subjects:
+        return False
+    return True
+
+
 def _matches(rec: dict[str, Any], *, subject, grade, marks, type_, difficulty,
              bloom, in_chapter: Callable[[dict[str, Any]], bool] | None,
              subtopic_id, has_scheme, review_state,
              needle: str, key_provenance: str | None = None,
              min_marks: int | None = None, max_marks: int | None = None,
              on_topic: Callable[[dict[str, Any]], bool] | None = None,
-             source_document_id: str | None = None) -> bool:
+             source_document_id: str | None = None,
+             topic_id: str | None = None, competency: str | None = None,
+             source: str | None = None, trust: str | None = None,
+             book: str | None = None,
+             grades: Collection[int] | None = None,
+             subjects: Collection[str] | None = None) -> bool:
     """**The** filter chain, for every surface.
 
     `min_marks`, `max_marks`, `topic` and `source_document_id` are here rather
@@ -636,10 +728,30 @@ def _matches(rec: dict[str, Any], *, subject, grade, marks, type_, difficulty,
     The chapter and the topic arrive as tests the bank built
     (`QuestionBank._in_chapter`, `._on_topic`), because both depend on the
     class's chapter filing, which a single record cannot see.
+
+    `topic_id`, `competency`, `source`, `trust` and `book` are API-1's filters
+    over fields every record already carries (`topicIds`, `competencyIds`,
+    `source`, the key's tier, `rights.attribution`). Before they were here,
+    `/v1/questions?book=...` dropped the parameter and answered with the whole
+    class (audit N-67-12). `topic_id` and `competency` are exact ids, like
+    `subtopic_id`: `topic` above is the deliberately loose search, and one name
+    meaning two strictness levels is how "10.1.1" came to match "10.1.10".
     """
+    if not _within(rec, grades=grades, subjects=subjects):
+        return False
     if subject and str(rec.get("subject") or "").lower() != subject.lower():
         return False
     if grade is not None and rec.get("grade") != grade:
+        return False
+    if topic_id and topic_id not in (rec.get("topicIds") or []):
+        return False
+    if competency and competency not in (rec.get("competencyIds") or []):
+        return False
+    if source and str(rec.get("source") or "").lower() != source.lower():
+        return False
+    if trust and trust_of(rec) != trust:
+        return False
+    if book and _folded(book_of(rec)) != _folded(book):
         return False
     if marks is not None and rec.get("marks") != marks:
         return False

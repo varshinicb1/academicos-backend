@@ -600,12 +600,24 @@ class TransportAuth:
         self.scope = scope
 
     def authenticate(self, headers: Mapping[str, str]) -> "ApiKey":
-        """Return the authenticated key, or raise `qbank_routes.AuthFailure`."""
-        from ..assessment.qbank_routes import authorize, presented_key
+        """Return the authenticated key, or raise `qbank_routes.AuthFailure`.
+
+        A key limited to some classes or subjects is refused here, 403. The
+        HTTP routes apply those limits to every read; the MCP tools take no key
+        and search the whole corpus, so serving a limited key here would hand
+        it the classes its principal kept from it. Refusing is the honest
+        answer until the tools can carry the limits.
+        """
+        from ..assessment.qbank_routes import AuthFailure, authorize, presented_key
 
         presented = presented_key(headers.get("authorization"),
                                   headers.get("x-api-key"))
-        return authorize(self.store, presented, self.scope)
+        key = authorize(self.store, presented, self.scope)
+        if key.limited:
+            raise AuthFailure(403, "this key is limited to some classes or subjects, "
+                                   "which the MCP transport cannot enforce yet; use "
+                                   "the /v1 HTTP routes, or an unlimited key")
+        return key
 
 
 class ApiKeyMiddleware:

@@ -514,6 +514,32 @@ class ScheduleBookRequest(Camel):
     section_id: Optional[str] = None
 
 
+class BuildPlansRequest(Camel):
+    # The principal's own approval of the topics proposed when the school was
+    # seeded (decomposition templates). Never assumed: false plans only what
+    # already has approved subtopics.
+    approve_proposed_topics: bool = False
+
+
+class PlanBuiltResponse(Camel):
+    section_id: str
+    section_name: str
+    subject_name: str
+    lessons_created: int
+    subtopics_without_estimate: int = 0
+    last_scheduled_date: Optional[str] = None
+    warning: Optional[str] = None
+
+
+class BuildPlansResponse(Camel):
+    runs_approved: int = 0
+    topics_created: int = 0
+    subtopics_created: int = 0
+    plans: list[PlanBuiltResponse] = []
+    # One sentence per section and subject that got no plan, and why.
+    not_planned: list[str] = []
+
+
 class ScheduleBookResponse(Camel):
     academic_year_id: str
     book_id: str

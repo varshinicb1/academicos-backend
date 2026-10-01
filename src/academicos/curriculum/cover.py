@@ -4,19 +4,23 @@ teacher is away or a day is lost (REQUIREMENTS SCH-5, SCH-6, SCH-7, SCH-8).
 - A LeaveRequest (full day, first or second half, or named periods; planned or
   same-day) is approved or rejected by the principal (or a delegated admin).
 - Approval finds every period the teacher misses: their own timetabled periods
-  on those days and any substitution duty they had taken. Each gets a
-  Substitution, and the engine proposes a substitute. The candidate must be
-  free at that time by clock time, not on leave then, and under the day's
-  maximum. Candidates are ranked: the same subject and grade first, then the
+  on those days (not one the class spends sitting an exam paper) and any
+  substitution duty they had taken. Each gets a Substitution, and the engine
+  proposes a substitute. The candidate must be free at that time by clock
+  time (an invigilation duty is not free), not on leave then, and under the
+  day's maximum. Candidates are ranked: the same subject and grade first, then the
   same subject, then someone who teaches that section, then the fewest
-  substitutions this week, then the lightest day. The principal confirms or
-  picks another; the substitute accepts or declines.
+  substitutions this week, then the lightest day; staff with no class of
+  their own come last. The principal confirms or picks another; the
+  substitute accepts or declines.
 - A period is LOST when nobody who teaches the subject takes it: nobody is
   free, the principal runs it as supervised study or combines sections, or a
   closure (a short-notice holiday, an event, an exam day) cancels the day. A
   lost period is a debt per section and subject. The engine proposes make-up
   periods (the section's free periods, when its subject teacher is free and
-  under their day's maximum) and records the recovery.
+  under their day's maximum) and records the recovery. The section's lesson
+  plan follows: the lesson of a lost period moves to the next free period,
+  and a make-up period teaches the next lesson (periods_held).
 
 Dates are the school's local dates (IST); times compare by the section's bell,
 so a clash across two bells is still a clash.
@@ -29,7 +33,7 @@ import json
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 COVER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS leave_requests (
@@ -119,6 +123,7 @@ SUB_OPEN = ("open", "declined")
 SUB_TAKEN = ("proposed", "accepted")
 MODES = ("substitute", "supervised", "combined", "lost")
 MAX_PER_DAY = 7
+_KEEP_NOTE = object()      # _propose: leave the substitution's note as it is
 
 
 def _now() -> str:
@@ -206,13 +211,67 @@ class Candidate:
     reasons: list[str] = field(default_factory=list)
 
 
+@dataclass
+class ExamDay:
+    """What one day's published exam papers hold (EX-7; v3 audit N-3-12):
+    the clock spans each section sits a paper (with a line for the day
+    view), and the spans each invigilator is on duty."""
+    sitting: dict[str, list[tuple[int, int, str]]] = field(default_factory=dict)
+    invigilating: dict[str, list[tuple[int, int]]] = field(default_factory=dict)
+
+    def sits(self, section_id: str, span: Optional[tuple[int, int]]) -> Optional[str]:
+        """The paper `section_id` sits during the clock span `span`, or None."""
+        if span is None:
+            return None
+        return next((label for s, e, label in self.sitting.get(section_id, ()) if s < span[1] and span[0] < e),
+                    None)
+
+
 class CoverError(ValueError):
     """The route's 422 (a bad request) -- see also KeyError (404)."""
 
 
 class CoverMixin:
 
+    # Two things the engine needs live in stores this one cannot read:
+    # the school's teachers (user ids, from the user store) and its
+    # published exam papers (operations, which imports this package).
+    # curriculum.routes.init hands both over at boot. A bare store -- the
+    # CLI, the store-level tests -- covers from the teaching allocations
+    # alone and knows no exams.
+    staff_source: Optional[Callable[[str], list[str]]] = None
+    exam_source: Optional[Callable[[str, str], list[dict]]] = None   # (school, year) -> papers
+    # Where a lesson moved by a lost or made-up period is recorded: the
+    # assessment AuditLog, as PUSH writes it. Handed over at boot too; a bare
+    # store has none, and its lost periods leave the plans where they are.
+    plan_audit_log: Optional[Any] = None
+
     # ---------------- helpers ----------------
+
+    def _exam_days(self, academic_year_id: str, on: Optional[str] = None) -> dict[str, ExamDay]:
+        """{date: ExamDay} over the year's published exam papers (only
+        `on`'s, when given). Every section of a paper's class sits it."""
+        year = self.get_academic_year(academic_year_id) if self.exam_source else None
+        if year is None:
+            return {}
+        papers = [p for p in self.exam_source(year.school_id, academic_year_id) if on is None or p["date"] == on]
+        if not papers:
+            return {}
+        by_grade = {g.number: [s.id for s in self.sections_for_grade(g.id)]
+                    for g in self.grades_for_year(academic_year_id)}
+        days: dict[str, ExamDay] = defaultdict(ExamDay)
+        for p in papers:
+            span = (_minutes(p["start_time"]), _minutes(p["end_time"]))
+            label = f"{p['exam_name']}: {p['subject_name']} paper, {p['start_time']}-{p['end_time']}"
+            day = days[p["date"]]
+            for sid in by_grade.get(p["grade"], []):
+                day.sitting.setdefault(sid, []).append((*span, label))
+            for _, teacher in p["duties"]:
+                day.invigilating.setdefault(teacher, []).append(span)
+        return dict(days)
+
+    def _exam_day(self, academic_year_id: str, on: str) -> ExamDay:
+        return self._exam_days(academic_year_id, on).get(on) or ExamDay()
 
     def _cover_times(self, section) -> dict[int, tuple[int, int]]:
         bell = self.bell_for_section(section)
@@ -328,19 +387,24 @@ class CoverMixin:
 
         A co-taught period (SCH-8) needs no one while the other teacher of it
         is there: they take the class. It needs a substitute only when both
-        are away, whichever went on leave second."""
+        are away, whichever went on leave second. Nor does a period the class
+        spends sitting an exam paper (v3 audit N-3-12)."""
         working = self._working_dates(leave.academic_year_id)
         own = [e for e in self.timetable_for_year(leave.academic_year_id)
                if leave.teacher_id in (e.teacher_id, e.co_teacher_id)]
         sections = {s.id: s for s in self.sections_for_year(leave.academic_year_id)}
+        exam_days = self._exam_days(leave.academic_year_id) if own else {}
         out = []
         for d in _dates(leave.start_date, leave.end_date):
             if d not in working:
                 continue
             wd = date.fromisoformat(d).weekday()
+            exams = exam_days.get(d) or ExamDay()
             for e in own:
                 sec = sections.get(e.section_id)
                 if sec is None or e.day_of_week != wd or not self._leave_covers(leave, sec, e.period):
+                    continue
+                if exams.sits(sec.id, self._cover_times(sec).get(e.period)):
                     continue
                 partner = self._other_teacher(e, leave.teacher_id)
                 if partner and not self._on_leave(partner, d, sec, e.period):
@@ -390,9 +454,7 @@ class CoverMixin:
                                     sub.section_id, sub.period, sub.subject_id, sub.absent_teacher_id, None,
                                     sub.status, sub.mode, None, sub.created_at, sub.updated_at))
                     best = self.substitute_candidates(sub.id)
-                    if best:
-                        self._exec("UPDATE substitutions SET substitute_id=?, status='proposed', mode='substitute', "
-                                   "updated_at=? WHERE id=?", (best[0].teacher_id, _now(), sub.id))
+                    self._propose(sub, best[0] if best else None)
                     subs.append(self.get_substitution(sub.id))
         self._commit()
         return leave, subs
@@ -406,6 +468,11 @@ class CoverMixin:
                 raise KeyError(leave_id)
             if leave.status not in ("pending", "approved"):
                 raise CoverError(f"this leave is already {leave.status}")
+            # A period someone was only supervising was owed (SCH-7); with
+            # the teacher back it is taught after all, so the debt goes too.
+            for sub in self._subs_where("leave_id=? AND date>=? AND status NOT IN ('resolved','cancelled')",
+                                        (leave_id, today)):
+                self._clear_lost(sub)
             self._exec("UPDATE leave_requests SET status='cancelled' WHERE id=?", (leave_id,))
             self._exec("UPDATE substitutions SET status='cancelled', updated_at=? WHERE leave_id=? AND date>=? "
                        "AND status<>'resolved'", (_now(), leave_id, today))
@@ -433,6 +500,7 @@ class CoverMixin:
                 continue          # still away through another leave
             self._exec("UPDATE substitutions SET status='cancelled', note=?, updated_at=? WHERE id=?",
                        ("the co-teacher is back and takes the class", _now(), sub.id))
+            self._clear_lost(sub)
 
     # ---------------- teacher attendance (SCH-9) ----------------
 
@@ -498,11 +566,17 @@ class CoverMixin:
                                 (teacher_id, start, end))
 
     def _busy_spans(self, teacher_id: str, on: str, academic_year_id: str,
-                    sections: dict, exclude_sub: Optional[str] = None) -> list[tuple[int, int]]:
-        """Clock spans a teacher is teaching on a date: their own periods (if
-        not on leave then), substitution duties and make-up periods."""
+                    sections: dict, exclude_sub: Optional[str] = None,
+                    exams: Optional[ExamDay] = None) -> list[tuple[int, int]]:
+        """Clock spans a teacher is busy on a date: their own periods (if
+        not on leave then, and not while that class sits an exam paper),
+        substitution duties, make-up periods and invigilation duties. An
+        invigilator was proposed as a substitute during their own paper
+        (v3 audit N-3-12). `exams` is that day's, when the caller has it."""
+        if exams is None:
+            exams = self._exam_day(academic_year_id, on)
         wd = date.fromisoformat(on).weekday()
-        spans = []
+        spans = list(exams.invigilating.get(teacher_id, ()))
         for e in self.timetable_for_year(academic_year_id):
             if teacher_id not in (e.teacher_id, e.co_teacher_id) or e.day_of_week != wd:
                 continue
@@ -514,7 +588,7 @@ class CoverMixin:
             if covered and covered[0].absent_teacher_id == teacher_id:
                 continue
             t = self._cover_times(sec).get(e.period)
-            if t:
+            if t and not exams.sits(e.section_id, t):
                 spans.append(t)
         for s in self._subs_where("substitute_id=? AND date=? AND status IN ('proposed','accepted')",
                                   (teacher_id, on)):
@@ -560,21 +634,32 @@ class CoverMixin:
         this_week = Counter(s.substitute_id for s in self._subs_where(
             "academic_year_id=? AND date>=? AND date<=? AND status IN ('proposed','accepted')",
             (sub.academic_year_id, week_start, week_end)) if s.id != sub.id)
+        # Staff with no class of their own (a librarian, a PT teacher, a new
+        # joiner) are the school's usual cover pool, and were never offered
+        # (v3 audit N-3-16). They can only supervise, so they come last: after
+        # every teacher of the school, whatever the scores.
+        no_class = [t for t in dict.fromkeys(self.staff_source(sub.school_id) if self.staff_source else [])
+                    if t not in teaches]
+        last_resort = set(no_class)
+        exams = self._exam_day(sub.academic_year_id, sub.date)
         out: list[Candidate] = []
-        for t in teaches:
+        for t in [*teaches, *no_class]:
             if t == sub.absent_teacher_id:
                 continue
             if self._on_leave(t, sub.date, section, sub.period):
                 continue
-            spans = self._busy_spans(t, sub.date, sub.academic_year_id, sections, exclude_sub=sub.id)
+            spans = self._busy_spans(t, sub.date, sub.academic_year_id, sections, exclude_sub=sub.id, exams=exams)
             if any(s < slot[1] and slot[0] < e for s, e in spans):
                 continue
             if len(spans) >= MAX_PER_DAY:
                 continue
             name = subject.name if subject else ""
-            same_subject_grade = (name, section.grade_id) in teaches[t]
-            same_subject = any(n == name for n, _ in teaches[t])
+            taught = teaches.get(t, set())
+            same_subject_grade = (name, section.grade_id) in taught
+            same_subject = any(n == name for n, _ in taught)
             score, reasons = 0, []
+            if t in last_resort:
+                reasons.append("has no class of their own: only when no teacher is free")
             if same_subject_grade:
                 score += 40
                 reasons.append(f"teaches {name} to this class")
@@ -589,7 +674,7 @@ class CoverMixin:
             score -= len(spans)
             reasons.append(f"{len(spans)} period(s) that day")
             out.append(Candidate(teacher_id=t, score=score, qualified=same_subject, reasons=reasons))
-        out.sort(key=lambda c: (-c.score, c.teacher_id))
+        out.sort(key=lambda c: (c.teacher_id in last_resort, -c.score, c.teacher_id))
         return out
 
     def assign_substitute(self, sub_id: str, *, substitute_id: Optional[str], mode: str = "substitute",
@@ -614,13 +699,7 @@ class CoverMixin:
                 if substitute_id not in allowed:
                     raise CoverError("that teacher is not free for this period (teaching, on leave, "
                                      "or at the day's maximum)")
-                qualified = allowed[substitute_id].qualified
-                self._exec("UPDATE substitutions SET substitute_id=?, status='proposed', mode=?, note=?, "
-                           "updated_at=? WHERE id=?",
-                           (substitute_id, "substitute" if qualified else "supervised", note, _now(), sub_id))
-                self._clear_lost(sub)
-                if not qualified:
-                    lost = self._record_lost(sub, reason="subject not taught (supervised)")
+                lost = self._propose(sub, allowed[substitute_id], note=note)
             else:
                 self._exec("UPDATE substitutions SET substitute_id=?, status='resolved', mode=?, note=?, "
                            "updated_at=? WHERE id=?", (substitute_id if mode == "supervised" else None,
@@ -641,14 +720,43 @@ class CoverMixin:
             if accept:
                 self._exec("UPDATE substitutions SET status='accepted', updated_at=? WHERE id=?", (_now(), sub_id))
             else:
-                self._exec("UPDATE substitutions SET status='declined', substitute_id=NULL, updated_at=? "
-                           "WHERE id=?", (_now(), sub_id))
+                self._exec("UPDATE substitutions SET status='declined', substitute_id=NULL, mode='substitute', "
+                           "updated_at=? WHERE id=?", (_now(), sub_id))
                 nxt = [c for c in self.substitute_candidates(sub_id) if c.teacher_id != teacher_id]
-                if nxt:
-                    self._exec("UPDATE substitutions SET substitute_id=?, status='proposed', updated_at=? "
-                               "WHERE id=?", (nxt[0].teacher_id, _now(), sub_id))
+                self._propose(sub, nxt[0] if nxt else None)
         self._commit()
         return self.get_substitution(sub_id)
+
+    def _propose(self, sub: Substitution, cand: Optional[Candidate], *,
+                 note: Any = _KEEP_NOTE) -> Optional[LostPeriod]:
+        """Put `cand` on the period, or leave it waiting for someone (open,
+        or declined) when there is nobody. A teacher of the subject is a
+        substitute. Anyone else only supervises: the subject is not taught,
+        so the period is lost for the section and subject (SCH-7) and stays
+        owed until it is made up. A period that gets a teacher of the
+        subject again, or goes back to waiting, owes nothing (yet).
+
+        One rule for every path. Until the v3 audit (N-3-9) only the
+        principal's own pick was judged so: the engine's proposal on
+        approving a leave, and the next candidate after a decline, were
+        filed as 'substitute' whoever they were -- counted as filled, and
+        never a lost period (8 of 24 in the audit's school)."""
+        if cand is None:
+            self._exec("UPDATE substitutions SET substitute_id=NULL, mode='substitute', updated_at=? WHERE id=?",
+                       (_now(), sub.id))
+            self._clear_lost(sub)
+            return None
+        mode = "substitute" if cand.qualified else "supervised"
+        if note is _KEEP_NOTE:
+            self._exec("UPDATE substitutions SET substitute_id=?, status='proposed', mode=?, updated_at=? "
+                       "WHERE id=?", (cand.teacher_id, mode, _now(), sub.id))
+        else:
+            self._exec("UPDATE substitutions SET substitute_id=?, status='proposed', mode=?, note=?, updated_at=? "
+                       "WHERE id=?", (cand.teacher_id, mode, note, _now(), sub.id))
+        if cand.qualified:
+            self._clear_lost(sub)
+            return None
+        return self._record_lost(sub, reason="subject not taught (supervised)")
 
     def settle_past_uncovered(self, academic_year_id: str, today: str) -> int:
         """A period whose day has passed with nobody covering it was lost."""
@@ -674,8 +782,11 @@ class CoverMixin:
         existing = self._lost_where("date=? AND section_id=? AND period=?", (sub.date, sub.section_id, sub.period))
         if existing:
             return existing[0]
-        return self._insert_lost(sub.school_id, sub.academic_year_id, sub.section_id, sub.subject_id,
-                                 sub.date, sub.period, reason, sub.id)
+        lp = self._insert_lost(sub.school_id, sub.academic_year_id, sub.section_id, sub.subject_id,
+                               sub.date, sub.period, reason, sub.id)
+        self._replan(lp.academic_year_id, lp.section_id, lp.subject_id, lp.date,
+                     f"period {lp.period} on {lp.date} lost: {reason}")
+        return lp
 
     def _insert_lost(self, school_id, academic_year_id, section_id, subject_id, on, period, reason,
                      source_id) -> LostPeriod:
@@ -689,10 +800,31 @@ class CoverMixin:
                     lp.period, lp.reason, lp.source_id, lp.status, lp.created_at, lp.updated_at))
         return lp
 
-    def _clear_lost(self, sub: Substitution) -> None:
-        """A period that now has a teacher of its subject is no longer lost."""
-        self._exec("DELETE FROM lost_periods WHERE date=? AND section_id=? AND period=? AND status='owed' "
-                   "AND source_id=?", (sub.date, sub.section_id, sub.period, sub.id))
+    def _clear_lost(self, sub: Substitution, *, replan: bool = True) -> None:
+        """A period that now has a teacher of its subject is no longer lost,
+        and the plan may teach in it again (`replan`)."""
+        where = ("date=? AND section_id=? AND period=? AND status='owed' AND source_id=?",
+                 (sub.date, sub.section_id, sub.period, sub.id))
+        if not self._lost_where(*where):
+            return
+        self._exec(f"DELETE FROM lost_periods WHERE {where[0]}", where[1])
+        if replan:
+            self._replan(sub.academic_year_id, sub.section_id, sub.subject_id, sub.date,
+                         f"period {sub.period} on {sub.date} is taught after all")
+
+    def _replan(self, academic_year_id: str, section_id: str, subject_id: str, from_date: str,
+                reason: str) -> int:
+        """A period of the section's subject was lost, given back or made
+        up: its plan is laid again on the periods that now happen (see
+        periods_held), so a lesson whose period was lost is taught at the
+        plan's next free period and a make-up period teaches the next one
+        (v3 audit N-3-10). Each move is on the audit log, as a PUSH's is."""
+        if self.plan_audit_log is None:
+            return 0
+        from .scheduling import replan_section
+        return replan_section(self, self.plan_audit_log, academic_year_id=academic_year_id,
+                              section_id=section_id, subject_id=subject_id, from_date=from_date,
+                              reason=reason, changed_by="system")
 
     def lost_periods_for_year(self, academic_year_id: str, status: Optional[str] = None) -> list[LostPeriod]:
         if status:
@@ -708,7 +840,8 @@ class CoverMixin:
         """A day that stops being taught at short notice (or after the fact):
         every section's timetabled periods that day are lost periods -- or
         only `section_ids`' (some classes out: a trip, an exam hall). The
-        caller adds the holiday to the calendar and reflows the plans."""
+        caller adds the holiday to the calendar and reflows the plans (or,
+        asked not to, leaves them), so nothing here moves a plan."""
         year = self.get_academic_year(academic_year_id)
         if year is None:
             raise KeyError(academic_year_id)
@@ -717,6 +850,13 @@ class CoverMixin:
         wd = date.fromisoformat(on).weekday()
         out = []
         with self._conn_lock:
+            # The day's cover is cancelled below. A period someone was only
+            # supervising already owed itself; the closure owes it now, with
+            # the closure's reason, like every other period of the day.
+            for sub in self._subs_where("academic_year_id=? AND date=? AND status NOT IN ('resolved','cancelled')",
+                                        (academic_year_id, on)):
+                if section_ids is None or sub.section_id in section_ids:
+                    self._clear_lost(sub, replan=False)
             for e in self.timetable_for_year(academic_year_id):
                 if e.day_of_week != wd:
                     continue
@@ -739,8 +879,9 @@ class CoverMixin:
 
     def compensation_options(self, lost_id: str, *, today: str, days_ahead: int = 21,
                              limit: int = 20) -> list[tuple[str, int]]:
-        """(date, period) where the section is free, its subject teacher is
-        free and under the day's maximum, from today on."""
+        """(date, period) where the section is free (and not sitting an exam
+        paper), its subject teacher is free and under the day's maximum,
+        from today on."""
         lp = self.get_lost_period(lost_id)
         if lp is None:
             raise KeyError(lost_id)
@@ -754,20 +895,22 @@ class CoverMixin:
         working = self._working_dates(lp.academic_year_id)
         start = max(date.fromisoformat(today), date.fromisoformat(lp.date) + timedelta(days=1))
         section_week = [e for e in self.timetable_for_section(lp.section_id)]
+        exam_days = self._exam_days(lp.academic_year_id)
         out = []
         for i in range(days_ahead):
             d = (start + timedelta(days=i)).isoformat()
             if d not in working:
                 continue
             wd = date.fromisoformat(d).weekday()
+            exams = exam_days.get(d) or ExamDay()
             taken = {e.period for e in section_week if e.day_of_week == wd}
             taken |= {x.compensation_period for x in self._lost_where(
                 "section_id=? AND compensation_date=? AND status='compensated'", (lp.section_id, d))}
-            busy = self._busy_spans(teacher, d, lp.academic_year_id, sections) if teacher else []
+            busy = self._busy_spans(teacher, d, lp.academic_year_id, sections, exams=exams) if teacher else []
             if teacher and len(busy) >= MAX_PER_DAY:
                 continue
             for p, (s, e) in sorted(times.items()):
-                if p in taken:
+                if p in taken or exams.sits(section.id, (s, e)):
                     continue
                 if teacher and (self._on_leave(teacher, d, section, p) or any(bs < e and s < be for bs, be in busy)):
                     continue
@@ -787,6 +930,8 @@ class CoverMixin:
                 raise CoverError("that period is not free for this section and its teacher")
             self._exec("UPDATE lost_periods SET status='compensated', compensation_date=?, compensation_period=?, "
                        "updated_at=? WHERE id=?", (on, period, _now(), lost_id))
+            self._replan(lp.academic_year_id, lp.section_id, lp.subject_id, on,
+                         f"make-up period {period} on {on} for {lp.date} period {lp.period}")
         self._commit()
         return self.get_lost_period(lost_id)
 
@@ -801,6 +946,39 @@ class CoverMixin:
         self._commit()
         return self.get_lost_period(lost_id)
 
+    # ---------------- the plan's periods (SCH-4 with SCH-7, EX-7) ----------------
+
+    def periods_held(self, academic_year_id: str, section_id: str,
+                     subject_id: str) -> tuple[Counter, Counter]:
+        """For one section's plan of one subject: per date, how many of its
+        week's periods of the subject will not teach it, and how many extra
+        periods will. calendar.teaching_slots_for_book takes the first off
+        the plan's periods and adds the second, so a plan made, pushed or
+        reflowed is laid only on periods that happen.
+
+        Not taught: a lost period of the subject, whatever became of its
+        debt, and a period the class spends sitting a published exam paper.
+        Extra: a make-up period. Until the v3 audit a lost period left its
+        lesson 'scheduled' on that day, a make-up taught nothing (N-3-10),
+        and 10-A kept its Science lesson on the day of the Class 10 paper
+        (N-3-12)."""
+        section = self.get_section(section_id)
+        if section is None:
+            return Counter(), Counter()
+        lost = self._lost_where("academic_year_id=? AND section_id=? AND subject_id=?",
+                                (academic_year_id, section_id, subject_id))
+        held = {(l.date, l.period) for l in lost}
+        extra = Counter(l.compensation_date for l in lost if l.status == "compensated" and l.compensation_date)
+        exam_days = self._exam_days(academic_year_id)
+        if exam_days:
+            times = self._cover_times(section)
+            week = [e for e in self.timetable_for_section(section_id) if e.subject_id == subject_id]
+            for d, exams in exam_days.items():
+                wd = date.fromisoformat(d).weekday()
+                held |= {(d, e.period) for e in week
+                         if e.day_of_week == wd and exams.sits(section_id, times.get(e.period))}
+        return Counter(d for d, _ in held), extra
+
     # ---------------- the day (what actually happens) ----------------
 
     def handover_for(self, sub: "Substitution") -> Optional[str]:
@@ -814,7 +992,11 @@ class CoverMixin:
         """One day as it will run: the week's periods, with that day's
         substitutions, lost periods and make-up periods applied. Filter by a
         section, or by a teacher (their periods, their duties, their make-ups;
-        their periods on leave marked so)."""
+        their periods on leave marked so).
+
+        A period the class spends sitting a published exam paper is kind
+        'exam', with no teacher: it is not taught. Until the v3 audit
+        (N-3-12) grade 10's day showed regular teaching through its paper."""
         if on not in self._working_dates(academic_year_id):
             return []
         wd = date.fromisoformat(on).weekday()
@@ -823,6 +1005,7 @@ class CoverMixin:
             "academic_year_id=? AND date=? AND status<>'cancelled'", (academic_year_id, on))}
         lost = {(l.section_id, l.period): l for l in self._lost_where("academic_year_id=? AND date=?",
                                                                       (academic_year_id, on))}
+        exams = self._exam_day(academic_year_id, on)
         rows: list[dict[str, Any]] = []
         for e in self.timetable_for_year(academic_year_id):
             if e.day_of_week != wd:
@@ -845,7 +1028,11 @@ class CoverMixin:
                                note="the co-teacher takes the class")
                 elif co_away:
                     row["coTeacherId"] = None
-            if s is not None:
+            paper = exams.sits(e.section_id, self._cover_times(sec).get(e.period))
+            if paper:
+                row.update(kind="exam", teacherId=None, coTeacherId=None, note=paper,
+                           substitutionId=s.id if s is not None else None)
+            elif s is not None:
                 row["substitutionId"] = s.id
                 if s.status in SUB_TAKEN and s.mode == "substitute":
                     row.update(kind="substitute", teacherId=s.substitute_id)
@@ -864,7 +1051,8 @@ class CoverMixin:
                 continue
             if teacher_id:
                 mine = teacher_id in (e.teacher_id, e.co_teacher_id)
-                if mine and teacher_id not in (row["teacherId"], row["coTeacherId"]):
+                # Their class in the exam hall is shown as that, not as away.
+                if mine and not paper and teacher_id not in (row["teacherId"], row["coTeacherId"]):
                     row = {**row, "kind": "away", "note": "on leave; see the handover" if s else row["note"]}
                 elif not mine and row["teacherId"] != teacher_id:
                     continue
@@ -898,13 +1086,28 @@ class CoverMixin:
         for l in lost:
             debt[(l.section_id, l.subject_id)][l.status] += 1
         return {
-            "substitutionsRequested": len(subs),
-            "filled": sum(1 for s in subs if s.status in SUB_TAKEN and s.mode == "substitute"),
-            "supervised": sum(1 for s in subs if s.mode == "supervised"),
-            "unfilled": sum(1 for s in subs if s.status in SUB_OPEN),
-            "lost": len(lost),
-            "compensated": sum(1 for l in lost if l.status == "compensated"),
-            "owed": sum(1 for l in lost if l.status == "owed"),
+            **count_cover(subs, lost),
             "debt": [{"sectionId": sid, "subjectId": subj, "owed": c["owed"], "compensated": c["compensated"],
                       "waived": c["waived"]} for (sid, subj), c in sorted(debt.items())],
         }
+
+
+def count_cover(subs: list[Substitution], lost: list[LostPeriod]) -> dict[str, int]:
+    """The cover figures the principal's summary and the term report both
+    show (ADM-2), counted here once so the two cannot disagree. `subs`
+    leaves out cancelled substitutions.
+
+    Filled: a teacher of the subject has the period. Supervised: someone
+    else sits with the class, so the subject is not taught and the period
+    is also among the lost ones (and owed until made up). Which of the two
+    a period is was decided when the person was put on it (_propose), so a
+    supervisor never counts as filled (v3 audit N-3-9)."""
+    return {
+        "substitutionsRequested": len(subs),
+        "filled": sum(1 for s in subs if s.status in SUB_TAKEN and s.mode == "substitute"),
+        "supervised": sum(1 for s in subs if s.mode == "supervised"),
+        "unfilled": sum(1 for s in subs if s.status in SUB_OPEN),
+        "lost": len(lost),
+        "compensated": sum(1 for l in lost if l.status == "compensated"),
+        "owed": sum(1 for l in lost if l.status == "owed"),
+    }

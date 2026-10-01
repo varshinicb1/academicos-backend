@@ -14,6 +14,7 @@ from pydantic.alias_generators import to_camel
 from ..assessment.auth_routes import get_current_user, require_admin, require_principal
 from ..assessment.users import User
 from ..curriculum import routes as cr
+from ..curriculum import scheduling
 from ..curriculum.schemas import Camel
 from .exams import ExamError, auto_roster
 from .routes import notify_parents_safely, notify_safely, store
@@ -165,6 +166,22 @@ def get_exam(exam_id: str, principal: User = Depends(require_admin("exams"))) ->
     return _response(_exam(exam_id, principal))
 
 
+def _replan_classes(e: dict, dates: list[str], actor: User) -> int:
+    """A class sitting a paper is not taught then, so its sections' lesson
+    plans move off those periods from the first paper's day on -- and back
+    when a paper moves or goes (curriculum/cover.py periods_held). Until the
+    v3 audit (N-3-12) 10-A kept its Science lesson on the day of the Class 10
+    paper. Returns how many plans changed."""
+    if not dates:
+        return 0
+    from ..assessment.audit_log import get_audit_log
+    cs, log = cr._require(), get_audit_log(cr._cfg.data_root)
+    by_grade = _sections_by_grade(e["academic_year_id"])
+    return sum(scheduling.replan_section(cs, log, academic_year_id=e["academic_year_id"], section_id=s.id,
+                                         from_date=min(dates), reason=f"exam: {e['name']}", changed_by=actor.id)
+               for g in e["grades"] for s in by_grade.get(g, []))
+
+
 def _students_of_grade(e: dict, grade: int) -> list[str]:
     cs = cr._require()
     return [en.student_id for s in _sections_by_grade(e["academic_year_id"]).get(grade, [])
@@ -259,7 +276,10 @@ def set_datesheet(exam_id: str, req: DatesheetRequest, principal: User = Depends
         after = store().replace_datesheet(e, rows, working_dates=cs._working_dates(e["academic_year_id"]))
     except ExamError as err:
         raise HTTPException(409, str(err))
-    _audit("exam_datesheet_set", principal, {"examId": e["id"], "papers": len(rows)})
+    moved = 0
+    if e["status"] == "published":
+        moved = _replan_classes(e, [p["date"] for p in before + after], principal)
+    _audit("exam_datesheet_set", principal, {"examId": e["id"], "papers": len(rows), "plansMoved": moved})
     if e["status"] == "published":
         _announce_datesheet_change(e, before, after)
         _tell_invigilators(e, before_roster)
@@ -334,9 +354,10 @@ def publish(exam_id: str, principal: User = Depends(require_admin("exams"))) -> 
         notify_parents_safely(school_id=e["school_id"], student_ids=students, kind="exam_scheduled",
                               params={"exam": e["name"], "start": e["start_date"]}, dedupe_key=f"exam:{e['id']}")
     told = _tell_invigilators(e)
+    moved = _replan_classes(e, [p["date"] for p in papers], principal)
     invigilators = len({r["teacher_id"] for r in store().roster(e["id"]) if r["teacher_id"]})
     _audit("exam_published", principal, {"examId": e["id"], "students": len(students), "invigilators": invigilators,
-                                         "invigilatorsTold": told})
+                                         "invigilatorsTold": told, "plansMoved": moved})
     return _response(e)
 
 

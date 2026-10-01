@@ -80,6 +80,11 @@ ROUTE_POLICY: dict[tuple[str, str], Policy] = {
     # staff and parents only (a student is a minor: their parent is messaged).
     ("GET", "/api/v1/me/contact"): _p(ANY_USER, "the caller's own number only; students refused in the handler"),
     ("PUT", "/api/v1/me/contact"): _p(ANY_USER, "the caller's own number only; students refused in the handler"),
+    # EX-8 report cards: the student, their parent, the principal or a reports
+    # admin, and the section's class teacher -- checked in the handler; logged.
+    ("GET", "/api/v1/report-cards/students/{student_id}"): _p(ANY_USER, "the student, their linked parent, a reports admin or the class teacher; logged"),
+    ("GET", "/api/v1/report-cards/students/{student_id}/pdf"): _p(ANY_USER, "as above; logged"),
+    ("GET", "/api/v1/report-cards/sections/{section_id}/pdf"): _p(ANY_USER, "a reports admin or the section's class teacher; logged"),
     ("GET", "/v1/registry/stats"): _p(ANY_USER, "one corpus-wide document count"),
     ("POST", "/v1/search"): _p(ANY_USER, "shared NCERT corpus, no school data"),
     ("POST", "/v1/agent/doubt"): _p(ANY_USER, "a student asking a doubt is the intended user"),
@@ -95,7 +100,7 @@ ROUTE_POLICY: dict[tuple[str, str], Policy] = {
     ("GET", "/v1/questions"): _p(API_KEY),
     ("GET", "/v1/questions/{question_id}"): _p(API_KEY),
     ("GET", "/v1/questions/{question_id}/scheme"): _p(API_KEY),
-    ("GET", "/v1/subtopics/{subtopic_id}/questions"): _p(API_KEY),
+    ("GET", "/v1/subtopics/{subtopic_id:path}/questions"): _p(API_KEY, "a subtopic id carries slashes, so the route matches a path (D52)"),
     ("GET", "/v1/facets"): _p(API_KEY),
     ("GET", "/v1/coverage"): _p(API_KEY, "aggregate answer-key coverage; no question text crosses it"),
 
@@ -283,6 +288,7 @@ ROUTE_POLICY: dict[tuple[str, str], Policy] = {
     ("GET", "/api/v1/calendar-feed"): _p(ANY_USER, "the callers own feed; staff and students"),
     ("POST", "/api/v1/calendar-feed/reset"): _p(ANY_USER, "the callers own feed"),
     ("GET", "/api/v1/ics/{token}.ics"): _p(PUBLIC, "the unguessable feed token is the key; the owners own dates only"),
+    ("POST", "/api/v1/curriculum/academic-years/{academic_year_id}/lesson-plans"): _p(PRINCIPAL, "approves proposed topics and plans every section (N-67-5)"),
     ("GET", "/api/v1/my-calendar"): _p(ANY_USER, "the callers own dated events; staff and students"),
     ("GET", "/api/v1/my-load"): _p(ANY_USER, "the callers own teaching load; staff only"),
     ("POST", "/v1/homework-sets"): _p(API_KEY, "questions:read"),
@@ -475,6 +481,9 @@ def iter_routes(app) -> Iterable[tuple[str, str, object]]:
 # and their linked children's pages, each of which checks the link itself.
 PARENT_PATHS = frozenset({
     "/api/v1/auth/me",
+    # EX-8: a linked parent reads their child's report card (checked in the handler).
+    "/api/v1/report-cards/students/{student_id}",
+    "/api/v1/report-cards/students/{student_id}/pdf",
     "/api/v1/notifications",
     "/api/v1/notifications/{notification_id}/read",
     "/api/v1/notifications/read-all",

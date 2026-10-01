@@ -27,7 +27,12 @@ Design decisions taken from that document, all of them deliberate:
 Authentication is a scoped API key (`api_keys.py`), and the route depends on the
 scope it needs, so a `facets:read` key cannot read a marking scheme it was not
 granted. Student data is unreachable here by construction: no scope in the
-vocabulary grants it.
+vocabulary grants it. A key may also be limited to some classes and subjects;
+every route then serves only records inside them, and a request naming a class
+or subject outside them is a 403 (`_limits`, `_refuse_outside`).
+
+A query parameter a route does not declare is a 422 naming it (`_require`),
+not ignored: `?subjct=Science` used to answer with the whole bank.
 
 Honesty about what is not here: `POST /v1/papers` is **not** implemented in this
 pass -- paper generation already exists at `POST /api/v1/papers/generate` behind
@@ -39,12 +44,14 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 from pathlib import Path
-from typing import Any, Optional
+from typing import Annotated, Any, Callable, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Security
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .api_keys import ApiKey, ApiKeyStore, QuotaExceeded
 # The engine lives in `qbank_engine.py`, which imports no web framework.
@@ -58,12 +65,15 @@ from .qbank_engine import (  # noqa: F401  (re-exported for importers)
     DEFAULT_LIMIT,
     KEY_PROVENANCE,
     MAX_LIMIT,
+    TRUST_LEVELS,
     InvalidCursor,
     QuestionBank,
+    book_of,
     decode_cursor,
     encode_cursor,
     key_provenance_of,
     key_tier,
+    trust_of,
 )
 
 log = logging.getLogger(__name__)
@@ -158,26 +168,206 @@ def authorize(store: ApiKeyStore, presented: str, scope: str) -> ApiKey:
     return key
 
 
+# The two headers `presented_key` accepts, declared as security schemes so the
+# published OpenAPI says how to authenticate. The document carried only the
+# user-session `HTTPBearer`, and the key headers appeared as two optional
+# plain parameters, so a client generated from it sent no key and met a 401
+# (audit API-6). `auto_error=False` on both: either header will do, and the
+# refusal stays `authorize`'s own 401, the one the MCP transports give too.
+KEY_HEADER = APIKeyHeader(
+    name="X-API-Key", scheme_name="QuestionBankApiKey", auto_error=False,
+    description="A question-bank API key (`acos_qb_...`), minted by a "
+                "principal on the web console's API keys page.")
+KEY_BEARER = HTTPBearer(
+    scheme_name="QuestionBankApiKeyBearer", bearerFormat="acos_qb_...",
+    auto_error=False,
+    description="The same API key, sent as `Authorization: Bearer acos_qb_...`. "
+                "A user's session token is not a key and is refused here.")
+
+
+def _declared_query(route: Any) -> frozenset[str]:
+    """Every query parameter a route declares, its own and its dependencies'.
+
+    Read from the route FastAPI matched rather than kept as a second list per
+    route, so a filter added to a signature is accepted the moment it exists.
+    """
+    names: set[str] = set()
+    stack = [route.dependant]
+    while stack:
+        dependant = stack.pop()
+        names.update(p.alias for p in dependant.query_params)
+        stack.extend(dependant.dependencies)
+    return frozenset(names)
+
+
+def _refuse_unknown_query(request: Request) -> None:
+    """A query parameter the route does not take is a 422 naming it.
+
+    FastAPI drops an undeclared parameter without a word, so `?subjct=Science`
+    answered with all 5,319 records (audit D7) and `?book=`, `?topic_id=`,
+    `?competency=`, `?source=` and `?trust=` with the whole class (N-67-12):
+    a full page that reads as the answer to the question asked, given to a
+    different one. The 422 has the shape of every other validation error
+    (`detail[]` with `loc`, `msg`, `type`), so a client parses one shape.
+    """
+    known = _declared_query(request.scope["route"])
+    unknown = [name for name in request.query_params.keys() if name not in known]
+    if unknown:
+        accepted = ", ".join(sorted(known)) or "no query parameters"
+        raise HTTPException(422, detail=[{
+            "type": "extra_forbidden", "loc": ["query", name],
+            "msg": f"unknown query parameter {name!r}; this route takes {accepted}",
+            "input": request.query_params.get(name),
+        } for name in unknown])
+
+
 def _require(scope: str):
-    """Dependency factory: authenticate a key and require one scope.
+    """Dependency factory: authenticate a key, require one scope, and refuse a
+    query parameter the route does not know.
 
     Returning a closure means the required scope is visible in the route
     signature rather than buried in the body, so a reviewer can see the whole
     permission surface by reading the decorators.
+
+    The order is the HTTP surface's whole contract: 503 (not loaded), then
+    401, 403 and 429 from `authorize`, then the unknown-parameter 422. A caller
+    with no key learns nothing about the parameters, and a 422 costs one unit
+    of quota exactly as a malformed value always has.
     """
     def dependency(
-        authorization: str | None = Header(default=None),
-        x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+        request: Request,
+        # Declared for the OpenAPI document; the key itself is read below by
+        # `presented_key`, the one parser the MCP transports share, so the two
+        # surfaces cannot read the same header two ways.
+        _bearer: HTTPAuthorizationCredentials | None = Security(KEY_BEARER),
+        _header: str | None = Security(KEY_HEADER),
     ) -> ApiKey:
         if _store is None or _bank is None:
             raise HTTPException(503, detail="question-bank API not initialised")
         try:
-            return authorize(_store, presented_key(authorization, x_api_key),
-                             scope)
+            key = authorize(_store, presented_key(request.headers.get("authorization"),
+                                                  request.headers.get("x-api-key")),
+                            scope)
         except AuthFailure as exc:
             raise HTTPException(exc.status, detail=exc.detail,
                                 headers=exc.headers or None) from exc
+        _refuse_unknown_query(request)
+        return key
     return dependency
+
+
+# --------------------------------------------------------------------------- #
+# a key's classes and subjects (API-3, audit N-67-10)
+# --------------------------------------------------------------------------- #
+
+def _limits(key: ApiKey) -> dict[str, Any]:
+    """The key's limits as engine filters: `None` where there is no limit."""
+    return {"grades": key.grades or None, "subjects": key.subject_keys or None}
+
+
+def _refuse_outside(key: ApiKey, *, grade: int | None = None,
+                    subject: str | None = None) -> None:
+    """403 when a request NAMES a class or subject outside the key's limits.
+
+    An empty page would also be true, and is the wrong answer: it reads as "the
+    bank has no class 9 questions" when the truth is "this key may not read
+    class 9", and only the second tells the partner what to fix.
+    """
+    if grade is not None and not key.admits_grade(grade):
+        raise HTTPException(403, detail=(
+            f"this key is limited to classes {sorted(key.grades)}; "
+            f"class {grade} is outside it"))
+    if subject is not None and not key.admits_subject(subject):
+        raise HTTPException(403, detail=(
+            f"this key is limited to subjects {sorted(key.subjects)}; "
+            f"{subject!r} is outside it"))
+
+
+def _refuse_record_outside(key: ApiKey, rec: dict[str, Any]) -> None:
+    """The same 403 for one record asked for by id. Strict where
+    `_refuse_outside` is lenient: a record with no class is not inside a key
+    limited to class 10."""
+    if not (key.admits_grade(rec.get("grade")) and key.admits_subject(rec.get("subject"))):
+        raise HTTPException(403, detail=(
+            f"question {rec.get('id')!r} is {rec.get('subject')} class "
+            f"{rec.get('grade')}, outside this key's limits (classes "
+            f"{sorted(key.grades) or 'any'}, subjects {sorted(key.subjects) or 'any'})"))
+
+
+# --------------------------------------------------------------------------- #
+# the documented errors (audit API-6)
+# --------------------------------------------------------------------------- #
+
+class V1Error(BaseModel):
+    """The body of a 401, 403, 404, 429 or 503 from `/v1`: one sentence."""
+    detail: str = Field(examples=["this key does not hold the 'questions:read' scope"])
+
+
+class V1Problem(BaseModel):
+    """RFC 9457's fields, carried under `detail` by a 400."""
+    type: str = Field(examples=["about:blank"])
+    title: str = Field(examples=["invalid cursor"])
+    status: int = Field(examples=[400])
+    detail: str = Field(examples=["the cursor is not decodable; omit it to start again"])
+
+
+class V1BadRequest(BaseModel):
+    """A 400: a cursor that does not decode, a `key_provenance` or `trust`
+    outside its vocabulary, or two filters no record can satisfy together."""
+    detail: V1Problem
+
+
+class V1InvalidInput(BaseModel):
+    loc: list[str | int] = Field(examples=[["query", "subjct"]])
+    msg: str = Field(examples=["unknown query parameter 'subjct'; this route takes ..."])
+    type: str = Field(examples=["extra_forbidden"])
+    input: Any = None
+
+
+class V1ValidationError(BaseModel):
+    """A 422: a query parameter the route does not take (`type`
+    `extra_forbidden`), a value of the wrong type or out of range, or a body
+    that does not validate. The shape of every FastAPI validation error."""
+    detail: list[V1InvalidInput]
+
+
+def _errors(*extra: int) -> dict[int | str, dict[str, Any]]:
+    """The responses every `/v1` route can give, plus the route's own.
+
+    Every one of these was real and none was in the OpenAPI document, which
+    listed only 200 and 422 for the seven routes (audit API-6).
+    """
+    out: dict[int | str, dict[str, Any]] = {
+        401: {"model": V1Error, "description": (
+            "No key, an unknown key, or a revoked one. Send the key as "
+            "`X-API-Key: acos_qb_...` or `Authorization: Bearer acos_qb_...`."),
+            "headers": {"WWW-Authenticate": {"schema": {"type": "string"},
+                                             "description": "`Bearer`"}}},
+        403: {"model": V1Error, "description": (
+            "The key is valid but does not hold this route's scope, or the "
+            "request (or the record asked for) is outside the classes or "
+            "subjects the key is limited to.")},
+        422: {"model": V1ValidationError, "description": (
+            "A query parameter this route does not take, or a parameter or "
+            "body that does not validate. `loc` names it.")},
+        429: {"model": V1Error, "description": (
+            "The key has spent its requests for this minute. Wait `Retry-After` "
+            "seconds: the time left in the current one-minute window."),
+            "headers": {"Retry-After": {"schema": {"type": "integer"},
+                                        "description": "seconds until the window reopens"}}},
+        503: {"model": V1Error, "description": (
+            "The question bank is not loaded on this server.")},
+    }
+    described = {
+        400: {"model": V1BadRequest, "description": (
+            "A cursor that does not decode, a `key_provenance` or `trust` "
+            "outside its vocabulary, or two filters no record can satisfy "
+            "together. RFC 9457's fields, under `detail`.")},
+        404: {"model": V1Error, "description": "No question with that id."},
+    }
+    for status in extra:
+        out[status] = described[status]
+    return out
 
 
 def _rate_headers(key: ApiKey) -> dict[str, str]:
@@ -225,8 +415,13 @@ def _slim(rec: dict[str, Any]) -> dict[str, Any]:
         "keyProvenance": provenance,
         # "published" (CBSE's or NCERT's own) or "checked" (grounded in the
         # textbook, two agreeing solves, or approved by a teacher): which kind
-        # of key this is, in one word (qbank_engine.CHECKED_PROVENANCE).
-        "keyTier": key_tier(rec) if QuestionBank.has_answer_key(rec) else "none",
+        # of key this is, in one word (qbank_engine.CHECKED_PROVENANCE). What
+        # `?trust=` selects on, by the same function.
+        "keyTier": trust_of(rec),
+        # What `?source=` and `?book=` select on, so a listed question shows
+        # the value that would find it again.
+        "source": rec.get("source"),
+        "book": book_of(rec),
     }
 
 
@@ -316,6 +511,38 @@ def _checked_key_filters(has_scheme: bool | None,
     return _checked_key_provenance(key_provenance)
 
 
+TRUST_PARAM = Query(
+    default=None,
+    description="narrow to one trust label (QB-5): 'published' for a key CBSE "
+                "or NCERT published, 'checked' for one checked before it was "
+                "served (grounded in the textbook, two agreeing solves, or a "
+                "teacher's approval). The list's `keyTier`. Narrows within the "
+                "answer-keyed set, so with has_scheme=false it is a 400.")
+
+
+def _checked_trust(has_scheme: bool | None, trust: str | None) -> str | None:
+    """`trust`, refused the way `key_provenance` is: a closed vocabulary, so a
+    typo is a 400 naming the two labels rather than an empty page, and asking
+    for a trusted key among records with no key is a contradiction."""
+    if trust is None:
+        return None
+    if trust not in TRUST_LEVELS:
+        raise HTTPException(400, detail={
+            "type": "about:blank", "title": "unknown trust label",
+            "status": 400,
+            "detail": "trust must be one of " + ", ".join(sorted(TRUST_LEVELS)),
+        })
+    if has_scheme is False:
+        raise HTTPException(400, detail={
+            "type": "about:blank", "title": "contradictory filters",
+            "status": 400,
+            "detail": ("has_scheme=false selects questions with NO answer key, "
+                       "and trust selects how far a key is trusted; no record "
+                       "can satisfy both. Drop one of them."),
+        })
+    return trust
+
+
 def _page(bank: QuestionBank, **filters: Any):
     """`QuestionBank.page`, with a bad cursor turned into the promised 400.
 
@@ -337,7 +564,7 @@ def _page(bank: QuestionBank, **filters: Any):
 # routes
 # --------------------------------------------------------------------------- #
 
-@router.get("/questions")
+@router.get("/questions", responses=_errors(400))
 def list_questions(
     request: Request,
     key: ApiKey = Depends(_require("questions:read")),
@@ -349,6 +576,29 @@ def list_questions(
     bloom: str | None = None,
     chapter_id: str | None = None,
     subtopic_id: str | None = None,
+    topic_id: str | None = Query(
+        default=None,
+        description="exact topic id, one of a record's `topicIds` (e.g. "
+                    "'science-10/life-processes/nutrition')."),
+    competency: str | None = Query(
+        default=None,
+        description="exact competency id, one of a record's `competencyIds`. "
+                    "No record carried one when this filter was added "
+                    "(2026-10-01), so it answers an empty page until the bank "
+                    "is tagged; it exists so a client written now keeps working."),
+    source: str | None = Query(
+        default=None,
+        description="where the question comes from, as the record's `source` "
+                    "names it: 'cbse_board_paper', 'cbse_sample_paper', "
+                    "'cbse_question_bank', 'ncert_exemplar', ... Case is "
+                    "ignored; the `source` facet lists what the bank holds."),
+    trust: str | None = TRUST_PARAM,
+    book: str | None = Query(
+        default=None,
+        description="the publication the question was printed in, as its "
+                    "rights attribution names it (e.g. 'NCERT, Exemplar "
+                    "Problems, Class X Science'). Case and spacing are "
+                    "ignored; the `book` facet lists the exact names."),
     has_scheme: bool | None = Query(
         default=None,
         description="true: only answer-keyed questions (the default). "
@@ -371,14 +621,20 @@ def list_questions(
 
     **Answer-keyed by default (rule Q1).** See `_q1_filter` for the two ways
     to ask for the rest, and `key_provenance` to narrow to one kind of key.
+    A parameter not listed here is a 422, and a class or subject outside the
+    key's limits is a 403.
     """
     assert _bank is not None
+    _refuse_outside(key, grade=grade, subject=subject)
     filters = dict(subject=subject, grade=grade, marks=marks, type_=question_type,
                    difficulty=difficulty, bloom=bloom, chapter_id=chapter_id,
                    subtopic_id=subtopic_id,
                    has_scheme=_q1_filter(has_scheme, include_unkeyed),
                    key_provenance=_checked_key_filters(has_scheme, key_provenance),
-                   review_state=review_state, keyword=keyword)
+                   review_state=review_state, keyword=keyword,
+                   topic_id=topic_id, competency=competency, source=source,
+                   trust=_checked_trust(has_scheme, trust), book=book,
+                   **_limits(key))
 
     items, next_cursor, total = _page(_bank, cursor=cursor, limit=limit, **filters)
     body: dict[str, Any] = {
@@ -392,12 +648,15 @@ def list_questions(
 
     headers = _rate_headers(key)
     if next_cursor:
-        headers["Link"] = '<{}?cursor={}>; rel="next"'.format(
-            str(request.url).split("?")[0], next_cursor)
+        # The same query with the cursor moved on. It was the bare path plus
+        # `?cursor=`, so a client following `Link` paged the whole bank from
+        # page two, every filter dropped.
+        headers["Link"] = '<{}>; rel="next"'.format(
+            request.url.include_query_params(cursor=next_cursor))
     return JSONResponse(body, headers=headers)
 
 
-@router.get("/questions/{question_id}/scheme")
+@router.get("/questions/{question_id}/scheme", responses=_errors(404))
 def get_scheme(
     question_id: str,
     key: ApiKey = Depends(_require("questions:read")),
@@ -412,6 +671,7 @@ def get_scheme(
     rec = _bank.get(question_id)
     if rec is None:
         raise HTTPException(404, detail=f"no question {question_id!r}")
+    _refuse_record_outside(key, rec)
 
     scheme = rec.get("answerScheme") or {}
     return JSONResponse({
@@ -431,7 +691,7 @@ def get_scheme(
     }, headers=_rate_headers(key))
 
 
-@router.get("/questions/{question_id}")
+@router.get("/questions/{question_id}", responses=_errors(404))
 def get_question(
     question_id: str,
     key: ApiKey = Depends(_require("questions:read")),
@@ -441,10 +701,17 @@ def get_question(
     rec = _bank.get(question_id)
     if rec is None:
         raise HTTPException(404, detail=f"no question {question_id!r}")
+    _refuse_record_outside(key, rec)
     return JSONResponse(rec, headers=_rate_headers(key))
 
 
-@router.get("/subtopics/{subtopic_id}/questions")
+# `:path`, because every real subtopic id carries slashes
+# ("science-10/life-processes/nutrition/nutrition-in-human-beings"). A plain
+# `{subtopic_id}` stops at the first one, so all 87 real ids were a 404 here --
+# percent-encoded or not, since the server decodes `%2F` before routing --
+# while `/v1/questions?subtopic_id=` found every one of them (audit D52). The
+# OpenAPI path is unchanged; only the matching is.
+@router.get("/subtopics/{subtopic_id:path}/questions", responses=_errors(400))
 def questions_for_subtopic(
     subtopic_id: str,
     key: ApiKey = Depends(_require("questions:read")),
@@ -469,10 +736,14 @@ def questions_for_subtopic(
     the ones it already covers, with nothing in the response to say so.
     """
     assert _bank is not None
+    # The same `_page(subtopic_id=...)` as `?subtopic_id=`, so the path and the
+    # query can only disagree if the route stops matching the id -- which is
+    # what the `:path` above is for.
     items, next_cursor, total = _page(
         _bank, subtopic_id=subtopic_id, cursor=cursor, limit=limit,
         has_scheme=_q1_filter(has_scheme, include_unkeyed),
-        key_provenance=_checked_key_filters(has_scheme, key_provenance))
+        key_provenance=_checked_key_filters(has_scheme, key_provenance),
+        **_limits(key))
     return JSONResponse({
         "subtopicId": subtopic_id,
         "items": [_slim(r) for r in items],
@@ -482,7 +753,7 @@ def questions_for_subtopic(
     }, headers=_rate_headers(key))
 
 
-@router.get("/coverage")
+@router.get("/coverage", responses=_errors())
 def get_coverage(
     key: ApiKey = Depends(_require("facets:read")),
 ) -> JSONResponse:
@@ -502,13 +773,14 @@ def get_coverage(
     endpoint reads as the total a buyer would size a purchase on.
 
     Aggregate counts, so it takes `facets:read` rather than `questions:read`:
-    no question text or marking scheme crosses this route.
+    no question text or marking scheme crosses this route. A key limited to
+    some classes or subjects is told the coverage of those.
     """
     assert _bank is not None
-    return JSONResponse(_bank.coverage(), headers=_rate_headers(key))
+    return JSONResponse(_bank.coverage(**_limits(key)), headers=_rate_headers(key))
 
 
-@router.get("/facets")
+@router.get("/facets", responses=_errors(400))
 def get_facets(
     key: ApiKey = Depends(_require("facets:read")),
     subject: str | None = None,
@@ -534,11 +806,13 @@ def get_facets(
     is the exact divergence Q1 and Q5 were written to end.
     """
     assert _bank is not None
+    _refuse_outside(key, grade=grade, subject=subject)
     return JSONResponse(
         _bank.facets(subject=subject, grade=grade,
                      has_scheme=_q1_filter(has_scheme, include_unkeyed),
                      key_provenance=_checked_key_filters(has_scheme,
-                                                         key_provenance)),
+                                                         key_provenance),
+                     **_limits(key)),
         headers=_rate_headers(key))
 
 
@@ -546,70 +820,173 @@ def get_facets(
 # homework sets (API-2)
 # --------------------------------------------------------------------------- #
 
+MAX_SET = 50     # questions in one homework set, whatever the mix
+
+
 class HomeworkSetRequest(BaseModel):
-    """N answer-keyed questions for a class, from chapters, in a mix of
-    types, avoiding questions the caller has already used. The API knows no
-    students (API-5), so "already had" is the caller's list of ids."""
+    """N answer-keyed questions for a class, from chapters, topics or
+    subtopics, in a mix of marks or of types, avoiding questions the caller
+    has already used. The API knows no students (API-5), so "already had" is
+    the caller's list of ids.
+
+    API-2 asks for "this mix of marks and types"; the audit found neither a
+    marks mix nor a topic filter, and `count` silently ignored whenever
+    `types` was sent (N-67-11). The three ways to ask:
+
+      * `count` alone: that many, spread across the chosen chapters.
+      * a mix -- `types` as `{"mcq": 5, "short_answer": 3}` or `marks` as
+        `{"1": 4, "3": 2}` -- that many of each. `count`, if sent too, must
+        agree with the mix's total; it is a 422 rather than one of the two
+        quietly winning.
+      * `types` as a list, `["mcq", "short_answer"]`: `count` questions of
+        those types, spread across them. With a `marks` mix it chooses the
+        types inside each mark value.
+
+    A types mix and a marks mix together are refused: honouring both at once
+    is an allocation problem a greedy pick gets wrong without saying so.
+    """
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     subject: str
     grade: int = Field(ge=1, le=12)
     chapter_ids: list[str] = Field(default_factory=list, alias="chapterIds", max_length=30)
-    count: int = Field(default=10, ge=1, le=50)
-    types: dict[str, int] = Field(default_factory=dict, description="e.g. {\"mcq\": 5, \"short_answer\": 3}")
+    topic_ids: list[str] = Field(
+        default_factory=list, alias="topicIds", max_length=50,
+        description="only questions carrying one of these topic ids (a record's `topicIds`)")
+    subtopic_ids: list[str] = Field(
+        default_factory=list, alias="subtopicIds", max_length=50,
+        description="only questions carrying one of these subtopic ids (a record's `subtopicIds`)")
+    count: int = Field(default=10, ge=1, le=MAX_SET,
+                       description="how many questions, when no mix is given")
+    types: dict[str, Annotated[int, Field(ge=0, le=MAX_SET)]] | list[str] = Field(
+        default_factory=dict,
+        description='a mix, {"mcq": 5, "short_answer": 3}: that many of each type; '
+                    'or a list, ["mcq", "short_answer"]: `count` questions of those '
+                    'types, spread across them')
+    marks: dict[int, Annotated[int, Field(ge=0, le=MAX_SET)]] = Field(
+        default_factory=dict,
+        description='a mix of marks, {"1": 4, "3": 2}: four 1-mark and two 3-mark '
+                    'questions. Give `types` as a list to choose the types inside it.')
     exclude_ids: list[str] = Field(default_factory=list, alias="excludeIds", max_length=5000)
     seed: str | None = None
 
+    def mix(self) -> dict[str, tuple[Callable[[dict[str, Any]], bool], int]] | None:
+        """The buckets asked for, by the label `shortfall` reports them under,
+        or None when no mix was given and `count` decides."""
+        if isinstance(self.types, dict) and self.types:
+            return {t: ((lambda r, t=t: r.get("type") == t), n) for t, n in self.types.items()}
+        if self.marks:
+            return {str(m): ((lambda r, m=m: r.get("marks") == m), n) for m, n in self.marks.items()}
+        return None
 
-def _candidates(bank: QuestionBank, req: HomeworkSetRequest) -> list[dict[str, Any]]:
+    @model_validator(mode="after")
+    def _one_mix_that_adds_up(self) -> "HomeworkSetRequest":
+        if isinstance(self.types, dict) and self.types and self.marks:
+            raise ValueError(
+                "ask for a mix of marks or a mix of types, not both; to choose the "
+                "types inside a marks mix, send types as a list, e.g. "
+                '"types": ["mcq", "short_answer"]')
+        if any(m < 1 for m in self.marks):
+            raise ValueError("a mark value in `marks` must be 1 or more")
+        buckets = self.mix()
+        if buckets is not None:
+            total = sum(n for _, n in buckets.values())
+            if not 1 <= total <= MAX_SET:
+                raise ValueError(f"the mix asks for {total} questions; a set holds 1 to {MAX_SET}")
+            if "count" in self.model_fields_set and self.count != total:
+                raise ValueError(
+                    f"count is {self.count} but the mix adds up to {total}; send "
+                    "one of them, or make them agree")
+        return self
+
+
+def _candidates(bank: QuestionBank, req: HomeworkSetRequest, key: ApiKey) -> list[dict[str, Any]]:
     chapters = req.chapter_ids or [None]
     seen: dict[str, dict[str, Any]] = {}
     for chapter in chapters:
         cursor = None
         while True:
             items, cursor, _ = _page(bank, subject=req.subject, grade=req.grade, chapter_id=chapter,
-                                     has_scheme=True, cursor=cursor, limit=MAX_LIMIT)
+                                     has_scheme=True, cursor=cursor, limit=MAX_LIMIT, **_limits(key))
             for r in items:
                 seen.setdefault(r["id"], r)
             if not cursor:
                 break
     excluded = set(req.exclude_ids)
-    return [r for r in seen.values() if r["id"] not in excluded]
+    topics, subtopics = set(req.topic_ids), set(req.subtopic_ids)
+    allowed_types = set(req.types) if isinstance(req.types, list) else set()
+    return [r for r in seen.values()
+            if r["id"] not in excluded
+            and (not topics or topics & set(r.get("topicIds") or []))
+            and (not subtopics or subtopics & set(r.get("subtopicIds") or []))
+            and (not allowed_types or r.get("type") in allowed_types)]
 
 
-@router.post("/homework-sets")
+def _chapter_of(rec: dict[str, Any]) -> str:
+    return rec.get("taxonomyChapterId") or next(iter(rec.get("chapterIds") or []), "-")
+
+
+def _groups(records: list[dict[str, Any]],
+            by: Callable[[dict[str, Any]], Any]) -> list[list[dict[str, Any]]]:
+    out: dict[Any, list[dict[str, Any]]] = {}
+    for r in records:
+        out.setdefault(by(r), []).append(r)
+    return list(out.values())
+
+
+def _round_robin(groups: list[list[dict[str, Any]]], n: int) -> list[dict[str, Any]]:
+    """The first of each group in turn, until `n` are taken or none are left,
+    so one big chapter (or type) cannot crowd out the rest."""
+    queues = [list(g) for g in groups]
+    picked: list[dict[str, Any]] = []
+    while len(picked) < n and any(queues):
+        for q in queues:
+            if q and len(picked) < n:
+                picked.append(q.pop(0))
+    return picked
+
+
+def _spread(records: list[dict[str, Any]], n: int, *, by_type: bool) -> list[dict[str, Any]]:
+    """`n` of `records`, spread across chapters -- and first across types,
+    when the caller listed the types they want rather than counting them."""
+    if not by_type:
+        return _round_robin(_groups(records, _chapter_of), n)
+    per_type = [_round_robin(_groups(g, _chapter_of), len(g))
+                for g in _groups(records, lambda r: r.get("type"))]
+    return _round_robin(per_type, n)
+
+
+@router.post("/homework-sets", responses=_errors())
 def homework_set(req: HomeworkSetRequest, key: ApiKey = Depends(_require("questions:read"))) -> JSONResponse:
-    """A homework set (API-2). With `types`, that many of each type; without,
-    `count` questions spread across the chosen chapters. The same request
-    with the same `seed` returns the same set; `shortfall` says what the
-    bank could not supply."""
-    import random
+    """A homework set (API-2): `count` questions, or a mix of types or of
+    marks (see `HomeworkSetRequest`), from the chosen chapters, topics and
+    subtopics. The same request with the same `seed` returns the same set;
+    `shortfall` names each bucket the bank could not fill and by how many
+    (`"any"` when no mix was given)."""
     assert _bank is not None
-    pool = _candidates(_bank, req)
+    _refuse_outside(key, grade=req.grade, subject=req.subject)
+    pool = _candidates(_bank, req, key)
     rng = random.Random(req.seed or f"{req.subject}:{req.grade}:{','.join(sorted(req.chapter_ids))}")
     pool.sort(key=lambda r: r["id"])
     rng.shuffle(pool)
+    by_type = isinstance(req.types, list) and bool(req.types)
     picked: list[dict[str, Any]] = []
     shortfall: dict[str, int] = {}
-    if req.types:
-        for qtype, n in req.types.items():
-            got = [r for r in pool if r.get("type") == qtype][:max(0, n)]
-            picked += got
-            if len(got) < n:
-                shortfall[qtype] = n - len(got)
-    else:
-        # round-robin across chapters so one big chapter cannot crowd out the rest
-        by_chapter: dict[str, list[dict[str, Any]]] = {}
-        for r in pool:
-            by_chapter.setdefault(r.get("taxonomyChapterId") or next(iter(r.get("chapterIds") or []), "-"), []).append(r)
-        queues = list(by_chapter.values())
-        while len(picked) < req.count and any(queues):
-            for q in queues:
-                if q and len(picked) < req.count:
-                    picked.append(q.pop())
+    buckets = req.mix()
+    if buckets is None:
+        picked = _spread(pool, req.count, by_type=by_type)
         if len(picked) < req.count:
             shortfall["any"] = req.count - len(picked)
+        requested = req.count
+    else:
+        taken: set[str] = set()
+        for label, (wanted, n) in buckets.items():
+            got = _spread([r for r in pool if wanted(r) and r["id"] not in taken], n, by_type=by_type)
+            taken.update(r["id"] for r in got)
+            picked += got
+            if len(got) < n:
+                shortfall[label] = n - len(got)
+        requested = sum(n for _, n in buckets.values())
     body = {"items": [_slim(r) for r in picked], "count": len(picked),
-            "requested": sum(req.types.values()) if req.types else req.count,
-            "available": len(pool), "shortfall": shortfall}
+            "requested": requested, "available": len(pool), "shortfall": shortfall}
     return JSONResponse(body, headers=_rate_headers(key))

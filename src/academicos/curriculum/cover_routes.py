@@ -161,7 +161,9 @@ class DayRowResponse(Camel):
     # are there. `co_teacher` as the kind: the co-teacher takes it alone.
     co_teacher_id: Optional[str] = None
     room_id: Optional[str] = None
-    kind: str        # regular | substitute | supervised | combined | lost | uncovered | away | makeup | co_teacher
+    # regular | substitute | supervised | combined | lost | uncovered | away | makeup | co_teacher
+    # | exam (the class sits a published exam paper; the note names it)
+    kind: str
     substitution_id: Optional[str] = None
     lost_period_id: Optional[str] = None
     note: Optional[str] = None
@@ -524,11 +526,16 @@ def declare_closure(academic_year_id: str, req: ClosureRequest,
             # The school-wide plan keeps the day: the other classes still teach.
             plans = {(b, s) for b, s in plans if s in only}
         for book_id, section_id in plans:
+            # A section's plan already has the day's periods off its list: they
+            # are its lost periods now (store.periods_held), and the day may be
+            # a holiday as well. It is re-laid without skipping another day;
+            # PUSH skipped the next one too. The school-wide plan knows no
+            # section's lost periods, so PUSH still skips the day for it.
+            move = scheduling_mod.reflow_plan if section_id is not None else scheduling_mod.push_lessons_after
             try:
-                scheduling_mod.push_lessons_after(
-                    store, get_audit_log(cr._cfg.data_root), academic_year_id=academic_year_id, book_id=book_id,
-                    from_date=req.date, reason=f"closure: {req.reason}", changed_by=principal.id,
-                    section_id=section_id)
+                move(store, get_audit_log(cr._cfg.data_root), academic_year_id=academic_year_id, book_id=book_id,
+                     from_date=req.date, reason=f"closure: {req.reason}", changed_by=principal.id,
+                     section_id=section_id)
                 reflowed += 1
             except ValueError:
                 continue

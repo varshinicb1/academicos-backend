@@ -312,7 +312,7 @@ def _homework(current: User, scope: Scope, f: _Filter, roster: dict[str, str]) -
 
 
 def _cover(year_id: str, scope: Scope, school: _School, f: _Filter) -> Cover:
-    from ..curriculum.cover import SUB_OPEN, SUB_TAKEN
+    from ..curriculum.cover import count_cover
     cs = cr._require()
 
     def kept(section_id: str, subject_id: str) -> bool:
@@ -323,12 +323,10 @@ def _cover(year_id: str, scope: Scope, school: _School, f: _Filter) -> Cover:
             if s.status != "cancelled" and kept(s.section_id, s.subject_id)]
     lost = [l for l in cs.lost_periods_for_year(year_id)
             if scope.start_date <= l.date <= scope.as_of and kept(l.section_id, l.subject_id)]
-    return Cover(requested=len(subs),
-                 filled=sum(1 for s in subs if s.status in SUB_TAKEN and s.mode == "substitute"),
-                 supervised=sum(1 for s in subs if s.mode == "supervised"),
-                 unfilled=sum(1 for s in subs if s.status in SUB_OPEN),
-                 lost=len(lost), compensated=sum(1 for l in lost if l.status == "compensated"),
-                 owed=sum(1 for l in lost if l.status == "owed"))
+    # The same counting as the principal's cover summary (cover.count_cover).
+    c = count_cover(subs, lost)
+    return Cover(requested=c["substitutionsRequested"], filled=c["filled"], supervised=c["supervised"],
+                 unfilled=c["unfilled"], lost=c["lost"], compensated=c["compensated"], owed=c["owed"])
 
 
 def _bank(school: _School, f: _Filter) -> list[BankRow]:

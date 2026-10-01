@@ -34,7 +34,9 @@ mid-abuse.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+import math
 import secrets
 import sqlite3
 import threading
@@ -47,12 +49,12 @@ from typing import Any, Iterable, Optional
 log = logging.getLogger(__name__)
 
 # The complete permission vocabulary. Deliberately tiny, and deliberately
-# contains nothing that can reach a student.
+# contains nothing that can reach a student. Every scope here gates a route:
+# `questions:read` the question and homework-set routes, `facets:read`
+# `/v1/facets` and `/v1/coverage`.
 SCOPES: frozenset[str] = frozenset({
     "questions:read",
-    "curriculum:read",
     "facets:read",
-    "papers:create",
 })
 
 # Refused by design, and named here so the refusal is visible rather than
@@ -62,6 +64,14 @@ FORBIDDEN_SCOPES: frozenset[str] = frozenset({
     "knowledge:read", "progress:read", "students:read", "students:write",
     "grading:read", "grading:write", "consent:read", "consent:write",
 })
+
+# Planned, but no route checks them yet, so a key minted with one was granted
+# nothing while the web page said otherwise (audit N-67-10: the API keys page
+# offered `papers:create` and ticked `curriculum:read` by default). Refused at
+# mint the way the student scopes are, with a reason that says it is "not
+# yet" rather than "never". A key minted before this change may still carry
+# one; that is harmless, because nothing reads it.
+NOT_YET_SCOPES: frozenset[str] = frozenset({"papers:create", "curriculum:read"})
 
 DEFAULT_QUOTA_PER_MINUTE = 120
 KEY_PREFIX = "acos_qb_"
@@ -78,7 +88,9 @@ CREATE TABLE IF NOT EXISTS api_keys (
   created_at    TEXT NOT NULL,
   created_by    TEXT NOT NULL DEFAULT '',
   last_used_at  TEXT,
-  revoked_at    TEXT
+  revoked_at    TEXT,
+  grades        TEXT NOT NULL DEFAULT '',
+  subjects      TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_ak_hash   ON api_keys(key_hash);
 CREATE INDEX IF NOT EXISTS idx_ak_school ON api_keys(school_id);
@@ -91,6 +103,15 @@ CREATE TABLE IF NOT EXISTS api_key_usage (
 );
 CREATE INDEX IF NOT EXISTS idx_aku_window ON api_key_usage(window_start);
 """
+
+# Columns added after the table first shipped, with the DEFAULT an old row
+# reads as. `CREATE TABLE IF NOT EXISTS` never alters a table the snapshot
+# restored, so a live store from before the column would otherwise fail its
+# first INSERT. '' is "no limit", which is what every earlier key was.
+_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("grades", "TEXT NOT NULL DEFAULT ''"),
+    ("subjects", "TEXT NOT NULL DEFAULT ''"),
+)
 
 
 class ScopeError(ValueError):
@@ -119,6 +140,12 @@ class ApiKey:
     created_by: str
     last_used_at: str | None
     revoked_at: str | None
+    # The classes and subjects the key may read (API-3: "scoped ... which
+    # grades/subjects"). Empty means every one, which is what a key minted
+    # before the limits existed was. Subjects keep the spelling they were
+    # minted with; `subject_keys` is the lower-cased set they compare by.
+    grades: frozenset[int] = frozenset()
+    subjects: frozenset[str] = frozenset()
 
     @property
     def active(self) -> bool:
@@ -126,6 +153,22 @@ class ApiKey:
 
     def may(self, scope: str) -> bool:
         return self.active and scope in self.scopes
+
+    @property
+    def limited(self) -> bool:
+        return bool(self.grades or self.subjects)
+
+    @property
+    def subject_keys(self) -> frozenset[str]:
+        return frozenset(s.lower() for s in self.subjects)
+
+    def admits_grade(self, grade: Any) -> bool:
+        """A grade inside the key's limit. A limit that is set refuses an
+        absent grade: a record nobody could place is not "in class 10"."""
+        return not self.grades or grade in self.grades
+
+    def admits_subject(self, subject: Any) -> bool:
+        return not self.subjects or str(subject or "").lower() in self.subject_keys
 
     def to_dict(self) -> dict[str, Any]:
         """The public shape. `key_hash` is never included."""
@@ -135,6 +178,8 @@ class ApiKey:
             "label": self.label,
             "schoolId": self.school_id,
             "scopes": sorted(self.scopes),
+            "grades": sorted(self.grades),
+            "subjects": sorted(self.subjects),
             "quotaPerMinute": self.quota_per_minute,
             "createdAt": self.created_at,
             "createdBy": self.created_by,
@@ -162,12 +207,18 @@ def hash_key(plaintext: str) -> str:
 def validate_scopes(scopes: Iterable[str]) -> frozenset[str]:
     """Refuse anything outside the vocabulary, and anything forbidden outright."""
     wanted = frozenset(scopes or ())
-    unknown = wanted - SCOPES
+    unknown = wanted - SCOPES - NOT_YET_SCOPES
     forbidden = wanted & FORBIDDEN_SCOPES
+    not_yet = wanted & NOT_YET_SCOPES
     if forbidden:
         raise ScopeError(
             "these scopes are permanently refused for this API because they "
             f"would reach student data: {sorted(forbidden)}")
+    if not_yet:
+        raise ScopeError(
+            f"these scopes are not available yet: {sorted(not_yet)}. No route "
+            "checks them, so a key holding one would be granted nothing; the "
+            f"scopes a key can hold today are {sorted(SCOPES)}")
     if unknown:
         raise ScopeError(
             f"unknown scope(s) {sorted(unknown)}; the vocabulary is "
@@ -198,6 +249,10 @@ class ApiKeyStore:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=60000")
         self.conn.executescript(SCHEMA)
+        have = {r["name"] for r in self.conn.execute("PRAGMA table_info(api_keys)")}
+        for name, decl in _ADDED_COLUMNS:
+            if name not in have:
+                self.conn.execute(f"ALTER TABLE api_keys ADD COLUMN {name} {decl}")
         self.conn.commit()
         if self._snapshots is not None:
             self._snapshots.commit_derived(self.conn)
@@ -219,22 +274,34 @@ class ApiKeyStore:
         label: str = "",
         created_by: str = "",
         quota_per_minute: int = DEFAULT_QUOTA_PER_MINUTE,
+        grades: Iterable[int] = (),
+        subjects: Iterable[str] = (),
     ) -> tuple[str, ApiKey]:
-        """Mint a key. Returns `(plaintext, record)`; the plaintext is shown once."""
+        """Mint a key. Returns `(plaintext, record)`; the plaintext is shown once.
+
+        `grades` and `subjects` limit what the key can read; empty is every
+        class and subject. Stored as JSON rather than comma-joined like
+        `scopes`, because a subject's name is free text and may hold a comma.
+        """
         granted = validate_scopes(scopes)
         if quota_per_minute < 1:
             raise ValueError("quota_per_minute must be >= 1")
+        only_grades = sorted({int(g) for g in grades})
+        if any(not 1 <= g <= 12 for g in only_grades):
+            raise ValueError(f"grades must be between 1 and 12; got {only_grades}")
+        only_subjects = sorted({s.strip() for s in subjects if s and s.strip()})
 
         plaintext = KEY_PREFIX + secrets.token_urlsafe(32)
         key_id = f"key_{uuid.uuid4().hex[:16]}"
         prefix = plaintext[: len(KEY_PREFIX) + 6]
         self.conn.execute(
             "INSERT INTO api_keys (id, key_hash, prefix, label, school_id, "
-            "scopes, quota_per_min, created_at, created_by) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
+            "scopes, quota_per_min, created_at, created_by, grades, subjects) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (key_id, hash_key(plaintext), prefix, label, school_id,
              ",".join(sorted(granted)), quota_per_minute, _now().isoformat(),
-             created_by),
+             created_by, json.dumps(only_grades) if only_grades else "",
+             json.dumps(only_subjects) if only_subjects else ""),
         )
         self._publish()
         return plaintext, self.get(key_id)  # type: ignore[return-value]
@@ -303,7 +370,8 @@ class ApiKeyStore:
         in-memory counter resets to zero on redeploy -- which is exactly when an
         abuser would want it to.
         """
-        window = _now().replace(second=0, microsecond=0)
+        now = _now()
+        window = now.replace(second=0, microsecond=0)
         window_key = window.isoformat()
         row = self.conn.execute(
             "SELECT count FROM api_key_usage WHERE key_id=? AND window_start=?",
@@ -314,7 +382,13 @@ class ApiKeyStore:
                 "DELETE FROM api_key_usage WHERE window_start < ?",
                 ((window - timedelta(minutes=5)).isoformat(),))
             self.conn.commit()
-            raise QuotaExceeded(key, retry_after=60 - window.second)
+            # The seconds left in THIS window, rounded up so a client that
+            # waits exactly that long lands in the next one. This was
+            # `60 - window.second`, and `window` has its seconds zeroed two
+            # lines up, so every 429 said 60 (audit N-67-10): a client honouring
+            # it waited a full minute when the window reopened in two seconds.
+            left = (window + timedelta(minutes=1) - now).total_seconds()
+            raise QuotaExceeded(key, retry_after=math.ceil(left))
 
         self.conn.execute(
             "INSERT INTO api_key_usage (key_id, window_start, count) VALUES (?,?,1) "
@@ -348,4 +422,6 @@ def _to_key(row: sqlite3.Row) -> ApiKey:
         created_by=row["created_by"] or "",
         last_used_at=row["last_used_at"],
         revoked_at=row["revoked_at"],
+        grades=frozenset(int(g) for g in json.loads(row["grades"] or "[]")),
+        subjects=frozenset(str(s) for s in json.loads(row["subjects"] or "[]")),
     )
