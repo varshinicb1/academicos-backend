@@ -1,4 +1,4 @@
-"""Read-only paper-template presets: class 6-10, five main subjects, four exam types.
+"""Read-only paper-template presets: classes 1-10, their main subjects, four exam types.
 
 A teacher should never start from a blank builder. Every (class, subject,
 exam type) here is a complete, exactly-summing template; "use as starting
@@ -60,6 +60,11 @@ Where each pattern comes from -- said in each preset's `source` so a teacher
   school patterns, labelled as a suggestion, not a CBSE rule.
 * **Half-yearly, class 9-10** -- `suggested`: the board design applied to the
   half-yearly, which is what most CBSE schools do but not a CBSE rule.
+* **Mathematics 6-8, Science 9-10 unit and periodic tests, Science 6 term
+  papers** -- `suggested`, written for what the class's question bank holds
+  (`_BANK_SHAPED`): the common patterns above ask for 2-mark, 5-mark or
+  4-mark case-based questions those banks have almost none of, where CBSE
+  requires none of them. Each one's source line says why.
 
 Difficulty mixes are suggestions in every case: CBSE does not publish a
 per-section difficulty split.
@@ -71,10 +76,12 @@ question at that mark value.
 """
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from typing import Optional, Sequence
 
-from .schemas import DifficultyDistribution, PaperTemplate, TemplateHeader, TemplateSection
+from .schemas import DifficultyDistribution, GeneratedPaper, GeneratedSectionSchema, \
+    PaperTemplate, TemplateHeader, TemplateSection
 
 MAIN_SUBJECTS: tuple[str, ...] = ("Mathematics", "Science", "Social Science", "English", "Hindi")
 PRESET_EXAM_TYPES: tuple[str, ...] = ("unit_test", "periodic", "half_yearly", "annual")
@@ -245,12 +252,125 @@ _UNIT_20: list[_Row] = [
     ("Section B - Very short answer", 4, 2, None, None),
     ("Section C - Short answer", 2, 3, None, None),
 ]
+
+# Suggested patterns for the classes whose question bank cannot print the
+# shapes above, where CBSE requires none of them (unit and periodic tests,
+# class 6-8 term papers). Measured through the builder's own calls on the
+# served bank (2026-09-30), 18 of the 40 class 6-10 Mathematics/Science
+# whole-syllabus presets reached their marks (audit D85/D18). The rest were
+# short for three shapes the bank has almost none of, not for a lack of
+# questions: 2-mark questions in Mathematics 6-8 and Science 9-10 (2-3 and
+# 1-2 keyed; the NCERT Exemplar items these banks are built from come at 1,
+# 3 and 5 marks), 5-mark long answers in Mathematics 6-8 (1-3 keyed), and a
+# 4-mark case-based question in Science 6 (none; its case-based questions
+# carry 6). These patterns keep each paper's total and ask only for what the
+# class's bank holds. Class 9-10 half-yearly and annual papers keep the
+# board design: there the missing 2-mark and case-based questions are the
+# bank's gap, and the builder names them.
+_UNIT_20_1_3: list[_Row] = [
+    ("Section A - Objective", 8, 1, None, None),
+    ("Section B - Short answer", 4, 3, None, None),
+]
+_PERIODIC_40_1_3: list[_Row] = [
+    ("Section A - Objective", 16, 1, None, None),
+    ("Section B - Short answer", 8, 3, None, None),
+]
+_PERIODIC_40_1_3_5: list[_Row] = [
+    ("Section A - Objective", 10, 1, None, None),
+    ("Section B - Short answer", 5, 3, None, None),
+    ("Section C - Long answer", 3, 5, None, None),
+]
+_JUNIOR_80_1_3: list[_Row] = [
+    ("Section A - Objective", 16, 1, None, None),
+    ("Section B - Short answer", 20, 3, None, None),
+    ("Section C - Case based", 1, 4, None, 1.0),
+]
+_JUNIOR_80_CASE_6: list[_Row] = [
+    ("Section A - Objective", 16, 1, None, None),
+    ("Section B - Very short answer", 7, 2, None, None),
+    ("Section C - Short answer", 8, 3, None, None),
+    ("Section D - Long answer", 4, 5, None, None),
+    ("Section E - Case based", 1, 6, None, 1.0),
+]
+_NO_2_MARK = ("its question bank holds almost no 2-mark questions (the NCERT Exemplar "
+              "items it is built from come at 1, 3 and 5 marks)")
+_NO_2_OR_5_MARK = ("its question bank holds almost no 2-mark or 5-mark questions (the NCERT "
+                   "Exemplar items it is built from are nearly all 1 and 3 marks)")
+# (subject, class) -> exam type -> (rows, why the class's pattern differs).
+_BANK_SHAPED: dict[tuple[str, int], dict[str, tuple[list[_Row], str]]] = {
+    **{("Mathematics", g): {
+        "unit_test": (_UNIT_20_1_3, _NO_2_OR_5_MARK),
+        "periodic": (_PERIODIC_40_1_3, _NO_2_OR_5_MARK),
+        "half_yearly": (_JUNIOR_80_1_3, _NO_2_OR_5_MARK),
+        "annual": (_JUNIOR_80_1_3, _NO_2_OR_5_MARK),
+    } for g in (6, 7, 8)},
+    **{("Science", g): {
+        "unit_test": (_UNIT_20_1_3, _NO_2_MARK),
+        "periodic": (_PERIODIC_40_1_3_5, _NO_2_MARK),
+    } for g in (9, 10)},
+    ("Science", 6): {
+        "half_yearly": (_JUNIOR_80_CASE_6, "its question bank has no 4-mark case-based "
+                                          "question; its case-based questions carry 6 marks"),
+        "annual": (_JUNIOR_80_CASE_6, "its question bank has no 4-mark case-based "
+                                     "question; its case-based questions carry 6 marks"),
+    },
+}
 _UNIT_LANGUAGE_20: list[_Row] = [
     ("Section A - Reading comprehension", 5, 1, None, 1.0),
     ("Section B - Grammar", 5, 1, None, None),
     ("Section C - Writing", 1, 5, None, None),
     ("Section D - Literature", 5, 1, None, None),
 ]
+
+# Classes 1-5 (requirements v3): CBSE prescribes no paper design for primary
+# classes, so these are suggested school patterns -- shorter papers, no answer
+# above 5 marks, and EVS from class 3 (the NCERT books' own range). Classes 1-5
+# share one pattern per exam type; a school edits it for its younger classes.
+PRIMARY_SUBJECTS: dict[int, tuple[str, ...]] = {
+    1: ("English", "Hindi", "Mathematics"), 2: ("English", "Hindi", "Mathematics"),
+    3: ("English", "Hindi", "Mathematics", "EVS"), 4: ("English", "Hindi", "Mathematics", "EVS"),
+    5: ("English", "Hindi", "Mathematics", "EVS"),
+}
+_PRIMARY_TOTAL = {"unit_test": 20, "periodic": 25, "half_yearly": 50, "annual": 50}
+_PRIMARY_DURATION = {"unit_test": 40, "periodic": 60, "half_yearly": 120, "annual": 120}
+_PRIMARY: dict[str, list[_Row]] = {
+    "unit_test": [
+        ("Section A - Objective (MCQ, fill in the blanks, true or false)", 10, 1, None, None),
+        ("Section B - Short answer", 5, 2, None, None),
+    ],
+    "periodic": [
+        ("Section A - Objective (MCQ, fill in the blanks, true or false)", 10, 1, None, None),
+        ("Section B - Very short answer", 5, 1, None, None),
+        ("Section C - Short answer", 5, 2, None, None),
+    ],
+    "half_yearly": [
+        ("Section A - Objective (MCQ, fill in the blanks, true or false)", 15, 1, None, None),
+        ("Section B - Very short answer", 10, 1, None, None),
+        ("Section C - Short answer", 8, 2, None, None),
+        ("Section D - Answer in a few sentences", 3, 3, None, None),
+    ],
+}
+_PRIMARY["annual"] = _PRIMARY["half_yearly"]
+_PRIMARY_LANGUAGE: dict[str, list[_Row]] = {
+    "unit_test": [
+        ("Section A - Reading comprehension", 5, 1, None, 1.0),
+        ("Section B - Grammar and vocabulary", 5, 1, None, None),
+        ("Section C - Writing", 2, 5, None, None),
+    ],
+    "periodic": [
+        ("Section A - Reading comprehension", 5, 1, None, 1.0),
+        ("Section B - Grammar and vocabulary", 10, 1, None, None),
+        ("Section C - Writing", 2, 5, None, None),
+    ],
+    "half_yearly": [
+        ("Section A - Reading comprehension", 10, 1, None, 1.0),
+        ("Section B - Grammar and vocabulary", 15, 1, None, None),
+        ("Section C - Writing", 2, 5, None, None),
+        ("Section D - Literature", 5, 1, None, None),
+        ("Section E - Literature, short answer", 5, 2, None, None),
+    ],
+}
+_PRIMARY_LANGUAGE["annual"] = _PRIMARY_LANGUAGE["half_yearly"]
 
 _SUGGESTED_SOURCE = (
     "Suggested school pattern, not a CBSE rule: CBSE prescribes no paper design "
@@ -260,6 +380,18 @@ _SUGGESTED_SOURCE = (
 def _pattern(grade: int, subject: str, exam_type: str) -> tuple[list[_Row], str, str]:
     """(rows, pattern_status, source) for one preset."""
     language = subject in ("English", "Hindi")
+    if grade <= 5:
+        return ((_PRIMARY_LANGUAGE if language else _PRIMARY)[exam_type], "suggested",
+                _SUGGESTED_SOURCE.format(what=f"class {grade}"))
+    shaped = _BANK_SHAPED.get((subject, grade), {}).get(exam_type)
+    if shaped is not None:
+        rows, why = shaped
+        what = {"unit_test": "unit tests", "periodic": "periodic tests"}.get(
+            exam_type, f"class {grade} term examinations")
+        return rows, "suggested", (
+            f"Suggested school pattern, not a CBSE rule: CBSE prescribes no paper design for "
+            f"{what}. Written for Class {grade} {subject}, because {why}. Edit it to match "
+            "your school.")
     if exam_type == "unit_test":
         return (_UNIT_LANGUAGE_20 if language else _UNIT_20, "suggested",
                 _SUGGESTED_SOURCE.format(what="unit tests"))
@@ -318,16 +450,86 @@ def instructions_for(sections: list[TemplateSection],
         rows = [(s, s.question_count, s.choice_count) for s in sections]
     else:
         rows = [(s, n, c) for s, (n, c) in zip(sections, printed) if n > 0]
-    lines = [f"This question paper has {len(rows)} sections."]
-    for s, count, choices in rows:
-        attempts = min(s.attempts, count)
+    return _instructions([(s.title, count, s.marks_each, min(s.attempts, count), choices)
+                          for s, count, choices in rows])
+
+
+_FIRST_LINE = "This question paper has {n} section{s}."
+_LAST_LINE = "All questions are compulsory unless a choice is stated."
+
+
+def _instructions(rows: Sequence[tuple[str, int, Optional[int], int, int]]) -> str:
+    """The generated lines, one per (title, questions, marks each or None
+    when they differ, attempts, OR alternatives) section row."""
+    lines = [_FIRST_LINE.format(n=len(rows), s="" if len(rows) == 1 else "s")]
+    for title, count, marks_each, attempts, choices in rows:
         attempt = f" Attempt any {attempts}." if attempts < count else ""
         choice = (f" {choices} of them offer an internal choice (OR): attempt only "
                   "one of the two." if choices else "")
-        lines.append(f"{s.title}: {count} question(s) of {s.marks_each} "
-                     f"mark(s) each.{attempt}{choice}")
-    lines.append("All questions are compulsory unless a choice is stated.")
+        each = (f" of {marks_each} mark(s) each" if marks_each is not None
+                else ", marks as indicated")
+        lines.append(f"{title}: {count} question(s){each}.{attempt}{choice}")
+    lines.append(_LAST_LINE)
     return "\n".join(lines)
+
+
+_ATTEMPT_SUFFIX = re.compile(r"\s*\(attempt any \d+ of \d+\)$")
+
+
+def section_title(name: str) -> str:
+    """A printed section's name without the "(attempt any N of M)" the
+    builder adds when a section prints more questions than are answered."""
+    return _ATTEMPT_SUFFIX.sub("", name)
+
+
+def section_attempts(section: GeneratedSectionSchema) -> int:
+    """How many of a printed section's questions are answered: all of them,
+    unless its marks say fewer ("attempt any 10 of 12" is worth 10 marks)."""
+    marks = {q.marks for q in section.questions}
+    count = len(section.questions)
+    if len(marks) != 1:
+        return count
+    each = marks.pop()
+    return min(count, section.total_marks // each) if each else count
+
+
+def instructions_for_paper(paper: GeneratedPaper) -> str:
+    """The generated General Instructions for `paper` as it stands now --
+    its own sections, each with the questions and OR alternatives it
+    prints -- in the words `instructions_for` uses.
+
+    Stamped once at generation, the lines went stale with the paper's first
+    edit: remove Q38 and one of Section B's two ORs on a class 10 Maths
+    half-yearly paper and the PDF and Word file still said "Section E ... 3
+    question(s)" and "Section B ... 2 of them offer an internal choice (OR)"
+    (v3 audit N-2-6). Every place that prints or stores the instructions
+    calls this on the paper it has."""
+    rows = []
+    for s in paper.sections:
+        if not s.questions:
+            continue
+        marks = {q.marks for q in s.questions}
+        rows.append((section_title(s.name), len(s.questions),
+                     marks.pop() if len(marks) == 1 else None, section_attempts(s),
+                     sum(1 for q in s.questions if q.internal_choice_question_id)))
+    return _instructions(rows)
+
+
+_GENERATED_LINE = re.compile(
+    r".+: \d+ question\(s\)(?: of \d+ mark\(s\) each|, marks as indicated)\."
+    r"(?: Attempt any \d+\.)?"
+    r"(?: \d+ of them offer an internal choice \(OR\): attempt only one of the two\.)?")
+
+
+def reads_as_generated(text: str) -> bool:
+    """Whether `text` is, line for line, instructions this module generated
+    -- for a paper stored before it said so itself
+    (`PaperMetadataSchema.instructions_generated` None)."""
+    lines = [x.strip() for x in (text or "").splitlines() if x.strip()]
+    return (len(lines) >= 2
+            and re.fullmatch(r"This question paper has \d+ sections?\.", lines[0]) is not None
+            and lines[-1] == _LAST_LINE
+            and all(_GENERATED_LINE.fullmatch(x) for x in lines[1:-1]))
 
 
 def _types_for(title: str) -> list[str]:
@@ -372,8 +574,8 @@ def _build(grade: int, subject: str, exam_type: str) -> PaperTemplate:
         grade=grade,
         subject=subject,
         exam_type=exam_type,
-        total_marks=_TOTAL[exam_type],
-        duration_minutes=_DURATION[exam_type],
+        total_marks=(_PRIMARY_TOTAL if grade <= 5 else _TOTAL)[exam_type],
+        duration_minutes=(_PRIMARY_DURATION if grade <= 5 else _DURATION)[exam_type],
         instructions=instructions_for(sections),
         instructions_generated=True,
         header=TemplateHeader(exam_name=exam_name),
@@ -388,8 +590,8 @@ def _build(grade: int, subject: str, exam_type: str) -> PaperTemplate:
 def _all() -> tuple[PaperTemplate, ...]:
     return tuple(
         _build(grade, subject, exam_type)
-        for grade in range(6, 11)
-        for subject in MAIN_SUBJECTS
+        for grade in range(1, 11)
+        for subject in (PRIMARY_SUBJECTS[grade] if grade <= 5 else MAIN_SUBJECTS)
         for exam_type in PRESET_EXAM_TYPES
     )
 

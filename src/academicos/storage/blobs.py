@@ -182,6 +182,13 @@ def record_upload_failure(name: str) -> None:
     _record("upload_failure", name)
 
 
+def record_upload_success(name: str) -> None:
+    """A snapshot of `name` reached the blob store. Health shows the time, so
+    a store that has stopped saving reads as a last save that keeps ageing
+    while its failures keep counting."""
+    _record("saved", name)
+
+
 def record_conflict_copy(name: str, key: str) -> None:
     """The losing side of a snapshot conflict was preserved under `key`
     (storage/snapshot_sync.py SnapshotSync._on_conflict) before it reloaded the
@@ -201,27 +208,41 @@ def reset_status() -> None:
 def blob_status() -> dict:
     """Flat, stable keys for /health/storage. Counts are since process start;
     `*_at` is the last occurrence (UTC ISO-8601) or None. Per instance, like
-    /health/llm: a multi-instance view needs a metrics backend."""
+    /health/llm: a multi-instance view needs a metrics backend.
+
+    The operations snapshot (operations/store.py: homework, marks, exams,
+    notifications, parent links; the API-key store shares its purpose) is a
+    whole-file snapshot like the curriculum's and is reported the same way,
+    so an operations store that has stopped saving shows here (N-9-2)."""
     with _status_lock:
         def get(key: str) -> dict:
             return dict(_status.get(key, {"count": 0, "at": None}))
-        conflict = get("curriculum-snapshots:conflict")
-        snap_fail = get("curriculum-snapshots:upload_failure")
+        snapshots = {prefix: (get(f"{purpose}:conflict"), get(f"{purpose}:upload_failure"),
+                              get(f"{purpose}:conflict_copy"), get(f"{purpose}:saved"))
+                     for prefix, purpose in (("curriculum", "curriculum-snapshots"),
+                                             ("operations", "operations-snapshots"))}
         scan_fail = get("scan-media:upload_failure")
-        copy = get("curriculum-snapshots:conflict_copy")
-    return {
-        "curriculum_snapshot_conflict": conflict["count"] > 0,
-        "curriculum_snapshot_conflict_count": conflict["count"],
-        "curriculum_snapshot_conflict_at": conflict["at"],
-        "curriculum_snapshot_upload_failures": snap_fail["count"],
-        "curriculum_snapshot_upload_failure_at": snap_fail["at"],
-        # Each is a whole losing SQLite file under
-        # curriculum-snapshots/conflicts/; non-zero means edits await merging.
-        "curriculum_snapshot_conflict_copies": copy["count"],
-        "curriculum_snapshot_last_conflict_copy": copy.get("key"),
+    out: dict = {}
+    for prefix, (conflict, snap_fail, copy, saved) in snapshots.items():
+        out.update({
+            f"{prefix}_snapshot_conflict": conflict["count"] > 0,
+            f"{prefix}_snapshot_conflict_count": conflict["count"],
+            f"{prefix}_snapshot_conflict_at": conflict["at"],
+            f"{prefix}_snapshot_upload_failures": snap_fail["count"],
+            f"{prefix}_snapshot_upload_failure_at": snap_fail["at"],
+            # Each is a whole losing SQLite file under
+            # <purpose>/conflicts/; non-zero means edits await merging.
+            f"{prefix}_snapshot_conflict_copies": copy["count"],
+            f"{prefix}_snapshot_last_conflict_copy": copy.get("key"),
+            # The last snapshot that reached the blob store. Older than the
+            # last failure means the store is not saving right now.
+            f"{prefix}_snapshot_last_saved_at": saved["at"],
+        })
+    out.update({
         "scan_media_upload_failures": scan_fail["count"],
         "scan_media_upload_failure_at": scan_fail["at"],
-    }
+    })
+    return out
 
 
 def _gcs_bucket() -> Optional[str]:

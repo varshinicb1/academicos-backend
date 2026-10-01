@@ -545,6 +545,14 @@ class PaperMetadataSchema(Camel):
     date_line: Optional[str] = None
     # One instruction per line, printed numbered in place of the defaults.
     instructions: Optional[str] = None
+    # True: `instructions` were generated from the template's sections and
+    # describe the paper, so they are rebuilt from the paper's sections as
+    # they stand wherever they are printed or stored
+    # (`template_presets.instructions_for_paper`) -- a remove, swap or pick
+    # changes what they must say. False: the teacher's own words, printed as
+    # written. None: a paper stored before this was recorded; its text is
+    # treated as generated when it reads as generated text.
+    instructions_generated: Optional[bool] = None
 
 
 class GeneratedPaper(Camel):

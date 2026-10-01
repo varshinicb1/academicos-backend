@@ -85,7 +85,7 @@ def require_school_owns_student(
         raise HTTPException(404, "student not found")
     if student.school_id != current.school_id:
         raise HTTPException(403, "this student belongs to a different school")
-    if current.role == "student" and current.id != student_id:
+    if current.role not in ("teacher", "principal") and current.id != student_id:
         raise HTTPException(403, "students can only access their own data")
     return student
 

@@ -41,6 +41,18 @@ from ..config import (Config, LLMNotEnabled, build_identity, enforce_production_
 from ..curriculum import routes as curriculum_routes
 from ..curriculum import school_model_routes
 from ..curriculum import cover_routes
+from ..assessment import api_key_routes
+from ..assessment import marks_routes
+from ..assessment import paper_review_routes
+from ..operations import calendar_feed, class_progress, dashboard_routes, homework_photos, practice_routes, term_report
+from ..operations import google_sign_in, sign_in_codes
+from ..operations import question_reviews
+from ..operations import exam_routes
+from ..operations import grant_routes
+from ..operations import guardian_routes
+from ..operations import homework_routes
+from ..operations import import_routes
+from ..operations import learning_routes
 from ..operations import routes as operations_routes
 from ..graph.store import GraphStore
 from ..llm.budget import LLMBudgetExceeded, llm_budget
@@ -127,6 +139,94 @@ def _on_llm_budget_exceeded(_request: Any, exc: LLMBudgetExceeded) -> JSONRespon
 # CORS-wrapped responses registered below.
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 
+
+class _SecurityHeaders:
+    """The headers the web host already sends, on every API response too
+    (N-9-3): HTTPS only, no MIME sniffing, never framed, no referrer to
+    another origin. A raw ASGI middleware, so streamed files pass through
+    untouched."""
+
+    HEADERS = [
+        (b"strict-transport-security", b"max-age=63072000; includeSubDomains"),
+        (b"x-content-type-options", b"nosniff"),
+        (b"x-frame-options", b"DENY"),
+        (b"referrer-policy", b"strict-origin-when-cross-origin"),
+    ]
+
+    def __init__(self, app_: Any) -> None:
+        self.app = app_
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def with_headers(message: Any) -> None:
+            if message["type"] == "http.response.start":
+                present = {k.lower() for k, _ in message.get("headers", [])}
+                message.setdefault("headers", [])
+                message["headers"] = list(message["headers"]) + [
+                    (k, v) for k, v in self.HEADERS if k not in present]
+            await send(message)
+
+        await self.app(scope, receive, with_headers)
+
+
+app.add_middleware(_SecurityHeaders)
+
+
+class _AdminActionAudit:
+    """Every successful change made through a principal or delegated-admin
+    route leaves an audit row: who, which route, which ids (N-67-4). Until
+    2026-09-30 only the routes that wrote their own row were traceable, so
+    who changed the calendar or the terms, or invited whom into the school,
+    was unknown. api/route_policy.py already names each route's level, so
+    this needs no list of its own, and a new admin route is covered the day
+    it is added. Routes that write a detailed row of their own keep it; this
+    one is the floor."""
+
+    MUTATING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+    def __init__(self, app_: Any) -> None:
+        self.app = app_
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http" or scope["method"] not in self.MUTATING:
+            await self.app(scope, receive, send)
+            return
+        seen: dict[str, int] = {}
+
+        async def watch(message: Any) -> None:
+            if message["type"] == "http.response.start":
+                seen["status"] = message["status"]
+            await send(message)
+
+        await self.app(scope, receive, watch)
+        if 200 <= seen.get("status", 0) < 300:
+            _audit_admin_action(scope)
+
+
+def _audit_admin_action(scope: Any) -> None:
+    from .route_policy import PRINCIPAL, ROUTE_POLICY
+    from ..assessment import auth_routes
+    from ..assessment.audit_log import get_audit_log
+    path = getattr(scope.get("route"), "path", None)
+    policy = ROUTE_POLICY.get((scope["method"], path))
+    if policy is None or not (policy.level == PRINCIPAL or policy.level.startswith("admin:")):
+        return
+    if auth_routes._cfg is None:
+        return
+    try:
+        get_audit_log(auth_routes._cfg.data_root).append(
+            "admin_action", actor=scope.get("acos_actor"),
+            details={"method": scope["method"], "route": path, "level": policy.level,
+                     "params": {k: str(v) for k, v in (scope.get("path_params") or {}).items()}})
+    except Exception:  # noqa: BLE001 - the change is made; a lost row is logged, not raised
+        logger.warning("could not audit %s %s", scope["method"], path, exc_info=True)
+
+
+app.add_middleware(_AdminActionAudit)
+
 _cfg = get_config()
 _cors_origins = getattr(_cfg, "cors_origins", ["*"])
 if "*" in _cors_origins:
@@ -155,6 +255,24 @@ app.include_router(curriculum_routes.router)
 app.include_router(school_model_routes.router)
 app.include_router(cover_routes.router)
 app.include_router(operations_routes.router)
+app.include_router(homework_routes.router)
+app.include_router(learning_routes.router)
+app.include_router(guardian_routes.router)
+app.include_router(grant_routes.router)
+app.include_router(import_routes.router)
+app.include_router(exam_routes.router)
+app.include_router(dashboard_routes.router)
+app.include_router(term_report.router)
+app.include_router(calendar_feed.router)
+app.include_router(homework_photos.router)
+app.include_router(practice_routes.router)
+app.include_router(class_progress.router)
+app.include_router(sign_in_codes.router)
+app.include_router(google_sign_in.router)
+app.include_router(question_reviews.router)
+app.include_router(api_key_routes.router)
+app.include_router(paper_review_routes.router)
+app.include_router(marks_routes.router)
 app.include_router(paper_template_routes.router)
 # The question-bank API carries its own `/v1/...` paths and its own key auth,
 # so it is mounted at the root rather than under `/api/v1` -- its paths are
@@ -259,6 +377,18 @@ def _on_llm_not_enabled(_request: Any, exc: LLMNotEnabled) -> JSONResponse:
     logger.info("LLM feature requested with no provider key configured")
     return JSONResponse(status_code=501,
                         content={"detail": str(exc), "code": "llm_not_enabled"})
+
+
+# NFR-7: every exception no handler above answers is recorded, grouped and
+# written as a Cloud Error Reporting event; the apps report theirs too.
+from . import error_tracking  # noqa: E402
+
+error_tracking.install(app)
+
+# INT-2: a person's own number and consent for SMS and WhatsApp.
+from ..operations import messaging_routes  # noqa: E402
+
+app.include_router(messaging_routes.router)
 
 
 class SearchRequest(BaseModel):

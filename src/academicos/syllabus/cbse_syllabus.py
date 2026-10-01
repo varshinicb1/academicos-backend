@@ -1,4 +1,5 @@
-"""Real CBSE Class X syllabus: units, chapters, and official marks-weightage.
+"""CBSE syllabus by class: units, chapters and official marks-weightage, and
+for classes 1-5 the NCERT book's own chapters.
 
 Data source: academicos-data/syllabus/*.json, hand-verified against the
 official 2025-26 CBSE curriculum PDFs (cbseacademic.nic.in/curriculum_2026.html)
@@ -107,11 +108,44 @@ def _resolve_syllabus_file(subject: str, grade: int) -> Path | None:
     return None
 
 
+@lru_cache(maxsize=1)
+def _ncert_books() -> dict:
+    path = _DATA_DIR / "ncert_books.json"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8")).get("classes", {})
+
+
+def book_chapters(subject: str, grade: int) -> list[dict]:
+    """The chapters of the NCERT book(s) this class studies now, in book order:
+    [{"id", "name", "book", "bookTitle", "number", "topics": [{"id", "title"}]}].
+
+    Written by scripts/build_textbook_bank.py from the chapters it read, with
+    the id a syllabus file gives the chapter where one names it, and the
+    taxonomy's form ("mathematics-6/number-play") where none does. These are
+    the current books (NCERT's 2026-27 catalogue), so a class whose syllabus
+    file still lists an older edition (class 9), or lists CBSE assessment units
+    rather than chapters (the languages), still offers the chapters its book
+    prints. An older edition's slugs are not in here and stay unfiled.
+    """
+    return list(_ncert_books().get(f"{subject}|{grade}", {}).get("chapters", []))
+
+
 @lru_cache(maxsize=None)
 def load_syllabus(subject: str, grade: int) -> SyllabusDocument | None:
     path = _resolve_syllabus_file(subject, grade)
     if path is None or not path.exists():
-        return None
+        # No CBSE syllabus file (classes 1-5 have no CBSE marks table): the
+        # book's own chapters are the syllabus, with no units and no marks.
+        chapters = book_chapters(subject, grade)
+        if not chapters:
+            return None
+        # A fixed wording: the seed names the class's book from `source`, so a
+        # source that grew as chapters arrived made a re-seed create a second book.
+        return SyllabusDocument(
+            subject=subject, grade=grade, total_marks=0,
+            source=f"NCERT Class {grade} {subject}: the book's own chapters (no CBSE marks table)",
+            units=(), chapters=tuple(SyllabusChapter(id=c["id"], name=c["name"]) for c in chapters))
     data = json.loads(path.read_text(encoding="utf-8"))
     units = tuple(
         SyllabusUnit(
@@ -162,8 +196,10 @@ def list_available_syllabi() -> list[tuple[str, int]]:
 
 
 def get_available_subjects_for_grade(grade: int) -> list[str]:
-    """Returns available subject names for the requested grade."""
-    return sorted([s for s, g in list_available_syllabi() if g == grade])
+    """Subjects with a syllabus for the requested grade: a CBSE file on disk,
+    or (classes 1-5) the chapters of the class's NCERT book."""
+    books = {key.split("|")[0] for key in _ncert_books() if key.endswith(f"|{grade}")}
+    return sorted({s for s, g in list_available_syllabi() if g == grade} | books)
 
 
 # What a CBSE school should be able to set up for a grade -- DECLARED here, not
@@ -188,7 +224,11 @@ _SENIOR_SECONDARY = (
     "English", "Geography", "Hindi", "History", "Mathematics", "Physics",
     "Political Science",
 )
+# Classes 1-5 (requirements v3): the subjects NCERT publishes a book for --
+# EVS from class 3, when "The World Around Us" begins.
+_PRIMARY = ("English", "Hindi", "Mathematics")
 EXPECTED_SUBJECTS_BY_GRADE: dict[int, tuple[str, ...]] = {
+    1: _PRIMARY, 2: _PRIMARY, 3: _PRIMARY + ("EVS",), 4: _PRIMARY + ("EVS",), 5: _PRIMARY + ("EVS",),
     **{g: _SECONDARY_CORE for g in range(6, 11)},
     **{g: _SENIOR_SECONDARY for g in (11, 12)},
 }

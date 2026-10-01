@@ -284,7 +284,10 @@ def finalize_scan_session(session_id: str, current: User = Depends(require_staff
         raise HTTPException(
             409, f"the sheet for student {session.student_id} is already finalized; "
                  "correct individual marks through review or award with a reason")
-    template = templates.default_for("school_1")
+    # The caller's own school's branding and name -- this read "school_1"
+    # for every school, so another school's corrected sheet printed school_1's.
+    from ..curriculum.school_profile import branding_for_school
+    template = branding_for_school(current.school_id, templates.default_for(current.school_id))
 
     mobile_scan.export_raw_booklet_pdf(session, cfg.data_root / "exports")
     mobile_scan.export_corrected_pdf(session, cfg.data_root / "exports", template=template)

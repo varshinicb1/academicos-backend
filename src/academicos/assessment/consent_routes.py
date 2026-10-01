@@ -198,6 +198,15 @@ def record_consent(
     if not req.method.strip():
         raise HTTPException(400, "method is required")
 
+    # A student id is often a roll number with no account behind it (the
+    # evaluation and scan routes take those), so an unknown id is recorded as
+    # given. An id that is an account must be a student of this school: a
+    # school's consent register must not name another school's children.
+    from .auth_routes import _users as users
+    account = users.get(req.student_id.strip()) if users is not None else None
+    if account is not None and (account.school_id != user.school_id or account.role != "student"):
+        raise HTTPException(403, "that id is not a student of this school")
+
     store = _require_store()
     record = store.record_consent(
         school_id=user.school_id,

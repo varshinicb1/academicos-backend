@@ -44,6 +44,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from .api_keys import ApiKey, ApiKeyStore, QuotaExceeded
 # The engine lives in `qbank_engine.py`, which imports no web framework.
@@ -62,6 +63,7 @@ from .qbank_engine import (  # noqa: F401  (re-exported for importers)
     decode_cursor,
     encode_cursor,
     key_provenance_of,
+    key_tier,
 )
 
 log = logging.getLogger(__name__)
@@ -86,7 +88,7 @@ def init(db_path: Path | str, bank_path: Path | str) -> None:
     initialised) and everything else boots normally.
     """
     global _store, _bank
-    _store = ApiKeyStore(db_path)
+    _store = ApiKeyStore(db_path, durable=True)
 
     path = Path(bank_path)
     if not path.exists():
@@ -221,6 +223,10 @@ def _slim(rec: dict[str, Any]) -> dict[str, Any]:
         # consumer can tell which kind of key it is holding.
         "hasAnswerKey": QuestionBank.has_answer_key(rec),
         "keyProvenance": provenance,
+        # "published" (CBSE's or NCERT's own) or "checked" (grounded in the
+        # textbook, two agreeing solves, or approved by a teacher): which kind
+        # of key this is, in one word (qbank_engine.CHECKED_PROVENANCE).
+        "keyTier": key_tier(rec) if QuestionBank.has_answer_key(rec) else "none",
     }
 
 
@@ -247,11 +253,13 @@ def _q1_filter(has_scheme: bool | None, include_unkeyed: bool) -> bool | None:
 
 KEY_PROVENANCE_PARAM = Query(
     default=None,
-    description="narrow to ONE kind of published key: 'cbse_marking_scheme' "
-                "for the board's own schemes, 'ncert_exemplar_answer' for "
-                "NCERT's Exemplar answers. Narrows within the answer-keyed "
-                "set; it never widens past rule Q1, so combining it with "
-                "has_scheme=false is a 400 rather than an empty page.")
+    description="narrow to ONE kind of key: 'cbse_marking_scheme' for the "
+                "board's own schemes, 'ncert_exemplar_answer' for NCERT's "
+                "Exemplar answers, 'ncert_textbook_answer' for a textbook's "
+                "printed answers; or a checked key: 'textbook_grounded', "
+                "'two_model_solved', 'teacher_verified'. Narrows within the "
+                "answer-keyed set; it never widens past rule Q1, so combining "
+                "it with has_scheme=false is a 400 rather than an empty page.")
 
 
 def _checked_key_provenance(value: str | None) -> str | None:
@@ -532,3 +540,76 @@ def get_facets(
                      key_provenance=_checked_key_filters(has_scheme,
                                                          key_provenance)),
         headers=_rate_headers(key))
+
+
+# --------------------------------------------------------------------------- #
+# homework sets (API-2)
+# --------------------------------------------------------------------------- #
+
+class HomeworkSetRequest(BaseModel):
+    """N answer-keyed questions for a class, from chapters, in a mix of
+    types, avoiding questions the caller has already used. The API knows no
+    students (API-5), so "already had" is the caller's list of ids."""
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    subject: str
+    grade: int = Field(ge=1, le=12)
+    chapter_ids: list[str] = Field(default_factory=list, alias="chapterIds", max_length=30)
+    count: int = Field(default=10, ge=1, le=50)
+    types: dict[str, int] = Field(default_factory=dict, description="e.g. {\"mcq\": 5, \"short_answer\": 3}")
+    exclude_ids: list[str] = Field(default_factory=list, alias="excludeIds", max_length=5000)
+    seed: str | None = None
+
+
+def _candidates(bank: QuestionBank, req: HomeworkSetRequest) -> list[dict[str, Any]]:
+    chapters = req.chapter_ids or [None]
+    seen: dict[str, dict[str, Any]] = {}
+    for chapter in chapters:
+        cursor = None
+        while True:
+            items, cursor, _ = _page(bank, subject=req.subject, grade=req.grade, chapter_id=chapter,
+                                     has_scheme=True, cursor=cursor, limit=MAX_LIMIT)
+            for r in items:
+                seen.setdefault(r["id"], r)
+            if not cursor:
+                break
+    excluded = set(req.exclude_ids)
+    return [r for r in seen.values() if r["id"] not in excluded]
+
+
+@router.post("/homework-sets")
+def homework_set(req: HomeworkSetRequest, key: ApiKey = Depends(_require("questions:read"))) -> JSONResponse:
+    """A homework set (API-2). With `types`, that many of each type; without,
+    `count` questions spread across the chosen chapters. The same request
+    with the same `seed` returns the same set; `shortfall` says what the
+    bank could not supply."""
+    import random
+    assert _bank is not None
+    pool = _candidates(_bank, req)
+    rng = random.Random(req.seed or f"{req.subject}:{req.grade}:{','.join(sorted(req.chapter_ids))}")
+    pool.sort(key=lambda r: r["id"])
+    rng.shuffle(pool)
+    picked: list[dict[str, Any]] = []
+    shortfall: dict[str, int] = {}
+    if req.types:
+        for qtype, n in req.types.items():
+            got = [r for r in pool if r.get("type") == qtype][:max(0, n)]
+            picked += got
+            if len(got) < n:
+                shortfall[qtype] = n - len(got)
+    else:
+        # round-robin across chapters so one big chapter cannot crowd out the rest
+        by_chapter: dict[str, list[dict[str, Any]]] = {}
+        for r in pool:
+            by_chapter.setdefault(r.get("taxonomyChapterId") or next(iter(r.get("chapterIds") or []), "-"), []).append(r)
+        queues = list(by_chapter.values())
+        while len(picked) < req.count and any(queues):
+            for q in queues:
+                if q and len(picked) < req.count:
+                    picked.append(q.pop())
+        if len(picked) < req.count:
+            shortfall["any"] = req.count - len(picked)
+    body = {"items": [_slim(r) for r in picked], "count": len(picked),
+            "requested": sum(req.types.values()) if req.types else req.count,
+            "available": len(pool), "shortfall": shortfall}
+    return JSONResponse(body, headers=_rate_headers(key))

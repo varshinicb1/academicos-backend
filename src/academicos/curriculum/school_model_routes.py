@@ -10,11 +10,11 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
-from ..assessment.auth_routes import get_current_user, require_principal, require_staff
+from ..assessment.auth_routes import get_current_user, require_admin, require_principal, require_staff
 from ..assessment.users import User
 from . import routes as cr
 from .schemas import Camel
@@ -30,8 +30,13 @@ class _Req(Camel):
 # ---------------- request / response shapes ----------------
 
 class AllocationRequest(_Req):
+    """coTeacherId, roomKind and doublePeriods left out keep what the cell
+    has; null clears the co-teacher or the room kind (SCH-2, SCH-8)."""
     teacher_id: Optional[str] = None
     periods_per_week: int = Field(ge=1, le=60)
+    co_teacher_id: Optional[str] = None
+    room_kind: Optional[str] = None
+    double_periods: int = Field(default=0, ge=0, le=30)
 
 
 class AllocationResponse(Camel):
@@ -41,6 +46,9 @@ class AllocationResponse(Camel):
     subject_id: str
     teacher_id: Optional[str] = None
     periods_per_week: int
+    co_teacher_id: Optional[str] = None
+    room_kind: Optional[str] = None
+    double_periods: int = 0
 
 
 class TeacherLoadResponse(Camel):
@@ -132,6 +140,13 @@ class TimetableEntryResponse(Camel):
     teacher_id: Optional[str] = None
     room_id: Optional[str] = None
     locked: bool = False
+    co_teacher_id: Optional[str] = None      # SCH-8: in the room too
+    # Names, so a week grid reads "10-B Science" without more calls.
+    subject_name: Optional[str] = None
+    section_name: Optional[str] = None
+    teacher_name: Optional[str] = None
+    co_teacher_name: Optional[str] = None
+    room_name: Optional[str] = None
 
 
 class TimetableGapResponse(Camel):
@@ -172,7 +187,8 @@ def _staff_member(user_id: Optional[str], principal: User) -> None:
 def _alloc(a) -> AllocationResponse:
     return AllocationResponse(id=a.id, academic_year_id=a.academic_year_id, section_id=a.section_id,
                               subject_id=a.subject_id, teacher_id=a.teacher_id,
-                              periods_per_week=a.periods_per_week)
+                              periods_per_week=a.periods_per_week, co_teacher_id=a.co_teacher_id,
+                              room_kind=a.room_kind, double_periods=a.double_periods)
 
 
 def _room(r) -> RoomResponse:
@@ -187,9 +203,21 @@ def _bell(b) -> BellScheduleResponse:
 
 
 def _entry(e) -> TimetableEntryResponse:
+    store = cr._require()
+    subject = store.get_subject(e.subject_id)
+    section = store.get_section(e.section_id)
+    users = cr._require_users()
+    teacher = users.get(e.teacher_id) if e.teacher_id else None
+    co = users.get(e.co_teacher_id) if e.co_teacher_id else None
+    room = store.get_room(e.room_id) if e.room_id else None
     return TimetableEntryResponse(id=e.id, section_id=e.section_id, day_of_week=e.day_of_week,
                                   period=e.period, subject_id=e.subject_id, teacher_id=e.teacher_id,
-                                  room_id=e.room_id, locked=bool(e.locked))
+                                  room_id=e.room_id, locked=bool(e.locked), co_teacher_id=e.co_teacher_id,
+                                  subject_name=subject.name if subject else None,
+                                  section_name=store._section_label(section) if section else None,
+                                  teacher_name=teacher.name if teacher else None,
+                                  co_teacher_name=co.name if co else None,
+                                  room_name=room.name if room else None)
 
 
 def _section_week(section) -> SectionTimetableResponse:
@@ -233,20 +261,39 @@ def list_allocations(academic_year_id: str,
 
 @router.put("/sections/{section_id}/allocations/{subject_id}", response_model=AllocationResponse)
 def set_allocation(section_id: str, subject_id: str, req: AllocationRequest,
-                   principal: User = Depends(require_principal)) -> AllocationResponse:
+                   principal: User = Depends(require_admin("timetable", scoped=True))) -> AllocationResponse:
     """Set one cell of the allocation grid: who teaches this subject to this
     section, and how many periods a week."""
     cr._require_school_owns_section(section_id, principal)
+    cr.require_section_in_scope(section_id, principal, "timetable", subject_id=subject_id)
     _staff_member(req.teacher_id, principal)
+    sent = req.model_fields_set
+    extra: dict[str, Any] = {}
+    if "co_teacher_id" in sent:
+        _staff_member(req.co_teacher_id, principal)
+        extra["co_teacher_id"] = req.co_teacher_id
+    if "room_kind" in sent:
+        extra["room_kind"] = req.room_kind
+    if "double_periods" in sent:
+        extra["double_periods"] = req.double_periods
     try:
         before, after = cr._require().set_allocation(section_id=section_id, subject_id=subject_id,
                                                      teacher_id=req.teacher_id,
-                                                     periods_per_week=req.periods_per_week)
+                                                     periods_per_week=req.periods_per_week, **extra)
     except KeyError:
         raise HTTPException(404, "subject not found")
     except ValueError as e:
         raise HTTPException(422, str(e))
-    fields = lambda a: {"teacherId": a.teacher_id, "periodsPerWeek": a.periods_per_week}  # noqa: E731
+    # The SCH-2/SCH-8 fields are recorded when either side uses them, so a
+    # plain cell's entry reads as it always has.
+    special = any(x is not None and (x.co_teacher_id or x.room_kind or x.double_periods)
+                  for x in (before, after))
+
+    def fields(a):
+        out = {"teacherId": a.teacher_id, "periodsPerWeek": a.periods_per_week}
+        if special:
+            out.update(coTeacherId=a.co_teacher_id, roomKind=a.room_kind, doublePeriods=a.double_periods)
+        return out
     if before is None or fields(before) != fields(after):
         _audit("allocation_set", principal,
                {"sectionId": section_id, "subjectId": subject_id,
@@ -256,9 +303,10 @@ def set_allocation(section_id: str, subject_id: str, req: AllocationRequest,
 
 @router.delete("/sections/{section_id}/allocations/{subject_id}")
 def delete_allocation(section_id: str, subject_id: str,
-                      principal: User = Depends(require_principal)) -> dict:
+                      principal: User = Depends(require_admin("timetable", scoped=True))) -> dict:
     """409 while the timetable still gives the subject periods."""
     cr._require_school_owns_section(section_id, principal)
+    cr.require_section_in_scope(section_id, principal, "timetable", subject_id=subject_id)
     try:
         alloc = cr._require().delete_allocation(section_id, subject_id)
     except KeyError:
@@ -273,7 +321,7 @@ def delete_allocation(section_id: str, subject_id: str,
 
 @router.get("/academic-years/{academic_year_id}/teacher-load", response_model=list[TeacherLoadResponse])
 def teacher_load(academic_year_id: str,
-                 principal: User = Depends(require_principal)) -> list[TeacherLoadResponse]:
+                 principal: User = Depends(require_admin("timetable"))) -> list[TeacherLoadResponse]:
     """Per teacher: periods a week allocated and timetabled, and the most in
     one day. The principal's: teacher-level data (REQUIREMENTS ADM-5)."""
     cr._require_school_owns_academic_year(academic_year_id, principal)
@@ -292,7 +340,7 @@ def list_rooms(current: User = Depends(require_staff)) -> list[RoomResponse]:
 
 
 @router.post("/rooms", response_model=RoomResponse)
-def create_room(req: RoomRequest, principal: User = Depends(require_principal)) -> RoomResponse:
+def create_room(req: RoomRequest, principal: User = Depends(require_admin("timetable"))) -> RoomResponse:
     try:
         room = cr._require().create_room(school_id=principal.school_id, name=req.name, kind=req.kind,
                                          capacity=req.capacity)
@@ -305,7 +353,7 @@ def create_room(req: RoomRequest, principal: User = Depends(require_principal)) 
 
 @router.patch("/rooms/{room_id}", response_model=RoomResponse)
 def update_room(room_id: str, req: RoomUpdateRequest,
-                principal: User = Depends(require_principal)) -> RoomResponse:
+                principal: User = Depends(require_admin("timetable"))) -> RoomResponse:
     _owned_room(room_id, principal)
     sent = req.model_fields_set
     try:
@@ -322,7 +370,7 @@ def update_room(room_id: str, req: RoomUpdateRequest,
 
 
 @router.delete("/rooms/{room_id}")
-def delete_room(room_id: str, principal: User = Depends(require_principal)) -> dict:
+def delete_room(room_id: str, principal: User = Depends(require_admin("timetable"))) -> dict:
     """409 while the timetable uses the room."""
     _owned_room(room_id, principal)
     try:
@@ -346,7 +394,7 @@ def list_bell_schedules(academic_year_id: str,
 
 @router.post("/academic-years/{academic_year_id}/bell-schedules", response_model=BellScheduleResponse)
 def create_bell_schedule(academic_year_id: str, req: BellScheduleRequest,
-                         principal: User = Depends(require_principal)) -> BellScheduleResponse:
+                         principal: User = Depends(require_admin("timetable"))) -> BellScheduleResponse:
     """The year's first schedule becomes its default."""
     cr._require_school_owns_academic_year(academic_year_id, principal)
     try:
@@ -362,7 +410,7 @@ def create_bell_schedule(academic_year_id: str, req: BellScheduleRequest,
 
 @router.put("/bell-schedules/{bell_schedule_id}", response_model=BellScheduleResponse)
 def update_bell_schedule(bell_schedule_id: str, req: BellScheduleUpdateRequest,
-                         principal: User = Depends(require_principal)) -> BellScheduleResponse:
+                         principal: User = Depends(require_admin("timetable"))) -> BellScheduleResponse:
     before = _owned_bell(bell_schedule_id, principal)
     try:
         after = cr._require().update_bell_schedule(
@@ -381,7 +429,7 @@ def update_bell_schedule(bell_schedule_id: str, req: BellScheduleUpdateRequest,
 
 
 @router.delete("/bell-schedules/{bell_schedule_id}")
-def delete_bell_schedule(bell_schedule_id: str, principal: User = Depends(require_principal)) -> dict:
+def delete_bell_schedule(bell_schedule_id: str, principal: User = Depends(require_admin("timetable"))) -> dict:
     _owned_bell(bell_schedule_id, principal)
     try:
         b = cr._require().delete_bell_schedule(bell_schedule_id)
@@ -393,9 +441,11 @@ def delete_bell_schedule(bell_schedule_id: str, principal: User = Depends(requir
 
 @router.put("/sections/{section_id}/bell-schedule", response_model=SectionTimetableResponse)
 def set_section_bell(section_id: str, req: SectionBellRequest,
-                     principal: User = Depends(require_principal)) -> SectionTimetableResponse:
+                     principal: User = Depends(require_admin("timetable", scoped=True))
+                     ) -> SectionTimetableResponse:
     """Give a section its own bell (null: the year's default)."""
     section = cr._require_school_owns_section(section_id, principal)
+    cr.require_section_in_scope(section_id, principal, "timetable")
     try:
         cr._require().set_section_bell(section_id, req.bell_schedule_id)
     except ValueError as e:
@@ -417,7 +467,7 @@ def year_timetable(academic_year_id: str, section_id: Optional[str] = Query(defa
     if section_id:
         entries = [e for e in entries if e.section_id == section_id]
     if teacher_id:
-        entries = [e for e in entries if e.teacher_id == teacher_id]
+        entries = [e for e in entries if teacher_id in (e.teacher_id, e.co_teacher_id)]
     return [_entry(e) for e in entries]
 
 
@@ -428,18 +478,53 @@ def section_timetable(section_id: str, current: User = Depends(require_staff)) -
     return _section_week(cr._require_school_owns_section(section_id, current))
 
 
+def _tell_timetable_change(principal: User, before: list, after: list, section_ids: set[str]) -> None:
+    """N-8-5: a changed week tells the people it changes. Each section whose
+    week differs tells its students; each teacher whose own periods in those
+    sections differ is told. A week saved unchanged tells no one. Both the
+    solver's publish and a hand-made week come through here; only the solver
+    used to notify, and only teachers."""
+    from ..operations.routes import notify_parents_safely, notify_safely
+
+    def section_week(entries: list, sid: str) -> set:
+        return {(e.day_of_week, e.period, e.subject_id, e.teacher_id, e.room_id, e.co_teacher_id)
+                for e in entries if e.section_id == sid}
+
+    changed = {sid for sid in section_ids if section_week(before, sid) != section_week(after, sid)}
+    if not changed:
+        return
+
+    def teacher_week(entries: list, t: str) -> set:
+        return {(e.section_id, e.day_of_week, e.period, e.subject_id, e.room_id)
+                for e in entries if e.section_id in changed and t in (e.teacher_id, e.co_teacher_id)}
+
+    teachers = sorted({t for e in before + after if e.section_id in changed for t in (e.teacher_id, e.co_teacher_id)
+                       if t and teacher_week(before, t) != teacher_week(after, t)})
+    store = cr._require()
+    students = sorted({en.student_id for sid in changed for en in store.enrollments_for_section(sid)})
+    for who in (teachers, students):
+        if who:
+            notify_safely(school_id=principal.school_id, user_ids=who, kind="timetable_published", params={},
+                          link="/my-timetable")
+    notify_parents_safely(school_id=principal.school_id, student_ids=students, kind="timetable_published",
+                          params={}, exclude=teachers)
+
+
 @router.put("/sections/{section_id}/timetable", response_model=SectionTimetableResponse)
 def replace_section_timetable(section_id: str, req: SectionTimetableRequest,
-                              principal: User = Depends(require_principal)) -> SectionTimetableResponse:
+                              principal: User = Depends(require_admin("timetable", scoped=True))
+                              ) -> SectionTimetableResponse:
     """Replace a section's whole week. Checked before anything is written: a
     teacher or room already busy in another section, a period or day the
     bell does not have, a subject with no allocation or more periods than
     allocated. A 409 lists every clash; the old week is kept."""
     section = cr._require_school_owns_section(section_id, principal)
+    cr.require_section_in_scope(section_id, principal, "timetable")
     for e in req.entries:
         _staff_member(e.teacher_id, principal)
     store = cr._require()
-    before = len(store.timetable_for_section(section_id))
+    week_before = store.timetable_for_section(section_id)
+    before = len(week_before)
     try:
         store.replace_section_timetable(section_id, [e.model_dump() for e in req.entries])
     except TimetableClash as e:
@@ -449,6 +534,7 @@ def replace_section_timetable(section_id: str, req: SectionTimetableRequest,
         raise HTTPException(422, str(e))
     _audit("timetable_replaced", principal, {"sectionId": section_id, "before": before,
                                              "after": len(req.entries)})
+    _tell_timetable_change(principal, week_before, store.timetable_for_section(section_id), {section_id})
     return _section_week(store.get_section(section.id))
 
 
@@ -456,6 +542,8 @@ class MyTimetableResponse(Camel):
     role: str
     academic_year_id: Optional[str] = None
     section_id: Optional[str] = None
+    # A student's class, so the app knows a young learner (SA-7, classes 1-5).
+    grade: Optional[int] = None
     bell_schedule: Optional[BellScheduleResponse] = None
     entries: list[TimetableEntryResponse] = []
 
@@ -476,9 +564,11 @@ def my_timetable(current: User = Depends(get_current_user)) -> MyTimetableRespon
         if section is None:
             return MyTimetableResponse(role=current.role, academic_year_id=year.id)
         bell = store.bell_for_section(section)
+        grade = store.get_grade(section.grade_id)
         return MyTimetableResponse(role=current.role, academic_year_id=section.academic_year_id,
                                    section_id=section.id, bell_schedule=_bell(bell) if bell else None,
-                                   entries=[_entry(e) for e in store.timetable_for_section(section.id)])
+                                   entries=[_entry(e) for e in store.timetable_for_section(section.id)],
+                                   grade=grade.number if grade else None)
     bells = store.bell_schedules_for_year(year.id)
     default = next((b for b in bells if b.is_default), None)
     return MyTimetableResponse(role=current.role, academic_year_id=year.id,
@@ -504,6 +594,7 @@ class ProposedEntryResponse(Camel):
     subject_id: str
     teacher_id: Optional[str] = None
     room_id: Optional[str] = None
+    co_teacher_id: Optional[str] = None
 
 
 class SolveResponse(Camel):
@@ -519,7 +610,7 @@ class SolveResponse(Camel):
 
 @router.post("/academic-years/{academic_year_id}/timetable/solve", response_model=SolveResponse)
 def solve_timetable(academic_year_id: str, req: SolveRequest,
-                    principal: User = Depends(require_principal)) -> SolveResponse:
+                    principal: User = Depends(require_admin("timetable"))) -> SolveResponse:
     """Generate a clash-free week for the whole school (or `sectionIds`) from
     the allocations and bells: no teacher, room or section in two places,
     a teacher's maximum a day and in a row, subjects spread across the week,
@@ -541,21 +632,22 @@ def solve_timetable(academic_year_id: str, req: SolveRequest,
     applied = False
     if req.apply and result.status == "solved":
         solving = section_ids or {s.id for s in store.sections_for_year(academic_year_id)}
+        week_before = [e for e in store.timetable_for_year(academic_year_id) if e.section_id in solving]
         store.apply_solved_timetable(academic_year_id, result.entries, solving)
         applied = True
         _audit("timetable_solved", principal,
                {"academicYearId": academic_year_id, "sections": len(solving), "kept": result.kept,
                 "movedOrAdded": result.moved_or_added, "removed": result.removed})
-        from ..operations.routes import notify_safely
-        teachers = sorted({e.teacher_id for e in result.entries if e.teacher_id and e.section_id in solving})
-        notify_safely(school_id=principal.school_id, user_ids=teachers, kind="timetable_published", params={},
-                      link="/my-timetable")
+        _tell_timetable_change(principal, week_before,
+                               [e for e in store.timetable_for_year(academic_year_id) if e.section_id in solving],
+                               solving)
     return SolveResponse(
         status=result.status, applied=applied, problems=result.problems, kept=result.kept,
         moved_or_added=result.moved_or_added, removed=result.removed, seconds=round(result.seconds, 2),
         entries=[ProposedEntryResponse(section_id=e.section_id, day_of_week=e.day_of_week,
                                        period=e.period, subject_id=e.subject_id,
-                                       teacher_id=e.teacher_id, room_id=e.room_id)
+                                       teacher_id=e.teacher_id, room_id=e.room_id,
+                                       co_teacher_id=e.co_teacher_id)
                  for e in result.entries])
 
 
@@ -576,7 +668,7 @@ class TeacherUnavailabilityResponse(Camel):
 @router.get("/academic-years/{academic_year_id}/teacher-unavailability",
             response_model=list[TeacherUnavailabilityResponse])
 def list_teacher_unavailability(academic_year_id: str,
-                                principal: User = Depends(require_principal)
+                                principal: User = Depends(require_admin("timetable"))
                                 ) -> list[TeacherUnavailabilityResponse]:
     """Periods each teacher cannot teach (the default bell's numbering).
     Teacher-level data: the principal's (ADM-5)."""
@@ -590,7 +682,7 @@ def list_teacher_unavailability(academic_year_id: str,
 @router.put("/academic-years/{academic_year_id}/teacher-unavailability/{teacher_id}",
             response_model=TeacherUnavailabilityResponse)
 def set_teacher_unavailability(academic_year_id: str, teacher_id: str, req: TeacherUnavailabilityRequest,
-                               principal: User = Depends(require_principal)
+                               principal: User = Depends(require_admin("timetable"))
                                ) -> TeacherUnavailabilityResponse:
     cr._require_school_owns_academic_year(academic_year_id, principal)
     _staff_member(teacher_id, principal)
@@ -604,3 +696,155 @@ def set_teacher_unavailability(academic_year_id: str, teacher_id: str, req: Teac
     return TeacherUnavailabilityResponse(
         teacher_id=teacher_id, slots=[UnavailableSlot(day_of_week=d, period=p) for d, p in slots])
 
+
+
+# ---------------- rooms out of use (SCH-8) ----------------
+
+class RoomUnavailabilityResponse(Camel):
+    room_id: str
+    slots: list[UnavailableSlot]
+
+
+@router.get("/academic-years/{academic_year_id}/room-unavailability",
+            response_model=list[RoomUnavailabilityResponse])
+def list_room_unavailability(academic_year_id: str,
+                             current: User = Depends(require_staff)) -> list[RoomUnavailabilityResponse]:
+    """Periods each room cannot be used this year (a lab closed for its
+    weekly maintenance, say). The solver books nothing there."""
+    cr._require_school_owns_academic_year(academic_year_id, current)
+    rows = cr._require().room_unavailability_for_year(academic_year_id)
+    return [RoomUnavailabilityResponse(
+        room_id=r, slots=[UnavailableSlot(day_of_week=d, period=p) for d, p in sorted(slots)])
+        for r, slots in sorted(rows.items())]
+
+
+@router.put("/academic-years/{academic_year_id}/room-unavailability/{room_id}",
+            response_model=RoomUnavailabilityResponse)
+def set_room_unavailability(academic_year_id: str, room_id: str, req: TeacherUnavailabilityRequest,
+                            principal: User = Depends(require_admin("timetable"))) -> RoomUnavailabilityResponse:
+    """Replace one room's periods out of use. 409 while the timetable books
+    the room in one of them: move those periods first."""
+    cr._require_school_owns_academic_year(academic_year_id, principal)
+    _owned_room(room_id, principal)
+    try:
+        slots = cr._require().set_room_unavailability(
+            academic_year_id, room_id, [(s.day_of_week, s.period) for s in req.slots])
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except InUse as e:
+        raise HTTPException(409, str(e))
+    _audit("room_unavailability_set", principal,
+           {"academicYearId": academic_year_id, "roomId": room_id, "slots": len(slots)})
+    return RoomUnavailabilityResponse(
+        room_id=room_id, slots=[UnavailableSlot(day_of_week=d, period=p) for d, p in slots])
+
+
+# ---------------- the school's own name and logo (EX-5, audit D41) ----------------
+
+class SchoolProfileRequest(_Req):
+    name: str = Field(min_length=1, max_length=120)
+    address: Optional[str] = Field(default=None, max_length=200)
+    affiliation: Optional[str] = Field(default=None, max_length=120)
+
+
+class SchoolProfileResponse(Camel):
+    """`name` is null until the principal sets it: papers then print no
+    school name rather than a placeholder."""
+    name: Optional[str] = None
+    address: Optional[str] = None
+    affiliation: Optional[str] = None
+    has_logo: bool = False
+    updated_at: Optional[str] = None
+
+
+def _profile_response(p) -> SchoolProfileResponse:
+    if p is None:
+        return SchoolProfileResponse()
+    return SchoolProfileResponse(name=p.name, address=p.address, affiliation=p.affiliation,
+                                 has_logo=p.has_logo, updated_at=p.updated_at)
+
+
+@router.get("/school-profile", response_model=SchoolProfileResponse)
+def get_school_profile(current: User = Depends(get_current_user)) -> SchoolProfileResponse:
+    """The caller's school's name, address, affiliation line and whether it
+    has a logo. Any signed-in member of the school: the apps show the name."""
+    return _profile_response(cr._require().get_school_profile(current.school_id))
+
+
+@router.put("/school-profile", response_model=SchoolProfileResponse)
+def set_school_profile(req: SchoolProfileRequest,
+                       principal: User = Depends(require_principal)) -> SchoolProfileResponse:
+    """Set the name every paper, answer key and report prints at the top."""
+    try:
+        before, after = cr._require().set_school_profile(
+            principal.school_id, name=req.name, address=req.address, affiliation=req.affiliation,
+            updated_by=principal.id)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    f = lambda p: {"name": p.name, "address": p.address, "affiliation": p.affiliation}  # noqa: E731
+    if before is None or f(before) != f(after):
+        _audit("school_profile_set", principal, {"before": f(before) if before else None, "after": f(after)})
+    return _profile_response(after)
+
+
+@router.get("/school-profile/logo")
+def get_school_logo(current: User = Depends(get_current_user)):
+    from fastapi.responses import Response
+    from .school_profile import local_logo
+    profile = cr._require().get_school_profile(current.school_id)
+    path = local_logo(cr._cfg.data_root, profile)
+    if path is None:
+        raise HTTPException(404, "the school has no logo")
+    return Response(content=path.read_bytes(), media_type=profile.logo_type,
+                    headers={"Cache-Control": "private, max-age=300"})
+
+
+@router.post("/school-profile/logo", response_model=SchoolProfileResponse)
+async def upload_school_logo(file: UploadFile = File(...),
+                             principal: User = Depends(require_principal)) -> SchoolProfileResponse:
+    """A PNG or JPEG of at most 1 MB, printed beside the school's name. The
+    school's name must be set first."""
+    from .school_profile import LOGO_TYPES, MAX_LOGO_BYTES, save_logo
+    store = cr._require()
+    profile = store.get_school_profile(principal.school_id)
+    if profile is None:
+        raise HTTPException(409, "set the school's name first; the logo prints beside it")
+    if file.content_type not in LOGO_TYPES:
+        raise HTTPException(415, "send the logo as a PNG or JPEG image")
+    data = await file.read(MAX_LOGO_BYTES + 1)
+    if len(data) > MAX_LOGO_BYTES:
+        raise HTTPException(413, "a logo may be at most 1 MB")
+    if not data:
+        raise HTTPException(422, "the image is empty")
+    if not _looks_like(file.content_type, data):
+        raise HTTPException(415, "that file is not the PNG or JPEG image it says it is")
+    from .school_profile import image_is_printable
+    if not image_is_printable(data):
+        raise HTTPException(422, "that image could not be read; open it, save it again as a PNG or JPEG, "
+                                 "and upload the new file")
+    key = save_logo(cr._cfg.data_root, profile, file.content_type, data)
+    after = store.set_school_logo(principal.school_id, logo_type=file.content_type, blob_key=key,
+                                  updated_by=principal.id)
+    _audit("school_logo_set", principal, {"contentType": file.content_type, "bytes": len(data),
+                                          "durable": key is not None})
+    return _profile_response(after)
+
+
+@router.delete("/school-profile/logo", response_model=SchoolProfileResponse)
+def remove_school_logo(principal: User = Depends(require_principal)) -> SchoolProfileResponse:
+    from .school_profile import remove_logo
+    store = cr._require()
+    if store.get_school_profile(principal.school_id) is None:
+        raise HTTPException(404, "the school has no logo")
+    remove_logo(cr._cfg.data_root, principal.school_id)
+    after = store.set_school_logo(principal.school_id, logo_type=None, blob_key=None, updated_by=principal.id)
+    _audit("school_logo_removed", principal, {})
+    return _profile_response(after)
+
+
+def _looks_like(content_type: str, data: bytes) -> bool:
+    """The file's first bytes match the type it claims: a renamed file that
+    is not an image would fail later inside the PDF renderer."""
+    if content_type == "image/png":
+        return data.startswith(b"\x89PNG\r\n\x1a\n")
+    return data.startswith(b"\xff\xd8\xff")

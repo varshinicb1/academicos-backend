@@ -96,6 +96,17 @@ CREATE TABLE IF NOT EXISTS teacher_unavailability (
   PRIMARY KEY (academic_year_id, teacher_id, day_of_week, period)
 );
 
+-- SCH-8: periods a room cannot be used (a lab closed for its weekly
+-- maintenance slot, a hall booked for assembly practice); the solver books
+-- nothing there and a hand-made week that does is refused.
+CREATE TABLE IF NOT EXISTS room_unavailability (
+  academic_year_id TEXT NOT NULL,
+  room_id          TEXT NOT NULL,
+  day_of_week      INTEGER NOT NULL,
+  period           INTEGER NOT NULL,
+  PRIMARY KEY (academic_year_id, room_id, day_of_week, period)
+);
+
 -- SCH-4: the cadence each section's plan of a book was placed with (the
 -- school-wide plan's stays in book_schedule_cadences).
 CREATE TABLE IF NOT EXISTS section_plan_cadences (
@@ -148,6 +159,15 @@ class TeachingAllocation:
     teacher_id: Optional[str]
     periods_per_week: int
     created_at: str = ""
+    # SCH-8 co-teaching: a second teacher in the room for every period of the
+    # cell. The period needs a substitute only when both are away.
+    co_teacher_id: Optional[str] = None
+    # SCH-2 labs: the kind of room every period of the cell needs ("lab");
+    # None: the section's own room, which the timetable does not book.
+    room_kind: Optional[str] = None
+    # SCH-2 double periods: how many of the week's periods come as two in a
+    # row with no break between them (a practical).
+    double_periods: int = 0
 
 
 @dataclass
@@ -197,6 +217,7 @@ class TimetableEntry:
     room_id: Optional[str] = None
     created_at: str = ""
     locked: int = 0          # SCH-3: the solver keeps a locked period where it is
+    co_teacher_id: Optional[str] = None   # SCH-8: the allocation's co-teacher, in the room too
 
 
 def clean_slots(raw: list[dict[str, Any]]) -> list[BellSlot]:
@@ -228,6 +249,20 @@ def clean_slots(raw: list[dict[str, Any]]) -> list[BellSlot]:
     return slots
 
 
+def adjacent_pairs(bell: "BellSchedule") -> list[tuple[int, int]]:
+    """Teaching periods (p, p+1) that follow each other with nothing in
+    between -- the only places a double period can go. A break, assembly or
+    zero slot between two periods splits them."""
+    pairs = []
+    for a, b in zip(bell.slots, bell.slots[1:]):
+        if a.kind == "teaching" and b.kind == "teaching":
+            pairs.append((a.period, b.period))
+    return pairs
+
+
+_UNCHANGED: Any = object()
+
+
 def clean_days(days: Optional[list[int]]) -> list[int]:
     if days is None:
         return list(DEFAULT_DAYS)
@@ -256,43 +291,94 @@ class SchoolModelMixin:
         return section, subject
 
     def set_allocation(self, *, section_id: str, subject_id: str, teacher_id: Optional[str],
-                       periods_per_week: int) -> tuple[Optional[TeachingAllocation], TeachingAllocation]:
+                       periods_per_week: int, co_teacher_id: Any = _UNCHANGED,
+                       room_kind: Any = _UNCHANGED,
+                       double_periods: Any = _UNCHANGED) -> tuple[Optional[TeachingAllocation], TeachingAllocation]:
         """Upsert the (section, subject) cell. Returns (before, after); before
         is None for a new cell. Lowering periods below what the timetable
-        already gives the subject is refused: remove periods first."""
+        already gives the subject is refused: remove periods first.
+
+        co_teacher_id, room_kind and double_periods left out keep what the
+        cell has (none, for a new cell), so a caller that only sets the
+        teacher and the periods never wipes them."""
         if not 1 <= periods_per_week <= MAX_PERIODS_PER_WEEK:
             raise ValueError(f"periods per week is 1 to {MAX_PERIODS_PER_WEEK}")
         with self._conn_lock:
             section, _ = self._section_and_subject(section_id, subject_id)
             before = self.allocation_for(section_id, subject_id)
+            co = (before.co_teacher_id if before else None) if co_teacher_id is _UNCHANGED else co_teacher_id
+            kind = (before.room_kind if before else None) if room_kind is _UNCHANGED else room_kind
+            doubles = (before.double_periods if before else 0) if double_periods is _UNCHANGED \
+                else int(double_periods or 0)
+            if co is not None and co == teacher_id:
+                raise ValueError("the co-teacher is the subject's teacher; choose someone else, or none")
+            if co is not None and teacher_id is None:
+                raise ValueError("choose the subject's teacher before a co-teacher")
+            if kind is not None and kind not in ROOM_KINDS:
+                raise ValueError(f"a room kind is one of {', '.join(ROOM_KINDS)}")
+            if doubles < 0 or 2 * doubles > periods_per_week:
+                raise ValueError(f"{doubles} double period(s) take {2 * doubles} periods; this subject "
+                                 f"has {periods_per_week} a week")
             placed = len(self._entries_where("section_id=? AND subject_id=?", (section_id, subject_id)))
             if placed > periods_per_week:
                 raise ValueError(f"the timetable already gives this subject {placed} periods a week; "
                                  f"remove {placed - periods_per_week} first, or allocate at least {placed}")
+            # Every check runs before the first write: a refusal after an
+            # _exec would leave the write on the shared connection for the
+            # next commit to save.
+            if before is not None and co is not None and before.co_teacher_id != co:
+                self._check_co_teacher_free(co, section, subject_id)
             if before is None:
                 after = TeachingAllocation(id=_new_id("alloc"), school_id=section.school_id,
                                            academic_year_id=section.academic_year_id,
                                            section_id=section_id, subject_id=subject_id,
                                            teacher_id=teacher_id, periods_per_week=periods_per_week,
-                                           created_at=_now())
+                                           created_at=_now(), co_teacher_id=co, room_kind=kind,
+                                           double_periods=doubles)
                 self._exec(
                     "INSERT INTO teaching_allocations (id, school_id, academic_year_id, section_id, "
-                    "subject_id, teacher_id, periods_per_week, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                    "subject_id, teacher_id, periods_per_week, created_at, co_teacher_id, room_kind, "
+                    "double_periods) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (after.id, after.school_id, after.academic_year_id, after.section_id,
-                     after.subject_id, after.teacher_id, after.periods_per_week, after.created_at))
+                     after.subject_id, after.teacher_id, after.periods_per_week, after.created_at,
+                     after.co_teacher_id, after.room_kind, after.double_periods))
             else:
                 after = TeachingAllocation(**{**before.__dict__, "teacher_id": teacher_id,
-                                              "periods_per_week": periods_per_week})
-                self._exec("UPDATE teaching_allocations SET teacher_id=?, periods_per_week=? WHERE id=?",
-                           (teacher_id, periods_per_week, before.id))
+                                              "periods_per_week": periods_per_week, "co_teacher_id": co,
+                                              "room_kind": kind, "double_periods": doubles})
+                self._exec("UPDATE teaching_allocations SET teacher_id=?, periods_per_week=?, "
+                           "co_teacher_id=?, room_kind=?, double_periods=? WHERE id=?",
+                           (teacher_id, periods_per_week, co, kind, doubles, before.id))
                 if before.teacher_id != teacher_id:
                     # The timetable's periods for this cell follow the new teacher,
-                    # unless one was set by hand to a co-teacher.
+                    # unless one was set by hand to someone else.
                     self._exec("UPDATE timetable_entries SET teacher_id=? WHERE section_id=? AND "
                                "subject_id=? AND (teacher_id IS ? OR teacher_id=?)",
                                (teacher_id, section_id, subject_id, before.teacher_id, before.teacher_id))
+                if before.co_teacher_id != co:
+                    # The co-teacher is in every period of the cell (checked
+                    # free above, before anything was written).
+                    self._exec("UPDATE timetable_entries SET co_teacher_id=? WHERE section_id=? AND "
+                               "subject_id=?", (co, section_id, subject_id))
         self._commit()
         return before, after
+
+    def _check_co_teacher_free(self, co_teacher_id: str, section, subject_id: str) -> None:
+        """TimetableClash (the route's 422) naming every placed period of the
+        cell in which the new co-teacher already teaches elsewhere."""
+        mine = self._entries_where("section_id=? AND subject_id=?", (section.id, subject_id))
+        busy = {(e.day_of_week, e.period): e for e in self.timetable_for_teacher(co_teacher_id, section.academic_year_id)
+                if e.section_id != section.id}
+        sections = {s.id: s for s in self.sections_for_year(section.academic_year_id)}
+        clashes = []
+        for e in mine:
+            other = busy.get((e.day_of_week, e.period))
+            if other is not None:
+                where = sections.get(other.section_id)
+                clashes.append(f"{WEEKDAY_NAMES[e.day_of_week]} period {e.period}: the co-teacher already teaches "
+                               f"{self._section_label(where) if where else 'another section'} then")
+        if clashes:
+            raise TimetableClash(clashes)
 
     def allocation_for(self, section_id: str, subject_id: str) -> Optional[TeachingAllocation]:
         r = self._fetchone("SELECT * FROM teaching_allocations WHERE section_id=? AND subject_id=?",
@@ -307,6 +393,16 @@ class SchoolModelMixin:
     def allocations_for_teacher(self, teacher_id: str,
                                 academic_year_id: Optional[str] = None) -> list[TeachingAllocation]:
         sql = "SELECT * FROM teaching_allocations WHERE teacher_id=?"
+        params: tuple = (teacher_id,)
+        if academic_year_id:
+            sql += " AND academic_year_id=?"
+            params += (academic_year_id,)
+        return [TeachingAllocation(**r) for r in self._fetchall(sql, params)]
+
+    def co_taught_allocations(self, teacher_id: str,
+                              academic_year_id: Optional[str] = None) -> list[TeachingAllocation]:
+        """The cells a teacher co-teaches (SCH-8)."""
+        sql = "SELECT * FROM teaching_allocations WHERE co_teacher_id=?"
         params: tuple = (teacher_id,)
         if academic_year_id:
             sql += " AND academic_year_id=?"
@@ -332,13 +428,14 @@ class SchoolModelMixin:
         allocated: Counter = Counter()
         cells: Counter = Counter()
         for a in self.allocations_for_year(academic_year_id):
-            if a.teacher_id:
-                allocated[a.teacher_id] += a.periods_per_week
-                cells[a.teacher_id] += 1
+            # A co-teacher is in the room for every period too (SCH-8).
+            for t in {a.teacher_id, a.co_teacher_id} - {None}:
+                allocated[t] += a.periods_per_week
+                cells[t] += 1
         per_day: dict[str, Counter] = defaultdict(Counter)
         for e in self.timetable_for_year(academic_year_id):
-            if e.teacher_id:
-                per_day[e.teacher_id][e.day_of_week] += 1
+            for t in {e.teacher_id, e.co_teacher_id} - {None}:
+                per_day[t][e.day_of_week] += 1
         teachers = set(allocated) | set(per_day)
         return sorted(
             ({"teacherId": t, "allocatedPerWeek": allocated[t], "sectionSubjects": cells[t],
@@ -412,6 +509,7 @@ class SchoolModelMixin:
                 raise InUse(f"the timetable uses this room for {len(used)} period(s); "
                             "move those periods first")
             self._exec("DELETE FROM rooms WHERE id=?", (room_id,))
+            self._exec("DELETE FROM room_unavailability WHERE room_id=?", (room_id,))
         self._commit()
         return room
 
@@ -560,7 +658,9 @@ class SchoolModelMixin:
         return self._entries_where("section_id=?", (section_id,))
 
     def timetable_for_teacher(self, teacher_id: str, academic_year_id: str) -> list[TimetableEntry]:
-        return self._entries_where("teacher_id=? AND academic_year_id=?", (teacher_id, academic_year_id))
+        """The periods a teacher is in: their own, and those they co-teach."""
+        return self._entries_where("(teacher_id=? OR co_teacher_id=?) AND academic_year_id=?",
+                                   (teacher_id, teacher_id, academic_year_id))
 
     def replace_section_timetable(self, section_id: str,
                                   entries: list[dict[str, Any]]) -> list[TimetableEntry]:
@@ -585,10 +685,16 @@ class SchoolModelMixin:
             allocs = {a.subject_id: a for a in self.allocations_for_year(section.academic_year_id)
                       if a.section_id == section_id}
             # Everyone else's week this year, to check teachers and rooms against.
+            # A co-teacher is busy in a period just as its teacher is (SCH-8).
             others = [e for e in self.timetable_for_year(section.academic_year_id)
                       if e.section_id != section_id]
-            teacher_busy = {(e.teacher_id, e.day_of_week, e.period): e for e in others if e.teacher_id}
+            teacher_busy = {}
+            for e in others:
+                for t in (e.teacher_id, e.co_teacher_id):
+                    if t:
+                        teacher_busy[(t, e.day_of_week, e.period)] = e
             room_busy = {(e.room_id, e.day_of_week, e.period): e for e in others if e.room_id}
+            room_closed = self.room_unavailability_for_year(section.academic_year_id)
             sections_by_id = {s.id: s for s in self.sections_for_year(section.academic_year_id)}
             for i, raw in enumerate(entries, start=1):
                 day, period = int(raw["day_of_week"]), int(raw["period"])
@@ -611,16 +717,25 @@ class SchoolModelMixin:
                                     "allocate it (teacher and periods a week) first")
                     continue
                 teacher_id = raw.get("teacher_id") or alloc.teacher_id
+                co_teacher_id = alloc.co_teacher_id if alloc.co_teacher_id != teacher_id else None
                 room_id = raw.get("room_id")
                 if room_id is not None:
                     room = self.get_room(room_id)
                     if room is None or room.school_id != section.school_id:
                         problems.append(f"{where}: that room is not this school's")
                         continue
-                if teacher_id and (teacher_id, day, period) in teacher_busy:
-                    other = sections_by_id.get(teacher_busy[(teacher_id, day, period)].section_id)
-                    problems.append(f"{where}: the teacher already teaches "
-                                    f"{self._section_label(other) if other else 'another section'} then")
+                    if alloc.room_kind and room.kind != alloc.room_kind:
+                        problems.append(f"{where}: this subject needs a {alloc.room_kind}; "
+                                        f"{room.name} is a {room.kind}")
+                    if (day, period) in room_closed.get(room_id, set()):
+                        problems.append(f"{where}: {room.name} is not available then")
+                elif alloc.room_kind:
+                    problems.append(f"{where}: this subject needs a {alloc.room_kind}; choose one")
+                for who, t in (("teacher", teacher_id), ("co-teacher", co_teacher_id)):
+                    if t and (t, day, period) in teacher_busy:
+                        other = sections_by_id.get(teacher_busy[(t, day, period)].section_id)
+                        problems.append(f"{where}: the {who} already teaches "
+                                        f"{self._section_label(other) if other else 'another section'} then")
                 if room_id and (room_id, day, period) in room_busy:
                     other = sections_by_id.get(room_busy[(room_id, day, period)].section_id)
                     problems.append(f"{where}: the room is already used by "
@@ -631,7 +746,8 @@ class SchoolModelMixin:
                                            section_id=section_id, day_of_week=day, period=period,
                                            subject_id=subject_id, teacher_id=teacher_id,
                                            room_id=room_id, created_at=_now(),
-                                           locked=int(bool(raw.get("locked")))))
+                                           locked=int(bool(raw.get("locked"))),
+                                           co_teacher_id=co_teacher_id))
             for subject_id, n in per_subject.items():
                 allowed = allocs[subject_id].periods_per_week
                 if n > allowed:
@@ -649,10 +765,10 @@ class SchoolModelMixin:
     def _insert_entry(self, e: TimetableEntry) -> None:
         self._exec(
             "INSERT INTO timetable_entries (id, school_id, academic_year_id, section_id, "
-            "day_of_week, period, subject_id, teacher_id, room_id, created_at, locked) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "day_of_week, period, subject_id, teacher_id, room_id, created_at, locked, co_teacher_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (e.id, e.school_id, e.academic_year_id, e.section_id, e.day_of_week, e.period,
-             e.subject_id, e.teacher_id, e.room_id, e.created_at, e.locked))
+             e.subject_id, e.teacher_id, e.room_id, e.created_at, e.locked, e.co_teacher_id))
 
     # ---------------- solver support (SCH-3) ----------------
 
@@ -681,6 +797,42 @@ class SchoolModelMixin:
         self._commit()
         return cleaned
 
+    def room_unavailability_for_year(self, academic_year_id: str) -> dict[str, set[tuple[int, int]]]:
+        out: dict[str, set[tuple[int, int]]] = defaultdict(set)
+        for r in self._fetchall("SELECT room_id, day_of_week, period FROM room_unavailability "
+                                "WHERE academic_year_id=?", (academic_year_id,)):
+            out[r["room_id"]].add((r["day_of_week"], r["period"]))
+        return dict(out)
+
+    def set_room_unavailability(self, academic_year_id: str, room_id: str,
+                                slots: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        """Replace one room's unavailable periods for the year (SCH-8: a lab
+        out of use). Refused while the timetable books the room in one of
+        them: move those periods first, or the week would silently hold a
+        class in a closed lab."""
+        cleaned = sorted({(int(d), int(p)) for d, p in slots})
+        if any(not 0 <= d <= 6 or not 1 <= p <= 20 for d, p in cleaned):
+            raise ValueError("a period is a day 0 (Monday) to 6 and a period number 1 to 20")
+        with self._conn_lock:
+            if self.get_room(room_id) is None:
+                raise KeyError(room_id)
+            booked = [e for e in self._entries_where("room_id=? AND academic_year_id=?",
+                                                     (room_id, academic_year_id))
+                      if (e.day_of_week, e.period) in set(cleaned)]
+            if booked:
+                sections = {s.id: s for s in self.sections_for_year(academic_year_id)}
+                where = ", ".join(f"{WEEKDAY_NAMES[e.day_of_week]} period {e.period} "
+                                  f"({self._section_label(sections[e.section_id]) if e.section_id in sections else '?'})"
+                                  for e in booked[:5])
+                raise InUse(f"the timetable uses this room then: {where}; move those periods first")
+            self._exec("DELETE FROM room_unavailability WHERE academic_year_id=? AND room_id=?",
+                       (academic_year_id, room_id))
+            for d, p in cleaned:
+                self._exec("INSERT INTO room_unavailability (academic_year_id, room_id, day_of_week, "
+                           "period) VALUES (?,?,?,?)", (academic_year_id, room_id, d, p))
+        self._commit()
+        return cleaned
+
     def apply_solved_timetable(self, academic_year_id: str, entries: list,
                                section_ids: set[str]) -> int:
         """Write a solver's week for `section_ids` in one lock hold. An entry
@@ -702,7 +854,8 @@ class SchoolModelMixin:
                     section_id=p.section_id, day_of_week=p.day_of_week, period=p.period,
                     subject_id=p.subject_id, teacher_id=p.teacher_id, room_id=p.room_id,
                     created_at=_now(),
-                    locked=int((p.section_id, p.day_of_week, p.period, p.subject_id) in was_locked)))
+                    locked=int((p.section_id, p.day_of_week, p.period, p.subject_id) in was_locked),
+                    co_teacher_id=getattr(p, "co_teacher_id", None)))
                 written += 1
         self._commit()
         return written

@@ -174,46 +174,71 @@ def class_insights(assessment_id: str, class_id: str,
     )
 
 
-def school_insights(school_id: str, store: KnowledgeStore, student_ids: list[str],
-                    *, subject: str = "Science", grade: int = 10,
-                    total_concepts: int = 13, assessments: int = 0) -> SchoolInsights:
-    """Grade/subject rollup for the principal view."""
-    masteries: list[float] = []
-    concept_totals: Counter = Counter()
-    concept_counts: Counter = Counter()
+@dataclass
+class ClassEvidence:
+    """One subject and class's graded sheets in one school."""
+    subject: str
+    grade: int
+    students: set[str]
+    # The chapter ids the graded questions carry: the only concepts this
+    # group's rollup reads, so a class 6 Maths paper is not averaged into
+    # class 10 Science through the same student's learner model.
+    concepts: set[str]
+    total_chapters: int = 0            # the syllabus's chapter count; 0 = unknown
+    names: dict[str, str] = field(default_factory=dict)
 
-    for sid in student_ids:
-        views = store.mastery(sid)
-        if not views:
-            continue
-        masteries.append(sum(v.mastery for v in views) / len(views))
-        for v in views:
-            concept_totals[v.concept_id] += v.mastery
-            concept_counts[v.concept_id] += 1
 
-    avg = round(sum(masteries) / len(masteries), 4) if masteries else 0.0
-    weakest = None
-    if concept_counts:
-        weakest_id = min(concept_counts, key=lambda c: concept_totals[c] / concept_counts[c])
-        weakest = chapter_name(weakest_id) or weakest_id
-    coverage = round(len(concept_counts) / total_concepts, 3) if total_concepts else 0.0
+def school_insights(school_id: str, store: KnowledgeStore, groups: list[ClassEvidence],
+                    *, assessments: int = 0) -> SchoolInsights:
+    """Subject and class rollups for the principal view, built only from the
+    groups the caller passes (the school's own graded sheets)."""
+    cache: dict[str, dict[str, float]] = {}
 
+    def mastery_of(sid: str) -> dict[str, float]:
+        if sid not in cache:
+            cache[sid] = {v.concept_id: v.mastery for v in store.mastery(sid)}
+        return cache[sid]
+
+    rollups: list[SubjectRollup] = []
     interventions: list[str] = []
-    if avg and avg < 0.6:
-        interventions.append(
-            f"{subject} Grade {grade} mastery is {avg:.0%} — below the 60% action line.")
-    if weakest:
-        interventions.append(f"Weakest area school-wide: {weakest}. Prioritise for re-teaching.")
-    if coverage < 0.5:
-        interventions.append(
-            f"Only {coverage:.0%} of the curriculum has assessment evidence — "
-            "widen chapter coverage in the next paper.")
+    every_mean: list[float] = []
+    students: set[str] = set()
+    for g in sorted(groups, key=lambda g: (g.grade, g.subject)):
+        students |= g.students
+        means: list[float] = []
+        totals: Counter = Counter()
+        counts: Counter = Counter()
+        for sid in sorted(g.students):
+            seen = {c: m for c, m in mastery_of(sid).items() if c in g.concepts}
+            if not seen:
+                continue
+            means.append(sum(seen.values()) / len(seen))
+            for c, m in seen.items():
+                totals[c] += m
+                counts[c] += 1
+        every_mean += means
+        avg = round(sum(means) / len(means), 4) if means else 0.0
+        weakest = None
+        if counts:
+            weakest_id = min(sorted(counts), key=lambda c: totals[c] / counts[c])
+            weakest = g.names.get(weakest_id) or chapter_name(weakest_id) or weakest_id
+        coverage = (round(min(len(counts) / g.total_chapters, 1.0), 3)
+                    if g.total_chapters else 0.0)
+        label = f"{g.subject} class {g.grade}"
+        if means and avg < 0.6:
+            interventions.append(f"{label} mastery is {avg:.0%} — below the 60% action line.")
+        if weakest:
+            interventions.append(f"Weakest area in {label}: {weakest}. Prioritise for re-teaching.")
+        if g.total_chapters and coverage < 0.5:
+            interventions.append(
+                f"Only {coverage:.0%} of {label}'s chapters have assessment evidence — "
+                "widen chapter coverage in the next paper.")
+        rollups.append(SubjectRollup(subject=g.subject, grade=g.grade, average_mastery=avg,
+                                     students=len(means), weakest_concept=weakest,
+                                     curriculum_coverage=coverage))
 
     return SchoolInsights(
-        school_id=school_id, students=len(student_ids), assessments=assessments,
-        average_mastery=avg,
-        subjects=[SubjectRollup(subject=subject, grade=grade, average_mastery=avg,
-                                students=len(masteries), weakest_concept=weakest,
-                                curriculum_coverage=coverage)],
-        interventions=interventions,
+        school_id=school_id, students=len(students), assessments=assessments,
+        average_mastery=round(sum(every_mean) / len(every_mean), 4) if every_mean else 0.0,
+        subjects=rollups, interventions=interventions,
     )

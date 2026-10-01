@@ -31,15 +31,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field as dataclass_field
 from typing import Optional
 
-from ..syllabus.cbse_syllabus import _FILENAME_BY_SUBJECT, _slug, load_syllabus
+from ..syllabus.cbse_syllabus import _FILENAME_BY_SUBJECT, SyllabusUnit, _slug, load_syllabus
 from . import decomposition_templates as templates
 from .store import CurriculumStore
 
 CBSE_BOARD_CODE = "CBSE"
 GRADE_10 = 10
-# PRD section 0 decision 4. Below 6 and above 12 there is no syllabus data at
-# all, so the route answers 422 rather than creating an empty grade row.
-MIN_GRADE = 6
+# Requirements v3: classes 1-12. Classes 1-5 have no CBSE marks table; their
+# syllabus is the NCERT book's chapters (cbse_syllabus.book_chapters). Outside
+# 1-12 the route answers 422 rather than creating an empty grade row.
+MIN_GRADE = 1
 MAX_GRADE = 12
 
 
@@ -154,12 +155,18 @@ def seed_cbse_grade(store: CurriculumStore, *, school_id: str,
         subjects_seeded += 1
 
         prefix = _canonical_prefix(book.id)
-        for unit_seq, u in enumerate(doc.units):
+        units = list(doc.units)
+        if not units and doc.chapters:
+            # No CBSE marks table (classes 1-5): the book's chapters, in book
+            # order, under one unit that claims no marks.
+            units = [SyllabusUnit(unit_no="1", name=f"{subject_name} chapters", marks=0, chapters=doc.chapters)]
+        for unit_seq, u in enumerate(units):
             unit_canonical_id = f"{prefix}:unit:{u.unit_no}"
             unit = store.get_unit_by_canonical_id(unit_canonical_id)
             if unit is None:
                 unit = store.create_unit(canonical_id=unit_canonical_id, book_id=book.id,
-                                         unit_no=u.unit_no, name=u.name, marks=u.marks, seq=unit_seq)
+                                         unit_no=u.unit_no, name=u.name,
+                                         marks=u.marks if doc.units else None, seq=unit_seq)
                 units_seeded += 1
 
             chapter_specs = (
@@ -208,7 +215,7 @@ def seed_cbse_all_grades(store: CurriculumStore, *, school_id: str,
                          academic_year_label: str, start_date: str, end_date: str,
                          grades: list[int] | None = None,
                          apply_templates: bool = True) -> list[SeedResult]:
-    """Seeds CBSE/NCERT curriculum for all main subjects across grades (default 6-12)."""
+    """Seeds CBSE/NCERT curriculum for all main subjects across grades (default 1-12)."""
     target_grades = grades or list(range(MIN_GRADE, MAX_GRADE + 1))
     return [
         seed_cbse_grade(store, school_id=school_id, academic_year_label=academic_year_label,

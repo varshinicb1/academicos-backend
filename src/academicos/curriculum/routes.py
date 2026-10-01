@@ -18,7 +18,8 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from ..assessment.auth_routes import get_current_user, require_principal, require_staff
+from ..assessment.auth_routes import (get_current_user, require_admin, require_in_scope, require_principal,
+                                      require_staff)
 from ..assessment.authz import require_own_school, require_own_subtopics
 from ..assessment.pool import get_pool
 from ..assessment.users import User
@@ -371,10 +372,24 @@ def list_sections(academic_year_id: str,
             for sec in store.sections_for_year(academic_year_id)]
 
 
+def require_section_in_scope(section_id: str, current: User, capability: str,
+                             subject_id: Optional[str] = None) -> None:
+    """For a route a limited admin may take (require_admin(..., scoped=True)):
+    the section, its class, and the subject when the route names one, must
+    be inside the caller's grant. Call it after the school ownership check."""
+    store = _require()
+    sec = store.get_section(section_id)
+    grade = store.get_grade(sec.grade_id) if sec else None
+    require_in_scope(current, capability, grade=grade.number if grade else None,
+                     section_id=section_id, subject_id=subject_id)
+
+
 @router.post("/grades/{grade_id}/sections", response_model=SectionResponse)
 def create_section(grade_id: str, req: CreateSectionRequest,
-                   principal: User = Depends(require_principal)) -> SectionResponse:
+                   principal: User = Depends(require_admin("timetable", scoped=True))) -> SectionResponse:
     _require_school_owns_grade(grade_id, principal)
+    grade = _require().get_grade(grade_id)
+    require_in_scope(principal, "timetable", grade=grade.number if grade else None)
     _require_class_teacher(req.class_teacher_id, principal)
     store = _require()
     try:
@@ -391,10 +406,11 @@ def create_section(grade_id: str, req: CreateSectionRequest,
 
 @router.patch("/sections/{section_id}", response_model=SectionResponse)
 def update_section(section_id: str, req: UpdateSectionRequest,
-                   principal: User = Depends(require_principal)) -> SectionResponse:
+                   principal: User = Depends(require_admin("timetable", scoped=True))) -> SectionResponse:
     """Rename a section and/or set its class teacher. A field left out is
     unchanged; classTeacherId null clears the class teacher."""
     _require_school_owns_section(section_id, principal)
+    require_section_in_scope(section_id, principal, "timetable")
     sent = req.model_fields_set
     if "name" in sent and req.name is None:
         raise HTTPException(422, "a section needs a name, such as A or Rose")
@@ -422,10 +438,12 @@ def update_section(section_id: str, req: UpdateSectionRequest,
 
 
 @router.delete("/sections/{section_id}")
-def delete_section(section_id: str, principal: User = Depends(require_principal)) -> dict:
+def delete_section(section_id: str,
+                   principal: User = Depends(require_admin("timetable", scoped=True))) -> dict:
     """409 while students are enrolled in it, or when it is its class's
     last section."""
     _require_school_owns_section(section_id, principal)
+    require_section_in_scope(section_id, principal, "timetable")
     try:
         sec = _require().delete_section(section_id)
     except KeyError:
@@ -440,9 +458,11 @@ def delete_section(section_id: str, principal: User = Depends(require_principal)
 
 @router.get("/sections/{section_id}/students", response_model=list[SectionStudentResponse])
 def list_section_students(section_id: str,
-                          principal: User = Depends(require_principal)) -> list[SectionStudentResponse]:
+                          principal: User = Depends(require_admin("users", scoped=True))
+                          ) -> list[SectionStudentResponse]:
     """Who is enrolled in this section, and only this section."""
     _require_school_owns_section(section_id, principal)
+    require_section_in_scope(section_id, principal, "users")
     return [SectionStudentResponse(student_id=e.student_id, enrollment_id=e.id,
                                    enrolled_at=e.created_at)
             for e in _require().enrollments_for_section(section_id)]
@@ -614,7 +634,7 @@ def seed_cbse10(req: SeedCbse10Request,
 @router.post("/seed/cbse", response_model=SeedCbse10Response)
 def seed_cbse_any_grade(req: SeedGradeRequest,
                         principal: User = Depends(require_principal)) -> SeedCbse10Response:
-    """Seeds any grade 6-12 for the caller's own school -- PRD section 0
+    """Seeds any grade 1-12 (requirements v3; 6-12 until 2026-09-29) for the caller's own school -- PRD section 0
     decision 4 ("all grades 6-12, all subjects"), which until 2026-09-22 the
     product could not reach: `seed_cbse_all_grades` existed in seed_cbse10.py
     wired to no route and no CLI command, and `POST /seed/cbse9` was a 404 even
@@ -916,7 +936,7 @@ def _chapter_slug_detail(reason: str, subject: str, grade: int, slug: str, *,
 
 @router.post("/books/{book_id}/toc/ingest", response_model=IngestTocResponse)
 def ingest_textbook_toc(book_id: str, req: IngestTocRequest,
-                        principal: User = Depends(require_principal)) -> IngestTocResponse:
+                        principal: User = Depends(require_admin("qbank_review"))) -> IngestTocResponse:
     """§5-9: Ingests raw Table of Contents text from an uploaded or custom textbook,
     creating the real Unit and Chapter rows under this Book."""
     store = _require()
@@ -936,7 +956,7 @@ def ingest_textbook_toc(book_id: str, req: IngestTocRequest,
 
 @router.post("/chapters/{chapter_id}/extract", response_model=ExtractionRunResponse)
 def extract_chapter(chapter_id: str, req: ExtractRequest,
-                    principal: User = Depends(require_principal)) -> ExtractionRunResponse:
+                    principal: User = Depends(require_admin("qbank_review"))) -> ExtractionRunResponse:
     """Proposes a Topic/Subtopic breakdown for a chapter -- a draft only,
     see extraction.py. Uses the real configured Sarvam LLM when a key
     exists; honestly reports status="manual_required" (zero proposals)
@@ -990,7 +1010,7 @@ def _run_with_proposals(store: CurriculumStore, run: CurriculumExtractionRun,
 
 @router.post("/extraction-runs/{run_id}/approve", response_model=ApproveRunResponse)
 def approve_extraction_run(run_id: str, req: ApproveRunRequest,
-                           principal: User = Depends(require_principal)) -> ApproveRunResponse:
+                           principal: User = Depends(require_admin("qbank_review"))) -> ApproveRunResponse:
     """The one endpoint that turns a draft into real curriculum. Never
     automatic -- always an explicit admin action."""
     store = _require()
@@ -1052,7 +1072,7 @@ def approve_chapter_templates(chapter_id: str,
 
 @router.post("/chapters/{chapter_id}/topics", response_model=TopicResponse)
 def add_manual_topic(chapter_id: str, req: AddTopicRequest,
-                     principal: User = Depends(require_principal)) -> TopicResponse:
+                     principal: User = Depends(require_admin("qbank_review"))) -> TopicResponse:
     """The review UI's "[ + Add Topic ]" -- a topic an admin enters
     directly, no LLM/run involved (source_type="manual")."""
     from ..syllabus.cbse_syllabus import _slug
@@ -1069,7 +1089,7 @@ def add_manual_topic(chapter_id: str, req: AddTopicRequest,
 
 @router.post("/topics/{topic_id}/subtopics", response_model=SubtopicResponse)
 def add_manual_subtopic(topic_id: str, req: AddSubtopicRequest,
-                        principal: User = Depends(require_principal)) -> SubtopicResponse:
+                        principal: User = Depends(require_admin("qbank_review"))) -> SubtopicResponse:
     from ..syllabus.cbse_syllabus import _slug
     store = _require()
     _require_school_owns_topic(topic_id, principal)
@@ -1084,7 +1104,7 @@ def add_manual_subtopic(topic_id: str, req: AddSubtopicRequest,
 
 @router.patch("/topics/{topic_id}", response_model=TopicResponse)
 def rename_topic(topic_id: str, req: RenameRequest,
-                 principal: User = Depends(require_principal)) -> TopicResponse:
+                 principal: User = Depends(require_admin("qbank_review"))) -> TopicResponse:
     """canonical_id (what question tags reference) is untouched by a
     rename -- see store.rename_topic's docstring."""
     store = _require()
@@ -1095,7 +1115,7 @@ def rename_topic(topic_id: str, req: RenameRequest,
 
 @router.patch("/subtopics/{subtopic_id}", response_model=SubtopicResponse)
 def rename_subtopic(subtopic_id: str, req: RenameRequest,
-                    principal: User = Depends(require_principal)) -> SubtopicResponse:
+                    principal: User = Depends(require_admin("qbank_review"))) -> SubtopicResponse:
     store = _require()
     _require_school_owns_subtopic(subtopic_id, principal)
     store.rename_subtopic(subtopic_id, req.name)
@@ -1104,7 +1124,7 @@ def rename_subtopic(subtopic_id: str, req: RenameRequest,
 
 @router.delete("/subtopics/{subtopic_id}")
 def delete_subtopic(subtopic_id: str, force: bool = False,
-                    principal: User = Depends(require_principal)) -> dict:
+                    principal: User = Depends(require_admin("qbank_review"))) -> dict:
     store = _require()
     _require_school_owns_subtopic(subtopic_id, principal)
     try:
@@ -1125,7 +1145,7 @@ def delete_subtopic(subtopic_id: str, force: bool = False,
 
 @router.patch("/units/{unit_id}/sequence", response_model=UnitResponse)
 def set_unit_sequence(unit_id: str, req: SetSequenceRequest,
-                      principal: User = Depends(require_principal)) -> UnitResponse:
+                      principal: User = Depends(require_admin("qbank_review"))) -> UnitResponse:
     store = _require()
     _require_school_owns_unit(unit_id, principal)
     store.set_sequence("unit", unit_id, req.seq)
@@ -1136,7 +1156,7 @@ def set_unit_sequence(unit_id: str, req: SetSequenceRequest,
 
 @router.patch("/chapters/{chapter_id}/sequence", response_model=ChapterResponse)
 def set_chapter_sequence(chapter_id: str, req: SetSequenceRequest,
-                         principal: User = Depends(require_principal)) -> ChapterResponse:
+                         principal: User = Depends(require_admin("qbank_review"))) -> ChapterResponse:
     store = _require()
     _require_school_owns_chapter(chapter_id, principal)
     store.set_sequence("chapter", chapter_id, req.seq)
@@ -1147,7 +1167,7 @@ def set_chapter_sequence(chapter_id: str, req: SetSequenceRequest,
 
 @router.patch("/topics/{topic_id}/sequence", response_model=TopicResponse)
 def set_topic_sequence(topic_id: str, req: SetSequenceRequest,
-                       principal: User = Depends(require_principal)) -> TopicResponse:
+                       principal: User = Depends(require_admin("qbank_review"))) -> TopicResponse:
     store = _require()
     _require_school_owns_topic(topic_id, principal)
     store.set_sequence("topic", topic_id, req.seq)
@@ -1156,7 +1176,7 @@ def set_topic_sequence(topic_id: str, req: SetSequenceRequest,
 
 @router.patch("/subtopics/{subtopic_id}/sequence", response_model=SubtopicResponse)
 def set_subtopic_sequence(subtopic_id: str, req: SetSequenceRequest,
-                          principal: User = Depends(require_principal)) -> SubtopicResponse:
+                          principal: User = Depends(require_admin("qbank_review"))) -> SubtopicResponse:
     store = _require()
     _require_school_owns_subtopic(subtopic_id, principal)
     store.set_sequence("subtopic", subtopic_id, req.seq)
@@ -1244,7 +1264,7 @@ def _calendar_response(cal) -> CalendarResponse:
 
 @router.post("/academic-years/{academic_year_id}/calendar", response_model=CalendarResponse)
 def create_calendar(academic_year_id: str, req: CreateCalendarRequest,
-                    principal: User = Depends(require_principal)) -> CalendarResponse:
+                    principal: User = Depends(require_admin("calendar"))) -> CalendarResponse:
     store = _require()
     _require_school_owns_academic_year(academic_year_id, principal)
     weekly_off_days, saturday_rule = _validated_calendar_rules(req)
@@ -1259,7 +1279,7 @@ def create_calendar(academic_year_id: str, req: CreateCalendarRequest,
 
 @router.put("/academic-years/{academic_year_id}/calendar", response_model=CalendarResponse)
 def update_calendar(academic_year_id: str, req: CreateCalendarRequest,
-                    principal: User = Depends(require_principal)) -> CalendarResponse:
+                    principal: User = Depends(require_admin("calendar"))) -> CalendarResponse:
     """Corrects this year's weekly offs / Saturday rule. Working days are
     computed on read, so /working-days follows at once; lessons already
     scheduled keep their dates until the principal re-schedules or pushes
@@ -1288,7 +1308,7 @@ def get_calendar(academic_year_id: str,
 
 @router.post("/academic-years/{academic_year_id}/holidays", response_model=HolidayResponse)
 def add_holiday(academic_year_id: str, req: AddHolidayRequest,
-                principal: User = Depends(require_principal)) -> HolidayResponse:
+                principal: User = Depends(require_admin("calendar"))) -> HolidayResponse:
     store = _require()
     year = _require_school_owns_academic_year(academic_year_id, principal)
     cal = store.get_calendar_for_year(academic_year_id)
@@ -1299,15 +1319,100 @@ def add_holiday(academic_year_id: str, req: AddHolidayRequest,
                                       year_start=year.start_date, year_end=year.end_date)
     except ValueError as e:
         raise HTTPException(422, str(e))
-    h = store.add_holiday(calendar_id=cal.id, date=req.date, label=req.label, kind=req.kind,
-                          end_date=req.end_date)
+    h, moved, not_moved = declare_holiday(store, year, cal, date=req.date, label=req.label, kind=req.kind,
+                                          end_date=req.end_date, principal=principal, move_lessons=req.move_lessons)
     return HolidayResponse(id=h.id, calendar_id=h.calendar_id, date=h.date, label=h.label,
-                           kind=h.kind, end_date=h.end_date)
+                           kind=h.kind, end_date=h.end_date, lessons_moved=moved, not_moved=not_moved)
+
+
+def declare_holiday(store: CurriculumStore, year, cal, *, date: str, label: str, kind: str,
+                    end_date: Optional[str], principal: User, move_lessons: bool = True):
+    """Add a holiday and, unless it is an event that still teaches, move the
+    lessons on it and tell the people affected. One path for the holiday
+    route and the Excel/CSV import (N-8-6: the import used to add the day
+    only, leaving lessons dated on it and telling no one). Returns (holiday,
+    lessons moved, plans not moved); the counts are None when nothing moved."""
+    h = store.add_holiday(calendar_id=cal.id, date=date, label=label, kind=kind, end_date=end_date)
+    moved, not_moved = (_move_lessons_off_holiday(store, year, h, principal)
+                        if move_lessons and h.kind != "event" else (None, None))
+    return h, moved, not_moved
+
+
+HOLIDAY_NOTICE_DAYS = 14
+
+
+def _move_lessons_off_holiday(store: CurriculumStore, year, holiday, principal: User) -> tuple[int, list[str]]:
+    """NTF-3: holiday declared -> the plans reflow -> the people affected
+    hear. Every plan (book, and section when the plan is a section's) with a
+    lesson still to teach on the holiday's days, from the school's today on,
+    is pushed past them onto its next teaching periods; each such plan's
+    teacher and students get one message, and the rest of the school's
+    students and teachers hear of the holiday itself. A plan with no cadence
+    to reflow on is named in the answer rather than silently left."""
+    from ..assessment.audit_log import get_audit_log
+    from ..operations.routes import notify_parents_safely, notify_safely
+    first = max(holiday.date, _school_today().isoformat())
+    last = holiday.end_date or holiday.date
+    if first > last:
+        return 0, []
+    plans = store._fetchall(
+        "SELECT DISTINCT book_id, section_id FROM scheduled_lessons WHERE academic_year_id=? AND status='scheduled'"
+        " AND date>=? AND date<=?", (year.id, first, last))
+    dates = holiday.date if not holiday.end_date else f"{holiday.date} to {holiday.end_date}"
+    moved_total, not_moved = 0, []
+    told: set[str] = set()
+    for plan in plans:
+        book = store.get_book(plan["book_id"])
+        subject = store.get_subject(book.subject_id) if book else None
+        sections = ([plan["section_id"]] if plan["section_id"]
+                    else [s.id for s in store.sections_for_grade(subject.grade_id)] if subject else [])
+        label = ", ".join(store._section_label(store.get_section(s)) for s in sections) or (book.title if book else "")
+        try:
+            result = scheduling_mod.push_lessons_after(
+                store, get_audit_log(_cfg.data_root), academic_year_id=year.id, book_id=plan["book_id"],
+                from_date=first, reason=f"holiday: {holiday.label}", changed_by=principal.id,
+                section_id=plan["section_id"])
+        except ValueError as e:
+            not_moved.append(f"{subject.name if subject else plan['book_id']} ({label}): {e}")
+            continue
+        moved_total += result.lessons_pushed
+        teachers = {a.teacher_id for s in sections
+                    for a in [store.allocation_for(s, subject.id) if subject else None] if a and a.teacher_id}
+        students = {e.student_id for s in sections for e in store.enrollments_for_section(s)}
+        moved = (f"{result.lessons_pushed} {subject.name if subject else ''} lessons for {label} move to the "
+                 "next teaching days.")
+        moved_hi = f"{label} के {result.lessons_pushed} {subject.name if subject else ''} पाठ अगले शिक्षण दिवसों पर।"
+        for uid in teachers | students:
+            notify_safely(school_id=principal.school_id, user_ids=[uid], kind="holiday_declared",
+                          params={"label": holiday.label, "dates": dates, "moved": moved, "moved_hi": moved_hi},
+                          link="/week", dedupe_key=f"holiday:{holiday.id}:{uid}:{plan['book_id']}:{plan['section_id']}")
+        told |= teachers | students
+        # N-8-7: the students' parents hear the same notice.
+        told |= set(notify_parents_safely(
+            school_id=principal.school_id, student_ids=students, kind="holiday_declared",
+            params={"label": holiday.label, "dates": dates, "moved": moved, "moved_hi": moved_hi},
+            dedupe_key=f"holiday:{holiday.id}:{plan['book_id']}:{plan['section_id']}"))
+    # Everyone else hears of the holiday itself only when it is close enough
+    # to change their plans: a list of next term's holidays entered today
+    # is not news anyone acts on (NTF-1).
+    soon = (_school_today() + timedelta(days=HOLIDAY_NOTICE_DAYS)).isoformat()
+    people = [u for u in _require_users().users_for_school(principal.school_id)
+              if u.role in ("teacher", "student") and u.id not in told] if holiday.date <= soon else []
+    rest = [u.id for u in people]
+    if rest:
+        notify_safely(school_id=principal.school_id, user_ids=rest, kind="holiday_declared",
+                      params={"label": holiday.label, "dates": dates, "moved": "", "moved_hi": ""},
+                      link="/week", dedupe_key=f"holiday:{holiday.id}")
+        notify_parents_safely(school_id=principal.school_id, kind="holiday_declared",
+                              student_ids=[u.id for u in people if u.role == "student"],
+                              params={"label": holiday.label, "dates": dates, "moved": "", "moved_hi": ""},
+                              dedupe_key=f"holiday:{holiday.id}", exclude=told)
+    return moved_total, not_moved
 
 
 @router.delete("/academic-years/{academic_year_id}/holidays/{holiday_id}")
 def delete_holiday(academic_year_id: str, holiday_id: str,
-                   principal: User = Depends(require_principal)) -> dict:
+                   principal: User = Depends(require_admin("calendar"))) -> dict:
     """Removes a holiday entered by mistake, so the day teaches again --
     without it a typo'd date took a teaching day away for the whole year."""
     store = _require()
@@ -1447,7 +1552,7 @@ def delete_term(term_id: str, principal: User = Depends(require_principal)) -> d
 @router.post("/academic-years/{academic_year_id}/period-configuration",
              response_model=PeriodConfigurationResponse)
 def set_period_configuration(academic_year_id: str, req: SetPeriodConfigurationRequest,
-                             principal: User = Depends(require_principal)) -> PeriodConfigurationResponse:
+                             principal: User = Depends(require_admin("timetable"))) -> PeriodConfigurationResponse:
     store = _require()
     _require_school_owns_academic_year(academic_year_id, principal)
     if store.period_configuration_for_year(academic_year_id) is not None:
@@ -1463,7 +1568,7 @@ def set_period_configuration(academic_year_id: str, req: SetPeriodConfigurationR
 @router.post("/academic-years/{academic_year_id}/subject-period-allocations",
              response_model=SubjectPeriodAllocationResponse)
 def set_subject_period_allocation(academic_year_id: str, req: SetSubjectPeriodAllocationRequest,
-                                  principal: User = Depends(require_principal),
+                                  principal: User = Depends(require_admin("timetable")),
                                   ) -> SubjectPeriodAllocationResponse:
     """Persists a subject's real periods/week for this school year --
     previously a value every caller of compute_teaching_time_estimates()/
@@ -1497,7 +1602,7 @@ def list_subject_period_allocations(academic_year_id: str,
 
 @router.post("/academic-years/{academic_year_id}/timetable-slots", response_model=TimetableSlotResponse)
 def add_timetable_slot(academic_year_id: str, req: AddTimetableSlotRequest,
-                       principal: User = Depends(require_principal)) -> TimetableSlotResponse:
+                       principal: User = Depends(require_admin("timetable"))) -> TimetableSlotResponse:
     """Persists one real weekday+period a subject meets -- once any slots
     exist for a subject/year, scheduling.py's schedule_book() uses exactly
     those real weekdays instead of its "first N working days of the week"
@@ -1526,7 +1631,7 @@ def list_timetable_slots(academic_year_id: str, subject: str,
 
 
 @router.delete("/timetable-slots/{slot_id}")
-def delete_timetable_slot(slot_id: str, principal: User = Depends(require_principal)) -> dict:
+def delete_timetable_slot(slot_id: str, principal: User = Depends(require_admin("timetable"))) -> dict:
     store = _require()
     slot = store.get_timetable_slot(slot_id)
     if slot is None:
@@ -1558,7 +1663,7 @@ def get_working_days(academic_year_id: str,
 @router.post("/books/{book_id}/teaching-time-estimates", response_model=ComputeTeachingTimeResponse)
 def compute_teaching_time_estimates(book_id: str, academic_year_id: str,
                                     req: ComputeTeachingTimeRequest,
-                                    principal: User = Depends(require_principal),
+                                    principal: User = Depends(require_admin("timetable")),
                                     ) -> ComputeTeachingTimeResponse:
     """Distributes this subject's real, calendar-grounded instructional
     time across its real, approved Subtopics -- see calendar.py's
@@ -1632,7 +1737,7 @@ def _lesson_response(lesson) -> ScheduledLessonResponse:
 
 @router.post("/books/{book_id}/schedule", response_model=ScheduleBookResponse)
 def schedule_book(book_id: str, academic_year_id: str, req: ScheduleBookRequest,
-                  principal: User = Depends(require_principal)) -> ScheduleBookResponse:
+                  principal: User = Depends(require_admin("timetable"))) -> ScheduleBookResponse:
     """Generates the real, dated schedule for this book -- see
     scheduling.py's module docstring for the full method and its honestly-
     documented weekday-assignment simplification. Requires
@@ -1723,7 +1828,7 @@ def get_schedule_for_range(start_date: str, end_date: str,
 
 @router.post("/teacher-assignments", response_model=TeacherAssignmentResponse)
 def assign_teacher(req: AssignTeacherRequest,
-                   principal: User = Depends(require_principal)) -> TeacherAssignmentResponse:
+                   principal: User = Depends(require_admin("timetable"))) -> TeacherAssignmentResponse:
     """Principal-gated: only a school's own principal decides who teaches
     what. Verifies both the target teacher and the book actually belong to
     the principal's own school -- a principal cannot assign a book to a
@@ -1842,7 +1947,7 @@ def mark_lesson(lesson_id: str, req: MarkLessonRequest,
 
 @router.post("/scheduled-lessons/{lesson_id}/reschedule", response_model=ScheduledLessonResponse)
 def adjust_lesson(lesson_id: str, req: AdjustLessonRequest,
-                  principal: User = Depends(require_principal)) -> ScheduledLessonResponse:
+                  principal: User = Depends(require_admin("timetable"))) -> ScheduledLessonResponse:
     """ADJUST: move exactly one lesson to a specific new real working day.
     409 when that day already holds as many of this book's lessons as the
     subject has periods then (scheduling.RescheduleClash), or when the
@@ -1869,7 +1974,7 @@ def adjust_lesson(lesson_id: str, req: AdjustLessonRequest,
 
 @router.post("/books/{book_id}/schedule/push", response_model=PushScheduleResponse)
 def push_schedule(book_id: str, academic_year_id: str, req: PushScheduleRequest,
-                  principal: User = Depends(require_principal)) -> PushScheduleResponse:
+                  principal: User = Depends(require_admin("timetable"))) -> PushScheduleResponse:
     """PUSH: real disruption handling -- shifts every still-to-teach lesson
     on/after `from_date` one real teaching slot later; completed/skipped
     lessons keep their dates. With a timetable, the timetable decides the
@@ -1934,7 +2039,7 @@ def get_lesson_history(lesson_id: str,
 
 @router.post("/student-enrollments", response_model=StudentEnrollmentResponse)
 def enroll_student(req: EnrollStudentRequest,
-                   principal: User = Depends(require_principal)) -> StudentEnrollmentResponse:
+                   principal: User = Depends(require_admin("users"))) -> StudentEnrollmentResponse:
     """Principal-gated, same posture as assign_teacher: verifies both the
     target student and the grade actually belong to the principal's own
     school."""
@@ -2072,7 +2177,7 @@ def get_my_progress(academic_year_id: str,
 
 @router.get("/reporting/coverage", response_model=CoverageReportResponse)
 def get_coverage_report(academic_year_id: str, as_of_date: Optional[str] = None,
-                        principal: User = Depends(require_principal)) -> CoverageReportResponse:
+                        principal: User = Depends(require_admin("reports"))) -> CoverageReportResponse:
     """Planned vs. actually-taught coverage, variance, and completion %
     aggregated by Subject and Chapter for school management (§17, §32)."""
     store = _require()
@@ -2091,7 +2196,7 @@ def get_coverage_report(academic_year_id: str, as_of_date: Optional[str] = None,
 
 @router.get("/reporting/delayed-topics", response_model=DelayedTopicsReportResponse)
 def get_delayed_topics(academic_year_id: str, as_of_date: Optional[str] = None,
-                       principal: User = Depends(require_principal)) -> DelayedTopicsReportResponse:
+                       principal: User = Depends(require_admin("reports"))) -> DelayedTopicsReportResponse:
     """All scheduled lessons past due (date < as_of_date) still in
     'scheduled' status, with days overdue (§17, §32), plus every lesson a
     PUSH left 'unscheduled' (no day before the year ends -- the worst
@@ -2114,6 +2219,14 @@ def get_delayed_topics(academic_year_id: str, as_of_date: Optional[str] = None,
 # ---------------- school data export ("easy transfer of school data") ----------------
 
 _EXPORT_SCHEMA_VERSION = 1
+
+
+def _school_profile_for_export(store: CurriculumStore, school_id: str) -> Optional[dict[str, Any]]:
+    p = store.get_school_profile(school_id)
+    if p is None:
+        return None
+    return {"name": p.name, "address": p.address, "affiliation": p.affiliation, "has_logo": p.has_logo,
+            "updated_at": p.updated_at}
 
 
 def _curriculum_tree_for_export(store: CurriculumStore, school_id: str) -> list[dict[str, Any]]:
@@ -2176,7 +2289,7 @@ def _curriculum_tree_for_export(store: CurriculumStore, school_id: str) -> list[
 
 
 @router.get("/export")
-def export_school_data(principal: User = Depends(require_principal)) -> dict[str, Any]:
+def export_school_data(principal: User = Depends(require_admin("reports"))) -> dict[str, Any]:
     """Bulk export of everything this principal's school owns, for backup
     or manual transfer to another AcademicOS instance -- the concrete
     "easy transfer of school data" feature. school_id always comes from
@@ -2255,6 +2368,9 @@ def export_school_data(principal: User = Depends(require_principal)) -> dict[str
         "scan_sessions": scan_sessions,
         "paper_templates": templates,
         "users": users,
+        # The school's own name and address (EX-5); the logo image is not
+        # inlined, only whether there is one.
+        "school_profile": _school_profile_for_export(store, school_id),
         "notes": [
             "Papers/practice sets/scan sessions saved before 2026-09-17 (when "
             "school_id was added to those stores) are not included here -- "

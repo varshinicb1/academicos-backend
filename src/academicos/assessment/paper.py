@@ -4,9 +4,11 @@ Flutter review screen renders and the PDF exporter formats.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 from .competency import CBSE_COMPETENCY_TARGET, below_target, share_summary
+from .duration import format_duration
 from .schemas import (
     Blueprint,
     GeneratedPaper,
@@ -16,6 +18,37 @@ from .schemas import (
     QuestionSchema,
 )
 from .templates import default_sections
+
+
+_SECTION_LETTER = re.compile(r"^(section)\s+[A-Z]\b", re.I)
+
+
+def lettered(name: str, label: str) -> str:
+    """`name` with a leading "Section X" saying the letter the paper prints.
+
+    A template's section titles carry their own letter ("Section C - Short
+    answer"), while the paper letters the sections it prints in order, so a
+    section the bank left empty moved every later heading up a letter and
+    the name kept the old one: "SECTION B" over "(Section C - Short answer
+    ...)" on 4 of 131 gap-paper headings (audit D44), and the instructions
+    naming a Section C the paper did not print. A name with no leading
+    section letter is returned as it is."""
+    return _SECTION_LETTER.sub(lambda m: f"{m.group(1)} {label}", name, count=1)
+
+
+def reletter(sections: list[GeneratedSectionSchema]) -> list[GeneratedSectionSchema]:
+    """Sections lettered A, B, C... in order, their names to match, when
+    they carry that lettering with a letter missing -- what removing a
+    section's last question leaves. Sections labelled any other way ("I",
+    "II", a custom blueprint's own labels) are returned as they are: there
+    is no order to restore."""
+    letters = [s.label for s in sections]
+    if not (all(len(x) == 1 and "A" <= x <= "Z" for x in letters)
+            and letters == sorted(set(letters))):
+        return sections
+    return [s.model_copy(update={"label": chr(ord("A") + i),
+                                 "name": lettered(s.name, chr(ord("A") + i))})
+            for i, s in enumerate(sections)]
 
 
 def _key_note(scheme, marks: int) -> str:
@@ -131,8 +164,17 @@ def generate_paper_sets(*, paper_id: str, assessment_id: str, assessment_title: 
                         set_count: int = 1,
                         rotation_groups: list[list[QuestionSchema]] | None = None,
                         alternatives_pool: list[QuestionSchema] | None = None,
+                        set_questions: list[list[QuestionSchema]] | None = None,
                         ) -> GeneratedPaper:
     """Generate parallel equivalent question paper sets (Sets A, B, C...) with strictly invariant difficulty.
+
+    With `set_questions` -- one list per set, set A's first (it is
+    `selected_questions`), each in section order and filling `blueprint`'s
+    sections exactly as set A does -- every set prints its own list: the
+    caller chose each set's questions by the sections' own rules (the
+    builder, `paper_template_routes._parallel_sets`). `set_overlap` says how
+    many printed questions, OR alternatives included, each shares with an
+    earlier set.
 
     With `alternatives_pool`, set B onwards print different questions of the
     same marks and type (selection.alternative_sets), and `set_overlap` says
@@ -168,7 +210,11 @@ def generate_paper_sets(*, paper_id: str, assessment_id: str, assessment_title: 
     paper_sets: list[GeneratedPaper] = []
     alternatives: list[list[QuestionSchema]] | None = None
     overlaps: list[int] = []
-    if alternatives_pool is not None:
+    if set_questions is not None:
+        if len(set_questions) != set_count:
+            raise ValueError(f"{len(set_questions)} question lists for {set_count} sets")
+        alternatives, overlaps = set_questions, _shared_with_earlier(set_questions)
+    elif alternatives_pool is not None:
         from .selection import alternative_sets
         from .templates import default_sections
         sections = blueprint.sections or default_sections(blueprint.total_marks)
@@ -223,6 +269,68 @@ def generate_paper_sets(*, paper_id: str, assessment_id: str, assessment_title: 
     if alternatives is not None:
         primary_paper.set_overlap = dict(zip(labels, overlaps))
     return primary_paper
+
+
+def set_repeats(paper: GeneratedPaper) -> dict[str, list[str]]:
+    """Per set of `paper` (A first), the printed slots -- "Q7", "Q12 (OR)"
+    -- whose question an earlier set also prints."""
+    seen: set[str] = set()
+    out: dict[str, list[str]] = {}
+    for s in paper.sets:
+        slots: list[str] = []
+        ids: set[str] = set()
+        for section in s.sections:
+            for q in section.questions:
+                if q.question_id in seen:
+                    slots.append(f"Q{q.display_number}")
+                ids.add(q.question_id)
+                alt = q.internal_choice_question_id
+                if alt:
+                    if alt in seen:
+                        slots.append(f"Q{q.display_number} (OR)")
+                    ids.add(alt)
+        out[s.set_label or ""] = slots
+        seen |= ids
+    return out
+
+
+_SET_REPEAT_LINE = re.compile(r"^Set [A-Z] repeats \d+ question")
+
+
+def set_repeat_warnings(paper: GeneratedPaper) -> list[str]:
+    """One line per set that prints a question an earlier set prints: how
+    many and where. A later set repeats one only where the bank has nothing
+    else its section's rules and the paper's chapters allow."""
+    return [f"Set {label} repeats {len(slots)} question(s) from an earlier set "
+            f"({', '.join(slots)}): no other question in the bank fits "
+            f"{'that slot' if len(slots) == 1 else 'those slots'} under the section's rules "
+            "and the paper's chapters."
+            for label, slots in set_repeats(paper).items() if slots]
+
+
+def restate_set_repeats(paper: GeneratedPaper) -> GeneratedPaper:
+    """`set_overlap` and its warning lines recounted from the sets as they
+    now stand, after an edit, on a paper that counts them (a non-empty
+    `set_overlap`). A swap can take a repeat off a set, or a pick put one on."""
+    if not paper.set_overlap or not paper.sets:
+        return paper
+    paper.set_overlap = {label: len(slots) for label, slots in set_repeats(paper).items()}
+    paper.warnings = [w for w in paper.warnings if not _SET_REPEAT_LINE.match(w)] \
+        + set_repeat_warnings(paper)
+    return paper
+
+
+def _shared_with_earlier(sets: list[list[QuestionSchema]]) -> list[int]:
+    """Per set, its printed questions (OR alternatives included) that an
+    earlier set also prints -- `GeneratedPaper.set_overlap`'s count."""
+    seen: set[str] = set()
+    out: list[int] = []
+    for qs in sets:
+        ids = [q.id for q in qs] + [q.metadata["internal_choice_id"] for q in qs
+                                    if q.metadata.get("internal_choice_id")]
+        out.append(sum(1 for i in ids if i in seen))
+        seen.update(ids)
+    return out
 
 
 def _alternative_first(q: QuestionSchema) -> QuestionSchema:
@@ -299,6 +407,17 @@ def answer_key_entry(q: QuestionSchema) -> str:
     that says "all or nothing" when generated cannot lose that sentence
     because a teacher swapped it in."""
     model_ans = q.answer_scheme.model_answer or "(model answer pending)"
+    points = q.answer_scheme.marking_points or []
+    if len(points) == 1:
+        # One value point that carries the answer ("Correct option C: three
+        # decimal places" under "three decimal places") printed the answer
+        # twice on every such row of the key (E2E run, 2026-10-01): say it once,
+        # the longer wording, with its marks.
+        norm = lambda s: " ".join((s or "").split()).casefold()  # noqa: E731
+        a, d = norm(q.answer_scheme.model_answer), norm(points[0].description)
+        if a and d and (a in d or d in a):
+            once = points[0].description if len(d) >= len(a) else q.answer_scheme.model_answer
+            return (f"{once} [{points[0].marks}m]" + _key_note(q.answer_scheme, q.marks)).strip()
     if q.answer_scheme.marking_points:
         pts = [f"• {mp.description} [{mp.marks}m]" for mp in q.answer_scheme.marking_points]
         model_ans = f"{model_ans}\n" + "\n".join(pts)
@@ -386,7 +505,7 @@ def _render_text(title: str, subject: str, grade: int, duration_minutes: int,
     header_title = f"{title} (SET {set_label})" if set_label else title
     lines = [
         header_title, f"Subject: {subject}    Grade: {grade}",
-        f"Time Allowed: {duration_minutes} minutes    Maximum Marks: {total_marks}",
+        f"Time Allowed: {format_duration(duration_minutes)}    Maximum Marks: {total_marks}",
         "General Instructions: This paper is machine-generated by AcademicOS and pending teacher review.",
         "",
     ]

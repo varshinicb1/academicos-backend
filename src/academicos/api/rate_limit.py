@@ -56,15 +56,50 @@ class RateLimiter:
 
             queue.append(now)
 
+    def _bypassed(self) -> bool:
+        if os.environ.get("ACOS_DISABLE_RATE_LIMIT", "").strip().lower() in ("1", "true", "yes"):
+            return True
+        return "PYTEST_CURRENT_TEST" in os.environ and not os.environ.get("ACOS_TEST_RATE_LIMIT")
+
+    def blocked(self, key: str) -> Optional[int]:
+        """Seconds until `key` may try again, or None. Records nothing: for
+        a limit on failures, checked before the attempt and counted after it
+        fails (`record`)."""
+        if self._bypassed():
+            return None
+        now = time.monotonic()
+        cutoff = now - self.window_seconds
+        with self._lock:
+            queue = self._records[key]
+            while queue and queue[0] <= cutoff:
+                queue.popleft()
+            if len(queue) >= self.max_requests:
+                return max(1, int(queue[0] - cutoff) + 1)
+        return None
+
+    def record(self, key: str) -> None:
+        """Count one event (a failed attempt) against `key`."""
+        if self._bypassed():
+            return
+        with self._lock:
+            self._records[key].append(time.monotonic())
+
     def reset(self) -> None:
         """Clear all tracked request timestamps (primarily for test isolation)."""
         with self._lock:
             self._records.clear()
 
 
-# Default limiters: 20 login attempts/min and 10 registrations/min per IP
-login_limiter = RateLimiter(max_requests=20, window_seconds=60.0)
-register_limiter = RateLimiter(max_requests=10, window_seconds=60.0)
+# Per network (client IP): generous, because a school's whole class signs in
+# or registers from one NAT address at once -- 20 sign-ins and 10
+# registrations a minute per IP turned the 21st student in a room away
+# (audit N-9-4; production check 2026-10-01). Brute force is stopped per
+# account instead: a password guessed against one email is refused after
+# `ACCOUNT_FAILURES` wrong tries in the window, from any number of addresses.
+login_limiter = RateLimiter(max_requests=300, window_seconds=60.0)
+register_limiter = RateLimiter(max_requests=120, window_seconds=60.0)
+ACCOUNT_FAILURES = 10
+account_failures = RateLimiter(max_requests=ACCOUNT_FAILURES, window_seconds=15 * 60.0)
 
 
 def get_client_ip(request: Request) -> str:

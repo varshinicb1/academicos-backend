@@ -28,6 +28,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfgen import canvas as pdfcanvas
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
     HRFlowable,
@@ -41,7 +42,9 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from .duration import format_duration
 from .schemas import GeneratedPaper, GeneratedSectionSchema, SchoolTemplate
+from .template_presets import instructions_for_paper, reads_as_generated
 
 log = logging.getLogger(__name__)
 
@@ -422,13 +425,39 @@ def _roll_no_grid(styles: _Styles, boxes: int = 11) -> Table:
     return t
 
 
+def printable_school_name(explicit: Optional[str], template: Optional[SchoolTemplate]) -> str:
+    """The school's name as a header prints it: the paper's own header (a
+    named branch, a joint exam) first, then the branding's. Never the branding
+    template's placeholder name, and never the product's: a school with no
+    name set prints none (audit D41), rather than someone else's words where
+    its name goes."""
+    from ..curriculum.school_profile import PLACEHOLDER_NAMES
+    name = explicit or (template.name if template and template.name else "")
+    return "" if name in PLACEHOLDER_NAMES else name
+
+
+def _beside_logo(title_block: list, logo_path: Optional[Path], content_width: float) -> list:
+    """The title block with the school's logo to its left, when there is one:
+    the paper's header and its answer key print the same band."""
+    from ..curriculum.school_profile import printable_logo
+    logo_path = printable_logo(logo_path)
+    if logo_path:
+        try:
+            band = Table([[Image(str(logo_path), width=18 * mm, height=18 * mm), title_block]],
+                         colWidths=[22 * mm, content_width - 22 * mm])
+            band.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+            return [band]
+        except Exception as e:                       # a bad logo must not kill the export
+            log.warning("could not place logo %s: %s", logo_path, e)
+    return list(title_block)
+
+
 def _header(paper: GeneratedPaper, template: Optional[SchoolTemplate],
             styles: _Styles, content_width: float) -> list:
     m = paper.metadata
     # The teacher's header wins over the school's branding name: a template
     # paper may be set for a named branch or a joint exam.
-    school_name = (m.school_name or (template.name if template and template.name else "")
-                   or "AcademicOS School")
+    school_name = printable_school_name(m.school_name, template)
     brand = colors.HexColor(template.brand_color) if template and template.brand_color else colors.black
     story: list = []
 
@@ -437,7 +466,7 @@ def _header(paper: GeneratedPaper, template: Optional[SchoolTemplate],
         exam_title += f" &nbsp;&nbsp;|&nbsp;&nbsp; <b>SET {escape(paper.set_label)}</b>"
 
     logo_path = Path(template.logo_url) if template and template.logo_url else None
-    title_block = [Paragraph(escape(school_name), styles.school)]
+    title_block = [Paragraph(escape(school_name), styles.school)] if school_name else []
     # The exam name is normally the title; a teacher who gave the paper its
     # own title still gets the exam name their template set.
     if m.exam_name and m.exam_name != m.assessment_title:
@@ -451,17 +480,7 @@ def _header(paper: GeneratedPaper, template: Optional[SchoolTemplate],
         title_block.append(Paragraph(escape(template.tagline), styles.meta))
     if m.date_line:
         title_block.append(Paragraph(escape(m.date_line), styles.meta))
-    if logo_path and logo_path.exists():
-        try:
-            band = Table([[Image(str(logo_path), width=18 * mm, height=18 * mm), title_block]],
-                         colWidths=[22 * mm, content_width - 22 * mm])
-            band.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
-            story.append(band)
-        except Exception as e:                       # a bad logo must not kill the export
-            log.warning("could not place logo %s: %s", logo_path, e)
-            story.extend(title_block)
-    else:
-        story.extend(title_block)
+    story.extend(_beside_logo(title_block, logo_path, content_width))
 
     story.append(Spacer(1, 4))
     story.append(HRFlowable(width="100%", thickness=1.4, color=brand, spaceAfter=6))
@@ -473,8 +492,8 @@ def _header(paper: GeneratedPaper, template: Optional[SchoolTemplate],
         marks_str += f" &nbsp;&nbsp; [<b>SET {escape(paper.set_label)}</b>]"
 
     rule = Table(
-        [[Paragraph(f"<b>Time Allowed: {m.duration_minutes // 60} hours "
-                    f"{m.duration_minutes % 60:02d} minutes</b>", styles.question),
+        [[Paragraph(f"<b>Time Allowed: {format_duration(m.duration_minutes)}</b>",
+                    styles.question),
           Paragraph(marks_str, styles.marks)]],
         colWidths=[content_width * 0.6, content_width * 0.4],
     )
@@ -488,12 +507,29 @@ def _header(paper: GeneratedPaper, template: Optional[SchoolTemplate],
     return story
 
 
+def instruction_lines(paper: GeneratedPaper) -> list[str]:
+    """The General Instructions `paper` prints in place of the canned list,
+    one per line, or [] for the canned list: the teacher's own words as
+    written, and instructions generated from the template rebuilt from the
+    paper's sections as they stand now (`instructions_for_paper`), never the
+    copy stamped at generation -- a remove, swap or pick since then changes
+    what they must say (v3 audit N-2-6). The PDF and the Word file both
+    print these."""
+    m = paper.metadata
+    text = m.instructions or ""
+    generated = m.instructions_generated
+    if generated is None:                     # stored before the flag existed
+        generated = reads_as_generated(text)
+    if generated:
+        text = instructions_for_paper(paper)
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
 def _instructions(paper: GeneratedPaper, styles: _Styles) -> list:
     total_q = sum(len(s.questions) for s in paper.sections)
     labels = ", ".join(s.label for s in paper.sections)
     story = [Paragraph("General Instructions:", styles.instr_head)]
-    teacher = [line.strip() for line in (paper.metadata.instructions or "").splitlines()
-               if line.strip()]
+    teacher = instruction_lines(paper)
     if teacher:
         # The teacher's own instructions replace the canned list: printing
         # both would put "internal choice has been provided" on a paper whose
@@ -617,7 +653,9 @@ def _section_block(section: GeneratedSectionSchema, styles: _Styles,
 
 def _page_furniture(paper: GeneratedPaper, template: Optional[SchoolTemplate],
                     watermark_id: Optional[str] = None):
-    """Footer drawn on every page: paper code left, page number centred.
+    """Footer drawn on every page: paper code left. The page number and
+    "P.T.O." are drawn by `_paged_canvas`, which knows how many pages there
+    are.
 
     watermark_id (when provided) is a per-export identifier stamped in the
     margin -- small and legible-but-unobtrusive, not a bold diagonal stamp
@@ -628,15 +666,16 @@ def _page_furniture(paper: GeneratedPaper, template: Optional[SchoolTemplate],
     traceable to a specific press job.
     """
     code = paper.id.replace("paper_", "").upper()[:10]
-    school = template.name if template and template.name else "AcademicOS"
+    # The same name the header prints, or none (audit D41): never the branding
+    # template's placeholder, never the product's name.
+    school = printable_school_name(paper.metadata.school_name, template)
+    left = f"{school}  ·  Q.P. Code {code}" if school else f"Q.P. Code {code}"
 
     def draw(canvas, doc):
         canvas.saveState()
         canvas.setFont(_BODY_FONT, 7.5)
         canvas.setFillColor(colors.HexColor("#555555"))
-        canvas.drawString(doc.leftMargin, 12 * mm, f"{school}  ·  Q.P. Code {code}")
-        canvas.drawCentredString(A4[0] / 2.0, 12 * mm, f"Page {doc.page}")
-        canvas.drawRightString(A4[0] - doc.rightMargin, 12 * mm, "P.T.O.")
+        canvas.drawString(doc.leftMargin, 12 * mm, left)
         if watermark_id:
             canvas.setFont(_BODY_FONT, 6)
             canvas.setFillColor(colors.HexColor("#AAAAAA"))
@@ -645,6 +684,46 @@ def _page_furniture(paper: GeneratedPaper, template: Optional[SchoolTemplate],
         canvas.restoreState()
 
     return draw
+
+
+def _paged_canvas(right_margin: float):
+    """A canvas that holds every page until the document is finished, so each
+    footer can say "Page N of M" and only a page with a page after it says
+    "P.T.O." -- please turn over. Drawn per page as it was, the footer could
+    not know which page was the last: every paper printed "P.T.O." on its
+    last page (audit D59, 28 of 28 papers) and no page total.
+
+    ReportLab's own recipe for "page N of M": `showPage` keeps the page's
+    state instead of emitting it, and `save` emits them all with the count."""
+
+    class _PagedCanvas(pdfcanvas.Canvas):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._held_pages: list[dict] = []
+
+        def showPage(self):  # noqa: N802 - ReportLab's name
+            self._held_pages.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            total = len(self._held_pages)
+            for state in self._held_pages:
+                self.__dict__.update(state)
+                self._page_count_footer(total)
+                super().showPage()
+            super().save()
+
+        def _page_count_footer(self, total: int) -> None:
+            number = self._pageNumber
+            self.saveState()
+            self.setFont(_BODY_FONT, 7.5)
+            self.setFillColor(colors.HexColor("#555555"))
+            self.drawCentredString(A4[0] / 2.0, 12 * mm, f"Page {number} of {total}")
+            if number < total:
+                self.drawRightString(A4[0] - right_margin, 12 * mm, "P.T.O.")
+            self.restoreState()
+
+    return _PagedCanvas
 
 
 def export_pdf(paper: GeneratedPaper, output_dir: Path,
@@ -676,24 +755,49 @@ def export_pdf(paper: GeneratedPaper, output_dir: Path,
                                     doc.height))
 
     footer = _page_furniture(paper, template, watermark_id=watermark_id)
-    doc.build(story, onFirstPage=footer, onLaterPages=footer)
+    doc.build(story, onFirstPage=footer, onLaterPages=footer,
+              canvasmaker=_paged_canvas(right))
     return out_path
 
 
 def export_answer_key_pdf(paper: GeneratedPaper, output_dir: Path,
-                          template: Optional[SchoolTemplate] = None) -> Path:
-    """Companion marking sheet: question number, marks, expected answer / value points."""
+                          template: Optional[SchoolTemplate] = None,
+                          watermark_id: Optional[str] = None) -> Path:
+    """Companion marking sheet: question number, marks, expected answer / value points.
+
+    Headed like the paper it marks -- exam name, subject and class, time
+    allowed and maximum marks -- and footed like it: the Q.P. code, the page
+    count and, per export, the traceable-copy id. The key printed only the
+    school, the title and "MARKING SCHEME" (v3 audit N-2-9): a loose key page
+    could not be matched to its paper, and a leaked key could not be traced
+    to the export that produced it, though the export itself was audited."""
     _register_unicode_font()
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / f"{paper.id}_answer_key.pdf"
     styles = _build_styles(template.brand_color if template and template.brand_color else "#000000")
 
+    margin = 18 * mm
     doc = SimpleDocTemplate(str(out_path), pagesize=A4, topMargin=16 * mm,
-                            bottomMargin=18 * mm, leftMargin=18 * mm, rightMargin=18 * mm)
-    set_suffix = f" — SET {paper.set_label}" if paper.set_label else ""
-    story: list = [
-        Paragraph(escape(paper.metadata.assessment_title) + set_suffix, styles.school),
+                            bottomMargin=margin, leftMargin=margin, rightMargin=margin,
+                            title=f"{paper.metadata.assessment_title} - marking scheme",
+                            author="AcademicOS")
+    m = paper.metadata
+    set_suffix = f" — SET {escape(paper.set_label)}" if paper.set_label else ""
+    school = printable_school_name(m.school_name, template)
+    title_block = [Paragraph(escape(school), styles.school)] if school else []
+    if m.exam_name and m.exam_name != m.assessment_title:
+        title_block.append(Paragraph(escape(m.exam_name), styles.exam))
+    title_block += [
+        Paragraph(escape(m.assessment_title) + set_suffix,
+                  styles.exam if school else styles.school),
+        Paragraph(f"Subject: {escape(m.subject)} &nbsp;&nbsp;|&nbsp;&nbsp; Class: {m.grade}",
+                  styles.meta),
+        Paragraph(f"Time Allowed: {format_duration(m.duration_minutes)} &nbsp;&nbsp;|&nbsp;&nbsp; "
+                  f"Maximum Marks: {m.total_marks}", styles.meta),
         Paragraph("MARKING SCHEME / VALUE POINTS", styles.exam),
+    ]
+    logo_path = Path(template.logo_url) if template and template.logo_url else None
+    story: list = _beside_logo(title_block, logo_path, A4[0] - 2 * margin) + [
         Spacer(1, 8),
         HRFlowable(width="100%", thickness=1, color=colors.black, spaceAfter=8),
     ]
@@ -724,5 +828,7 @@ def export_answer_key_pdf(paper: GeneratedPaper, output_dir: Path,
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
     story.append(table)
-    doc.build(story)
+    footer = _page_furniture(paper, template, watermark_id=watermark_id)
+    doc.build(story, onFirstPage=footer, onLaterPages=footer,
+              canvasmaker=_paged_canvas(margin))
     return out_path

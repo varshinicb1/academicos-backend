@@ -91,7 +91,7 @@ _SESSION_LIFETIME = timedelta(days=30)
 # An invite is a credential: whoever holds the code gets an account at that
 # school. 14 days covers handing a code to a teacher across a school week or
 # two; 90 days is the cap, so an invite cannot turn into a standing key.
-INVITE_ROLES = ("teacher", "student")
+INVITE_ROLES = ("teacher", "student", "parent")
 _INVITE_DEFAULT_DAYS = 14
 _INVITE_MAX_DAYS = 90
 
@@ -192,6 +192,22 @@ class EmailAlreadyRegistered(Exception):
 
 class InvalidCredentials(Exception):
     pass
+
+
+# A closed account keeps its row, its history and the role it had, written
+# as "left:<role>" (N-67-8: a teacher who left kept a working login). The
+# role column carries it, not a new column, so no Cloud SQL migration is
+# needed, and every role gate fails closed on it: "left:teacher" is not a
+# staff role, not "student", not "parent".
+CLOSED_PREFIX = "left:"
+
+
+def is_closed(role: str) -> bool:
+    return (role or "").startswith(CLOSED_PREFIX)
+
+
+class AccountClosed(Exception):
+    """The school closed this account: it cannot sign in or hold a session."""
 
 
 class RegistrationRefused(Exception):
@@ -621,11 +637,18 @@ class UserStore:
         salt = bytes.fromhex(raw["password_salt"])
         if not secrets.compare_digest(_hash_password(password, salt), raw["password_hash"]):
             raise InvalidCredentials(email)
+        if is_closed(raw["role"]):
+            raise AccountClosed(email)
         return _row_to_user(raw)
 
     # ---------------- sessions ----------------
 
     def create_session(self, user_id: str) -> str:
+        """Every way in (password, emailed code, Google) ends here, so a
+        closed account is refused here once for all of them."""
+        user = self.get(user_id)
+        if user is None or is_closed(user.role):
+            raise AccountClosed(user_id)
         token = secrets.token_urlsafe(32)
         now = datetime.now(timezone.utc)
         expires_at = (now + _SESSION_LIFETIME).isoformat()
@@ -665,7 +688,8 @@ class UserStore:
         if datetime.fromisoformat(session_row["expires_at"]) < datetime.now(timezone.utc):
             self.delete_session(token)
             return None
-        return self.get(session_row["user_id"])
+        user = self.get(session_row["user_id"])
+        return None if user is None or is_closed(user.role) else user
 
     def delete_session(self, token: str) -> None:
         if self._remote_sessions.enabled:
@@ -683,6 +707,43 @@ class UserStore:
         with self._conn_lock:
             self.conn.execute("DELETE FROM sessions WHERE token=?", (token,))
             self.conn.commit()
+
+    # ---------------- closing and reopening an account ----------------
+
+    def _set_role(self, user_id: str, role: str) -> None:
+        if self._remote.enabled:
+            self._remote.update({"role": role}, id=user_id)
+        with self._conn_lock:
+            self.conn.execute("UPDATE users SET role=? WHERE id=?", (role, user_id))
+            self.conn.commit()
+
+    def delete_sessions_for(self, user_id: str) -> None:
+        """Sign the user out everywhere."""
+        if self._remote_sessions.enabled:
+            self._remote_sessions.delete(user_id=user_id)
+        with self._conn_lock:
+            self.conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+            self.conn.commit()
+
+    def close_account(self, user_id: str) -> User:
+        """Close the account (idempotent): it keeps its row and history, can
+        no longer sign in, and every session it holds ends now."""
+        user = self.get(user_id)
+        if user is None:
+            raise KeyError(user_id)
+        if not is_closed(user.role):
+            self._set_role(user_id, CLOSED_PREFIX + user.role)
+        self.delete_sessions_for(user_id)
+        return self.get(user_id)
+
+    def reopen_account(self, user_id: str) -> User:
+        """Give a closed account back the role it had (idempotent)."""
+        user = self.get(user_id)
+        if user is None:
+            raise KeyError(user_id)
+        if is_closed(user.role):
+            self._set_role(user_id, user.role[len(CLOSED_PREFIX):])
+        return self.get(user_id)
 
     # ---------------- lookups ----------------
 

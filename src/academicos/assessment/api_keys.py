@@ -37,6 +37,7 @@ import hashlib
 import logging
 import secrets
 import sqlite3
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -177,15 +178,36 @@ def validate_scopes(scopes: Iterable[str]) -> frozenset[str]:
 
 
 class ApiKeyStore:
-    def __init__(self, db_path: Path | str):
+    def __init__(self, db_path: Path | str, *, durable: bool = False):
+        """`durable=True` (the API server) snapshots the file to the blob
+        store, as the operations store does, so an issued key survives a
+        restart (audit D38: the file lived on container disk only). Only
+        issuing and revoking publish a snapshot; per-request counters are
+        committed locally and ride along with the next one -- they are
+        minute windows, worthless after five minutes."""
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self._snapshots = None
+        if durable:
+            from ..storage.snapshot_sync import SnapshotSync
+            self._snapshots = SnapshotSync("operations-snapshots", "api_keys.sqlite", self.db_path, self._lock,
+                                           debounce_seconds=2.0, allow_empty_boot=True)
         self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=60000")
         self.conn.executescript(SCHEMA)
         self.conn.commit()
+        if self._snapshots is not None:
+            self._snapshots.commit_derived(self.conn)
+            self._snapshots.save_empty_boot(self.conn)
+
+    def _publish(self) -> None:
+        if self._snapshots is not None:
+            self._snapshots.commit(self.conn)
+        else:
+            self.conn.commit()
 
     # -- issuing ----------------------------------------------------------- #
 
@@ -214,7 +236,7 @@ class ApiKeyStore:
              ",".join(sorted(granted)), quota_per_minute, _now().isoformat(),
              created_by),
         )
-        self.conn.commit()
+        self._publish()
         return plaintext, self.get(key_id)  # type: ignore[return-value]
 
     # -- reading ----------------------------------------------------------- #
@@ -268,7 +290,7 @@ class ApiKeyStore:
             "UPDATE api_keys SET revoked_at=? WHERE id=?",
             (_now().isoformat(), key_id),
         )
-        self.conn.commit()
+        self._publish()
         return self.get(key_id)
 
     # -- quota ------------------------------------------------------------- #
@@ -308,6 +330,8 @@ class ApiKeyStore:
         return [dict(r) for r in rows]
 
     def close(self) -> None:
+        if self._snapshots is not None:
+            self._snapshots.close()
         self.conn.close()
 
 

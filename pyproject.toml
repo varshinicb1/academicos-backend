@@ -20,7 +20,8 @@ parse-vlm = ["torch>=2.5", "transformers>=4.44", "Pillow", "einops", "easydict",
 ocr = ["pytesseract", "Pillow"]
 retrieval = ["numpy>=1.26", "sentence-transformers>=3.0"]
 # ortools: the timetable solver (curriculum/timetable_solver.py, REQUIREMENTS SCH-3).
-api = ["fastapi>=0.111", "uvicorn>=0.30", "reportlab>=4.0", "python-multipart>=0.0.9", "ortools>=9.10,<10"]
+api = ["fastapi>=0.111", "uvicorn>=0.30", "reportlab>=4.0", "python-multipart>=0.0.9", "ortools>=9.10,<10",
+       "pyjwt[crypto]>=2.8"]
 mobile-scan = ["opencv-python-headless>=4.9", "numpy>=1.26", "Pillow"]
 gcs = ["google-cloud-storage>=2.16"]
 # Cloud SQL durability backend (assessment/postgres_kv.py). [binary] bundles

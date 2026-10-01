@@ -563,6 +563,7 @@ def _left_out(section: TemplateSection, pool: list[QuestionSchema]) -> _LeftOut:
 def plan(template: PaperTemplateDraft, template_id: str, candidates: list[QuestionSchema],
          scope: ScopeFilter, *, fill_from_outside_scope: bool = False,
          stale: frozenset[str] = frozenset(),
+         keyed_ids: Optional[frozenset[str]] = None,
          ) -> tuple[AvailabilityReport, list[SectionPlan]]:
     """Walks the sections in order, each claiming its questions so a later
     section with the same mark value only counts what is left.
@@ -589,7 +590,11 @@ def plan(template: PaperTemplateDraft, template_id: str, candidates: list[Questi
     as it would be without them -- a teacher asked for a new paper, not a
     shorter one -- and each reused question is named in a note.
     """
-    keyed = [q for q in candidates if has_verified_key(q)]
+    # `keyed_ids`: the candidates that pass `has_verified_key`, when the
+    # caller already knows them (`paper_edit.Bank.keyed`, checked once per
+    # pool); otherwise each candidate is checked here.
+    keyed = [q for q in candidates
+             if (q.id in keyed_ids if keyed_ids is not None else has_verified_key(q))]
     keyed_ids = {q.id for q in keyed}
     claimed: set[str] = set()
     # Every question printed so far, compulsory or OR: a later pick must not

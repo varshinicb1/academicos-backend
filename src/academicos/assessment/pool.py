@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import threading
 from collections import Counter
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -556,6 +557,37 @@ def _registry_paper_rows(cfg: Config, subject: str, grade: str) -> list:
     return [r for r in rows if grades.matches(r["grade"], grade)]
 
 
+_BAKED: dict[str, tuple[tuple[int, int], list[dict]]] = {}
+_BAKED_GUARD = threading.Lock()
+
+
+def _baked_records(path: Path) -> list[dict]:
+    """The baked bank file's records, board papers first, parsed once per
+    version of the file.
+
+    Every pool build parsed the whole file (14.6 MB) and sorted it again, so
+    building the ~70 served pools cost over a minute of CPU on a fresh
+    revision (production, 2026-10-01). The records are only read: a pool
+    keeps a reference to its own and nothing writes to them.
+
+    Board papers first, stably: SQPs reuse board questions, and a class 10/12
+    paper that composes today must not be silently re-composed from the SQP
+    and CBE items the merged bank adds -- whatever order the file happens to
+    hold them in. This used to also decide which copy the near-duplicate gate
+    kept; that gate is the merge's now (Task 126), and the order is kept
+    because selection reads this list."""
+    st = path.stat()
+    version = (st.st_mtime_ns, st.st_size)
+    with _BAKED_GUARD:
+        hit = _BAKED.get(str(path))
+        if hit is None or hit[0] != version:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            records = sorted(data.get("questions", []),
+                             key=lambda it: 0 if it.get("source") == "cbse_board_paper" else 1)
+            hit = _BAKED[str(path)] = (version, records)
+    return hit[1]
+
+
 def _baked_bank_paths(cfg: Config) -> list[Path]:
     """Where the baked-in bank may live, in the order it is tried."""
     root = Path(__file__).parents[3]
@@ -724,18 +756,7 @@ def build_pool(cfg: Config, *, subject: str = "Science", grade: str) -> Question
             for p in _baked_bank_paths(cfg):
                 if p.exists():
                     try:
-                        data = json.loads(p.read_text(encoding="utf-8"))
-                        # Board papers first, stably: SQPs reuse board
-                        # questions, and a class 10/12 paper that composes
-                        # today must not be silently re-composed from the SQP
-                        # and CBE items the merged bank adds -- whatever order
-                        # the file happens to hold them in. This used to also
-                        # decide which copy the near-duplicate gate here kept;
-                        # that gate is the merge's now (Task 126), and the
-                        # order is kept because selection reads this list.
-                        raw_qs = sorted(
-                            data.get("questions", []),
-                            key=lambda it: 0 if it.get("source") == "cbse_board_paper" else 1)
+                        raw_qs = _baked_records(p)
                         from .schemas import QuestionSchema
                         for item in raw_qs:
                             item_subject = item.get("subject", "")
@@ -880,9 +901,22 @@ def _open_answer_keys(cfg: Config):
 _CACHE: dict[tuple[str, str], QuestionPool] = {}
 
 
+_BUILD_GUARD = threading.Lock()
+_BUILD_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+
+
 def get_pool(cfg: Config, *, subject: str = "Science", grade: str) -> QuestionPool:
     grade = grades.to_roman(grade)   # 'X', '10', '10th' are one pool, built once; raises on junk
     key = (subject, grade)
-    if key not in _CACHE:
-        _CACHE[key] = build_pool(cfg, subject=subject, grade=grade)
-    return _CACHE[key]
+    pool = _CACHE.get(key)
+    if pool is not None:
+        return pool
+    # One build per pool: the boot warm-up and a request asking for the same
+    # pool built it twice at once on a fresh revision (production logs,
+    # 2026-10-01). A second caller waits for the first's build.
+    with _BUILD_GUARD:
+        lock = _BUILD_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        if key not in _CACHE:
+            _CACHE[key] = build_pool(cfg, subject=subject, grade=grade)
+        return _CACHE[key]

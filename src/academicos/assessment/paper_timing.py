@@ -96,10 +96,12 @@ GENERATION_ACTIONS = {
 # why the report echoes back where the number came from.
 _DEFAULT_BASELINE_MINUTES = 45.0
 _ENV_KEY = "ACOS_PAPER_MANUAL_BASELINE_MINUTES"
+# Shown to the principal on the term report, so it names no server setting
+# (it printed the environment variable's name; E2E run, 2026-10-01).
 _DEFAULT_PROVENANCE = (
     "declared default, not measured -- a teacher assembling, formatting and "
-    "answer-keying a full paper by hand; override with "
-    "ACOS_PAPER_MANUAL_BASELINE_MINUTES to use the school's own figure"
+    "answer-keying a full paper by hand; set the school's own figure for the "
+    "term to use it instead"
 )
 
 

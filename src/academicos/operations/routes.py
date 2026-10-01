@@ -6,11 +6,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
-from ..assessment.auth_routes import get_current_user
+from ..assessment.auth_routes import get_current_user, require_admin, require_principal, require_staff
 from ..assessment.users import User
 from ..config import Config
 from ..curriculum.schemas import Camel
@@ -35,6 +35,22 @@ def init(cfg: Config) -> None:
         return getattr(u, "email", None) if u else None
     OperationsStore.email_for = staticmethod(_email)
 
+    # Learning progress (SA-3) records every marked answer the knowledge
+    # store records: sheets, scans, practice and homework.
+    from ..assessment import knowledge
+    knowledge.add_listener(_record_learning)
+    # Joining: imported students are enrolled, parents linked to their children (M1.5, M1.6).
+    from ..assessment import auth_routes
+    from .guardian_routes import on_register
+    auth_routes.add_register_hook(on_register)
+    # Delegated admin (M1.4): a teacher's grants open require_admin routes.
+    auth_routes.set_grant_checker(lambda user_id, cap, **target: store().holds(user_id, cap, **target),
+                                  scopes=lambda user_id, cap: store().grant_scopes(user_id, cap))
+
+
+def _record_learning(student_id: str, results: list, source: Optional[str]) -> None:
+    store().record_learning(student_id, results, source)
+
 
 def store() -> OperationsStore:
     if _cfg is None:
@@ -42,15 +58,40 @@ def store() -> OperationsStore:
     return get_operations_store(_cfg.data_root)
 
 
-def notify_safely(**kw: Any) -> None:
+def notify_safely(**kw: Any) -> list:
     """For other modules: a notification must never break the action that
-    caused it (a leave decision, a substitution), so failures are logged."""
+    caused it (a leave decision, a substitution), so failures are logged.
+    Returns the notifications made ([] when none, or on failure)."""
     if _cfg is None:
-        return
+        return []
     try:
-        store().notify(**kw)
+        return store().notify(**kw)
     except Exception:  # noqa: BLE001
         logger.warning("could not notify %s about %s", kw.get("user_ids"), kw.get("kind"), exc_info=True)
+        return []
+
+
+def notify_parents_safely(*, school_id: str, student_ids, kind: str, params: dict[str, Any],
+                          dedupe_key: Optional[str] = None, exclude=()) -> list[str]:
+    """N-8-7: the linked parents of these students hear the same school
+    notice (a holiday, a published or changed exam, a timetable change),
+    under their own settings -- per-kind channels, quiet hours, language and
+    digest, as every notice. Scoped to the school's own active links; the
+    link is to the parent's children page, since /my-exams and /my-timetable
+    are a student's. Like notify_safely it never breaks the action. Returns
+    the parents it addressed."""
+    if _cfg is None or not student_ids:
+        return []
+    skip = set(exclude)
+    try:
+        parents = [p for p in store().parents_of(student_ids, school_id=school_id) if p not in skip]
+    except Exception:  # noqa: BLE001
+        logger.warning("could not find the parents of %d students for %s", len(student_ids), kind, exc_info=True)
+        return []
+    if parents:
+        notify_safely(school_id=school_id, user_ids=parents, kind=kind, params=params, link="/my-children",
+                      dedupe_key=dedupe_key)
+    return parents
 
 
 class _Req(Camel):
@@ -85,6 +126,9 @@ class PreferencesResponse(Camel):
     quiet_start: str
     quiet_end: str
     language: str
+    # SA-5: one push and one email a day at this time (IST) instead of each
+    # as it comes; None is "as they come".
+    digest_at: Optional[str] = None
     kinds: list[KindPreference]
 
 
@@ -98,6 +142,8 @@ class PreferencesRequest(_Req):
     quiet_start: Optional[str] = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     quiet_end: Optional[str] = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     language: Optional[str] = None
+    # "HH:MM" turns the daily digest on at that time; "" turns it off.
+    digest_at: Optional[str] = Field(default=None, pattern=r"^(([01]\d|2[0-3]):[0-5]\d)?$")
     kinds: list[KindPreferenceBody] = []
 
 
@@ -117,8 +163,87 @@ def _prefs(user_id: str) -> PreferencesResponse:
     settings = s.settings_for(user_id)
     return PreferencesResponse(
         quiet_start=settings["quiet_start"], quiet_end=settings["quiet_end"], language=settings["language"],
+        digest_at=settings.get("digest_at"),
         kinds=[KindPreference(kind=k.key, label=k.label, push=s.channel_enabled(user_id, k.key, "push"),
                               email=s.channel_enabled(user_id, k.key, "email")) for k in CATALOGUE.values()])
+
+
+# ---------------- scheduled automations (NTF-2) ----------------
+
+_last_auto_run = 0.0
+AUTO_EVERY_SECONDS = 300
+
+
+def run_automations(now=None) -> dict:
+    from ..curriculum import routes as cr
+    from . import automations
+    return automations.run_due(store(), cr._require(), cr._require_users(), notify_safely, now)
+
+
+def _maybe_run_automations() -> None:
+    """Ordinary traffic runs the automations at most every five minutes, so
+    they happen even before a scheduler is set up. Never fails the request."""
+    import os
+    import time
+    global _last_auto_run
+    # Not inside the test suite: a run there would use the real clock
+    # against fixtures pinned to other dates. tests/test_automations.py
+    # drives run_automations directly.
+    if "PYTEST_CURRENT_TEST" in os.environ or time.monotonic() - _last_auto_run < AUTO_EVERY_SECONDS:
+        return
+    _last_auto_run = time.monotonic()
+    try:
+        run_automations()
+    except Exception:  # noqa: BLE001
+        logger.warning("automations run failed", exc_info=True)
+
+
+@router.post("/automations/run")
+def automations_run(x_cron_key: Optional[str] = Header(default=None, alias="X-Cron-Key")) -> dict:
+    """For Cloud Scheduler: run every automation that is due. Needs the
+    operator's key (env ACOS_CRON_KEY); 404 when none is configured, so the
+    route does not exist on a deployment that has not opted in."""
+    import hmac
+    import os
+    if _cfg is None:
+        raise HTTPException(503, "the notification service is not initialised")
+    expected = os.environ.get("ACOS_CRON_KEY", "")
+    if not expected:
+        raise HTTPException(404, "Not Found")
+    if not x_cron_key or not hmac.compare_digest(x_cron_key, expected):
+        raise HTTPException(401, "a valid X-Cron-Key is required")
+    return {"jobs": run_automations()}
+
+
+class AutomationRun(Camel):
+    job: str
+    period_key: str
+    ran_at: str
+    notified: int
+
+
+@router.get("/automations/status", response_model=list[AutomationRun])
+def automations_status(principal: User = Depends(require_admin("reports"))) -> list[AutomationRun]:
+    """The latest automation runs, newest first, each with what it sent to
+    this school; another school's counts are not shown."""
+    return [AutomationRun(**r) for r in store().automation_history(principal.school_id)]
+
+
+class StaffMember(Camel):
+    id: str
+    name: str
+    role: str
+
+
+@router.get("/staff", response_model=list[StaffMember])
+def staff_directory(current: User = Depends(require_staff)) -> list[StaffMember]:
+    """The school's teachers and principal by name, for pickers (a reviewer,
+    an invigilator). No emails: the full user list stays with whoever
+    administers people."""
+    from ..curriculum import routes as cr
+    users = cr._require_users().users_for_school(current.school_id)
+    return sorted((StaffMember(id=u.id, name=u.name, role=u.role) for u in users
+                   if u.role in ("teacher", "principal")), key=lambda m: m.name.lower())
 
 
 @router.get("/notifications", response_model=InboxResponse)
@@ -131,6 +256,7 @@ def inbox(unread_only: bool = Query(default=False, alias="unreadOnly"), limit: i
         s.deliver_due()
     except Exception:  # noqa: BLE001
         logger.warning("deferred delivery failed", exc_info=True)
+    _maybe_run_automations()
     return InboxResponse(unread_count=s.unread_count(current.id),
                          items=[_item(n) for n in s.inbox(current.id, unread_only=unread_only, limit=limit)])
 
@@ -163,6 +289,8 @@ def set_preferences(req: PreferencesRequest, current: User = Depends(get_current
     s = store()
     try:
         s.set_settings(current.id, quiet_start=req.quiet_start, quiet_end=req.quiet_end, language=req.language)
+        if req.digest_at is not None:
+            s.set_digest(current.id, req.digest_at or None)
         for k in req.kinds:
             for ch in CHANNELS:
                 v = getattr(k, ch)

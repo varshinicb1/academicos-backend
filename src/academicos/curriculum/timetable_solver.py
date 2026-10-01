@@ -12,7 +12,14 @@ Hard rules
 - a subject gets at most ceil(periods / days) periods in a section's day
   (spread across the week);
 - a teacher's unavailable periods stay free;
-- entries the principal locked stay where they are.
+- entries the principal locked stay where they are;
+- SCH-8 co-teaching: an allocation's co-teacher is booked for every one of
+  its periods, under the same one-place, per-day and in-a-row rules;
+- SCH-2 labs: an allocation that needs a kind of room ("lab") gets one room
+  of that kind for each period, no room holds two classes at one clock
+  time, and a room's unavailable periods (a lab out of use) stay free;
+- SCH-2 double periods: an allocation's `double_periods` come as two
+  periods in a row with no break between them, in the same room.
 
 Objective: keep the current timetable. A re-solve after a change (a new
 allocation, a teacher leaving) moves the fewest periods (SCH-3: "re-solve
@@ -32,7 +39,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .school_model import WEEKDAY_NAMES
+from .school_model import WEEKDAY_NAMES, adjacent_pairs
 
 
 @dataclass
@@ -52,6 +59,7 @@ class ProposedEntry:
     subject_id: str
     teacher_id: Optional[str]
     room_id: Optional[str] = None
+    co_teacher_id: Optional[str] = None
 
 
 @dataclass
@@ -90,8 +98,8 @@ def check_feasibility(store, academic_year_id: str, options: SolveOptions) -> li
     need_by_teacher: dict[str, int] = defaultdict(int)
     for a in allocs:
         need_by_section[a.section_id] += a.periods_per_week
-        if a.teacher_id:
-            need_by_teacher[a.teacher_id] += a.periods_per_week
+        for t in _teachers_of(a):
+            need_by_teacher[t] += a.periods_per_week
     week_slots = 0
     for sid, need in need_by_section.items():
         grid = _section_grid(store, sections[sid])
@@ -108,18 +116,53 @@ def check_feasibility(store, academic_year_id: str, options: SolveOptions) -> li
     # its teacher free on enough of the section's days.
     for a in allocs:
         grid = _section_grid(store, sections[a.section_id])
-        if grid is None or not a.teacher_id:
+        if grid is None or not _teachers_of(a):
             continue
         days, periods = grid
-        blocked = unavailable.get(a.teacher_id, set())
+        blocked = set().union(*(unavailable.get(t, set()) for t in _teachers_of(a)))
         free_days = [d for d in days if any((d, p) not in blocked for p in periods)]
-        cap = max(1, math.ceil(a.periods_per_week / len(days)))
+        cap = _day_cap(a, days)
         if a.periods_per_week > cap * len(free_days):
-            subject = store.get_subject(a.subject_id)
+            who = "its teachers are" if a.co_teacher_id else "its teacher is"
             problems.append(
-                f"{subject.name if subject else 'a subject'} for {store._section_label(sections[a.section_id])} "
-                f"needs {a.periods_per_week} periods, at most {cap} a day, but its teacher is free on "
-                f"only {len(free_days)} of the section's {len(days)} days")
+                f"{_cell(store, a, sections)} needs {a.periods_per_week} periods, at most {cap} a day, "
+                f"but {who} free on only {len(free_days)} of the section's {len(days)} days")
+    # Labs and other rooms of a kind (SCH-2), and double periods.
+    rooms = store.rooms_for_school(store.get_section(allocs[0].section_id).school_id) if allocs else []
+    closed = store.room_unavailability_for_year(academic_year_id)
+    need_by_kind: dict[str, int] = defaultdict(int)
+    for a in allocs:
+        grid = _section_grid(store, sections[a.section_id])
+        if a.room_kind:
+            need_by_kind[a.room_kind] += a.periods_per_week
+            of_kind = [r for r in rooms if r.kind == a.room_kind]
+            if not of_kind:
+                problems.append(f"{_cell(store, a, sections)} needs a {a.room_kind} and the school has "
+                                f"none: add one under Rooms, or clear the subject's room kind")
+            elif grid is not None:
+                days, periods = grid
+                open_days = [d for d in days if any((d, p) not in closed.get(r.id, set())
+                                                    for r in of_kind for p in periods)]
+                cap = _day_cap(a, days)
+                if a.periods_per_week > cap * len(open_days):
+                    problems.append(f"{_cell(store, a, sections)} needs {a.periods_per_week} periods, at most "
+                                    f"{cap} a day, but a {a.room_kind} is open on only {len(open_days)} of the "
+                                    f"section's {len(days)} days")
+        if a.double_periods and grid is not None:
+            bell = store.bell_for_section(sections[a.section_id])
+            if not adjacent_pairs(bell):
+                problems.append(f"{_cell(store, a, sections)} has {a.double_periods} double period(s), but "
+                                f"{bell.name} has no two periods in a row without a break")
+    for kind, need in need_by_kind.items():
+        of_kind = [r for r in rooms if r.kind == kind]
+        if not of_kind:
+            continue
+        slots_a_week = max((len(g[0]) * len(g[1]) for g in (_section_grid(store, sec) for sec in sections.values())
+                            if g), default=0)
+        have = sum(slots_a_week - len(closed.get(r.id, ())) for r in of_kind)
+        if need > have:
+            problems.append(f"{need} periods a week need a {kind}; the school's {len(of_kind)} {kind}(s) "
+                            f"are open for {have}")
     days_in_week = max((len(_section_grid(store, s)[0]) for s in sections.values()
                         if _section_grid(store, s)), default=6)
     for tid, need in need_by_teacher.items():
@@ -129,6 +172,23 @@ def check_feasibility(store, academic_year_id: str, options: SolveOptions) -> li
                             f"{options.max_per_day} a day over {days_in_week} days allows "
                             f"(less their unavailable periods): {cap}")
     return problems
+
+
+def _teachers_of(a) -> list[str]:
+    """The allocation's teacher and co-teacher: both are in the room."""
+    return [t for t in (a.teacher_id, getattr(a, "co_teacher_id", None)) if t]
+
+
+def _day_cap(a, days) -> int:
+    """Most periods of one subject in a section's day: its share of the
+    week, and at least two when it has a double period."""
+    cap = max(1, math.ceil(a.periods_per_week / len(days)))
+    return max(cap, 2) if getattr(a, "double_periods", 0) else cap
+
+
+def _cell(store, a, sections) -> str:
+    subject = store.get_subject(a.subject_id)
+    return f"{subject.name if subject else 'a subject'} for {store._section_label(sections[a.section_id])}"
 
 
 def solve(store, academic_year_id: str, options: Optional[SolveOptions] = None) -> SolveResult:
@@ -154,25 +214,79 @@ def solve(store, academic_year_id: str, options: Optional[SolveOptions] = None) 
               if e.section_id in solving}
 
     grids = {sid: _section_grid(store, sections[sid]) for sid in sections}
+    school_id = next(iter(sections.values())).school_id
+    rooms = store.rooms_for_school(school_id)
+    closed = store.room_unavailability_for_year(academic_year_id)
+    managed_kinds = {a.room_kind for a in allocs if a.room_kind}
+    managed_rooms = {r.id for r in rooms if r.kind in managed_kinds}
     model = cp_model.CpModel()
     x: dict[tuple[str, int, int], cp_model.IntVar] = {}       # (alloc id, day, period)
+    y: dict[tuple[str, int, int, str], cp_model.IntVar] = {}  # (alloc id, day, period, room id)
     alloc_by_id = {a.id: a for a in allocs if a.section_id in solving}
     for a in alloc_by_id.values():
         days, periods = grids[a.section_id]
+        blocked = set().union(*(unavailable.get(t, set()) for t in _teachers_of(a)))
+        eligible = [r for r in rooms if r.kind == a.room_kind] if a.room_kind else []
         for d in days:
             for p in periods:
-                if a.teacher_id and (d, p) in unavailable.get(a.teacher_id, set()):
+                if (d, p) in blocked:
                     continue
-                x[(a.id, d, p)] = model.NewBoolVar(f"x_{a.id}_{d}_{p}")
+                open_rooms = [r for r in eligible if (d, p) not in closed.get(r.id, set())]
+                if a.room_kind and not open_rooms:
+                    continue
+                v = model.NewBoolVar(f"x_{a.id}_{d}_{p}")
+                x[(a.id, d, p)] = v
+                if a.room_kind:
+                    ys = []
+                    for r in open_rooms:
+                        y[(a.id, d, p, r.id)] = model.NewBoolVar(f"y_{a.id}_{d}_{p}_{r.id}")
+                        ys.append(y[(a.id, d, p, r.id)])
+                    model.Add(sum(ys) == v)          # a period in a lab is in exactly one lab
 
     # Every allocation gets exactly its periods, spread across the week.
     for a in alloc_by_id.values():
         days, periods = grids[a.section_id]
         mine = [v for (aid, _, _), v in x.items() if aid == a.id]
         model.Add(sum(mine) == a.periods_per_week)
-        cap = max(1, math.ceil(a.periods_per_week / len(days)))
+        cap = _day_cap(a, days)
         for d in days:
             model.Add(sum(v for (aid, dd, _), v in x.items() if aid == a.id and dd == d) <= cap)
+
+    # Double periods (SCH-2): `double_periods` pairs of adjacent periods, no
+    # period in two pairs, both halves in the same room.
+    y_at: dict[tuple[str, int, int], dict[str, object]] = defaultdict(dict)
+    for (aid, d, p, rid), yv in y.items():
+        y_at[(aid, d, p)][rid] = yv
+    for a in alloc_by_id.values():
+        if not a.double_periods:
+            continue
+        days, _ = grids[a.section_id]
+        pairs = adjacent_pairs(store.bell_for_section(sections[a.section_id]))
+        z = {}
+        for d in days:
+            for p, q in pairs:
+                if (a.id, d, p) in x and (a.id, d, q) in x:
+                    zv = model.NewBoolVar(f"z_{a.id}_{d}_{p}")
+                    model.Add(zv <= x[(a.id, d, p)])
+                    model.Add(zv <= x[(a.id, d, q)])
+                    z[(d, p, q)] = zv
+                    first, second = y_at.get((a.id, d, p), {}), y_at.get((a.id, d, q), {})
+                    for rid in set(first) | set(second):
+                        if rid in first and rid in second:
+                            model.Add(first[rid] - second[rid] <= 1 - zv)
+                            model.Add(second[rid] - first[rid] <= 1 - zv)
+                        else:
+                            # The room is closed for one half: no double there.
+                            # (Picked by key, never `a or b`: OR-Tools refuses
+                            # to turn a literal into a bool.)
+                            half = first[rid] if rid in first else second[rid]
+                            model.Add(half <= 1 - zv)
+        model.Add(sum(z.values()) == a.double_periods)
+        for d in days:
+            for p in {pp for _, pp, _ in z} | {qq for _, _, qq in z}:
+                touching = [zv for (dd, pp, qq), zv in z.items() if dd == d and p in (pp, qq)]
+                if len(touching) > 1:
+                    model.Add(sum(touching) <= 1)
 
     # A section holds one subject per period (fixed sections are not solved).
     by_section_slot: dict[tuple[str, int, int], list] = defaultdict(list)
@@ -202,14 +316,35 @@ def solve(store, academic_year_id: str, options: Optional[SolveOptions] = None) 
     by_teacher: dict[str, list[tuple[int, int, int, object]]] = defaultdict(list)   # (day, start, end, var|1)
     for (aid, d, p), v in x.items():
         a = alloc_by_id[aid]
-        if a.teacher_id:
-            start, end = grids[a.section_id][1][p]
-            by_teacher[a.teacher_id].append((d, start, end, v))
+        start, end = grids[a.section_id][1][p]
+        for t in _teachers_of(a):
+            by_teacher[t].append((d, start, end, v))
     for e in fixed:
-        if e.teacher_id and grids.get(e.section_id):
+        if grids.get(e.section_id):
             start, end = grids[e.section_id][1].get(e.period, (None, None))
             if start is not None:
-                by_teacher[e.teacher_id].append((e.day_of_week, start, end, 1))
+                for t in {e.teacher_id, e.co_teacher_id} - {None}:
+                    by_teacher[t].append((e.day_of_week, start, end, 1))
+
+    # A room holds one class at a time, by clock time, like a teacher.
+    by_room: dict[str, list[tuple[int, int, int, object]]] = defaultdict(list)
+    for (aid, d, p, rid), v in y.items():
+        start, end = grids[alloc_by_id[aid].section_id][1][p]
+        by_room[rid].append((d, start, end, v))
+    for e in fixed:
+        if e.room_id in managed_rooms and grids.get(e.section_id):
+            start, end = grids[e.section_id][1].get(e.period, (None, None))
+            if start is not None:
+                by_room[e.room_id].append((e.day_of_week, start, end, 1))
+    for rid, items in by_room.items():
+        per_day: dict[int, list] = defaultdict(list)
+        for d, s_, e_, v in items:
+            per_day[d].append((s_, e_, v))
+        for d, day_items in per_day.items():
+            for s0, _, _ in day_items:
+                overlapping = [v for s_, e_, v in day_items if s_ <= s0 < e_]
+                if len(overlapping) > 1:
+                    model.Add(sum(overlapping) <= 1)
     for tid, items in by_teacher.items():
         by_day: dict[int, list] = defaultdict(list)
         for d, s, e_, v in items:
@@ -240,6 +375,9 @@ def solve(store, academic_year_id: str, options: Optional[SolveOptions] = None) 
                     v = x.get((a.id, e.day_of_week, e.period))
                     if v is not None:
                         objective.append(10 * (1 - v))
+                    yv = y.get((a.id, e.day_of_week, e.period, e.room_id)) if e.room_id else None
+                    if yv is not None:
+                        objective.append(1 - yv)       # and keep its lab, all else equal
     edge_load: dict[str, list] = defaultdict(list)
     for (aid, d, p), v in x.items():
         a = alloc_by_id[aid]
@@ -271,15 +409,21 @@ def solve(store, academic_year_id: str, options: Optional[SolveOptions] = None) 
             "allow more time or relax a rule"])
 
     entries = [ProposedEntry(section_id=e.section_id, day_of_week=e.day_of_week, period=e.period,
-                             subject_id=e.subject_id, teacher_id=e.teacher_id, room_id=e.room_id)
+                             subject_id=e.subject_id, teacher_id=e.teacher_id, room_id=e.room_id,
+                             co_teacher_id=e.co_teacher_id)
                for e in fixed]
-    room_of = {(e.section_id, e.day_of_week, e.period, e.subject_id): e.room_id for e in current}
+    # A subject with no room kind keeps the room it had in that slot, unless
+    # that room is one the solver now books for labs (it could clash there).
+    room_of = {(e.section_id, e.day_of_week, e.period, e.subject_id): e.room_id for e in current
+               if e.room_id not in managed_rooms}
+    lab_of = {(aid, d, p): rid for (aid, d, p, rid), v in y.items() if solver.Value(v)}
     for (aid, d, p), v in x.items():
         if solver.Value(v):
             a = alloc_by_id[aid]
+            room = lab_of.get((aid, d, p)) if a.room_kind else room_of.get((a.section_id, d, p, a.subject_id))
             entries.append(ProposedEntry(section_id=a.section_id, day_of_week=d, period=p,
                                          subject_id=a.subject_id, teacher_id=a.teacher_id,
-                                         room_id=room_of.get((a.section_id, d, p, a.subject_id))))
+                                         room_id=room, co_teacher_id=a.co_teacher_id))
     before = {(e.section_id, e.day_of_week, e.period, e.subject_id) for e in current
               if e.section_id in solving}
     after = {(e.section_id, e.day_of_week, e.period, e.subject_id) for e in entries

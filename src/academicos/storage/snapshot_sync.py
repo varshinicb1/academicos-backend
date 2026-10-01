@@ -49,6 +49,7 @@ from .blobs import (
     is_not_found,
     record_conflict_copy,
     record_upload_failure,
+    record_upload_success,
 )
 
 logger = logging.getLogger(__name__)
@@ -324,6 +325,7 @@ class SnapshotSync:
                 with self._conn_lock:
                     self._arm_timer(self.debounce_seconds)
                 return False
+            record_upload_success(self.purpose)
             with self._conn_lock:
                 # Commits that landed during the upload are not in `data`:
                 # they stay pending and get their own trailing upload.

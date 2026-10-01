@@ -479,7 +479,7 @@ def export_corrected_pdf(session: ScanSession, output_dir: Path, *,
     out_path = output_dir / f"{session.id}_corrected.pdf"
 
     brand = colors.HexColor(template.brand_color) if template and template.brand_color else colors.black
-    school_name = template.name if template and template.name else "AcademicOS School"
+    school_name = pdf_export.printable_school_name(None, template)
     ss = getSampleStyleSheet()
     school_style = ParagraphStyle("CSchool", parent=ss["Title"], fontName=pdf_export._BODY_FONT_BOLD,
                                   fontSize=15, textColor=brand, alignment=TA_CENTER)
@@ -504,7 +504,7 @@ def export_corrected_pdf(session: ScanSession, output_dir: Path, *,
     content_width = A4[0] - 36 * mm
 
     story: list = [
-        Paragraph(pdf_export.escape(school_name), school_style),
+        *([Paragraph(pdf_export.escape(school_name), school_style)] if school_name else []),
         Paragraph("Corrected Answer Sheet", title_style),
         Paragraph(f"{pdf_export.escape(session.student_name)} &nbsp;|&nbsp; "
                   f"Roll/ID: {pdf_export.escape(session.student_id)} &nbsp;|&nbsp; "

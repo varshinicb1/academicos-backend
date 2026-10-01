@@ -107,6 +107,28 @@ class GradedStore:
             ).fetchall()
         return {row["student_id"]: self._decode(row["graded_json"]) for row in rows}
 
+    def chapters_by_student(self, assessment_id: str) -> dict[str, set[str]]:
+        """{student id: the chapter ids their graded sheet's questions carry}.
+
+        Read from the stored JSON without rebuilding the questions: the
+        principal's rollup reads every sheet a school has, and that is the
+        only part of each it needs."""
+        if self._remote.enabled:
+            pairs = {r["student_id"]: r["payload"]
+                     for r in self._remote.select(assessment_id=assessment_id)}
+        else:
+            with self._conn_lock:
+                rows = self.conn.execute(
+                    "SELECT student_id, graded_json FROM graded WHERE assessment_id=?",
+                    (assessment_id,),
+                ).fetchall()
+            pairs = {row["student_id"]: row["graded_json"] for row in rows}
+        out: dict[str, set[str]] = {}
+        for student_id, blob in pairs.items():
+            sheet = blob if isinstance(blob, list) else json.loads(blob)
+            out[student_id] = {c for q, _ in sheet for c in (q.get("chapter_ids") or [])}
+        return out
+
     def all_student_ids(self) -> list[str]:
         if self._remote.enabled:
             rows = self._remote.select()

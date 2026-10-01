@@ -399,6 +399,7 @@ def new_id(prefix: str) -> str:
 
 from .cover import COVER_SCHEMA, CoverMixin
 from .school_model import SCHOOL_MODEL_SCHEMA, SchoolModelMixin
+from .school_profile import SCHOOL_PROFILE_SCHEMA, SchoolProfileMixin
 
 
 class SectionInUse(Exception):
@@ -406,7 +407,7 @@ class SectionInUse(Exception):
     its grade's last. The route's 409."""
 
 
-class CurriculumStore(SchoolModelMixin, CoverMixin):
+class CurriculumStore(SchoolModelMixin, CoverMixin, SchoolProfileMixin):
     _SNAPSHOT_KEY = "curriculum.sqlite"
     _SNAPSHOT_DEBOUNCE_SECONDS = 30.0
 
@@ -441,7 +442,7 @@ class CurriculumStore(SchoolModelMixin, CoverMixin):
         on start, and after a snapshot conflict reloads one an older release
         wrote. Executes only; the caller commits."""
         with self._conn_lock:
-            self.conn.executescript(SCHEMA + SCHOOL_MODEL_SCHEMA + COVER_SCHEMA)
+            self.conn.executescript(SCHEMA + SCHOOL_MODEL_SCHEMA + COVER_SCHEMA + SCHOOL_PROFILE_SCHEMA)
             self._migrate()
 
     def _migrate(self) -> None:
@@ -481,6 +482,18 @@ class CurriculumStore(SchoolModelMixin, CoverMixin):
         entry_cols = {r["name"] for r in self._fetchall("PRAGMA table_info(timetable_entries)")}
         if "locked" not in entry_cols:
             self._exec("ALTER TABLE timetable_entries ADD COLUMN locked INTEGER NOT NULL DEFAULT 0")
+        # SCH-2/SCH-8: labs, double periods and co-teaching. Columns only (no
+        # row changes), so an existing school's cells read as before: no
+        # co-teacher, any room, no double periods.
+        if "co_teacher_id" not in entry_cols:
+            self._exec("ALTER TABLE timetable_entries ADD COLUMN co_teacher_id TEXT")
+        alloc_cols = {r["name"] for r in self._fetchall("PRAGMA table_info(teaching_allocations)")}
+        for col, ddl in (("co_teacher_id", "TEXT"), ("room_kind", "TEXT"),
+                         ("double_periods", "INTEGER NOT NULL DEFAULT 0")):
+            if col not in alloc_cols:
+                self._exec(f"ALTER TABLE teaching_allocations ADD COLUMN {col} {ddl}")
+        self._exec("CREATE INDEX IF NOT EXISTS idx_tt_co_teacher "
+                   "ON timetable_entries(co_teacher_id, day_of_week, period)")
 
     def _migrate_sections(self) -> None:
         """Give every grade that has no section its first one, and place
@@ -2101,9 +2114,13 @@ class CurriculumStore(SchoolModelMixin, CoverMixin):
     # ---------------- management reporting & variance (§17, §32) ----------------
 
     def get_coverage_report(self, *, school_id: str, academic_year_id: str,
-                            as_of_date: Optional[str] = None) -> dict[str, Any]:
+                            as_of_date: Optional[str] = None, from_date: Optional[str] = None,
+                            to_date: Optional[str] = None) -> dict[str, Any]:
         """Planned vs. actually-taught coverage, variance, and completion %
         aggregated by Subject and Chapter for school management (§17, §32).
+
+        `from_date`/`to_date` keep only the lessons dated in that span -- one
+        term's syllabus (the term report, N-67-6) rather than the year's.
 
         Only the subject's chosen edition counts (PRD 12.7). The review of
         fc279a4 ran this against a subject with an old and a new edition and
@@ -2135,6 +2152,7 @@ class CurriculumStore(SchoolModelMixin, CoverMixin):
             JOIN subjects s ON b.subject_id = s.id
             JOIN grades g ON s.grade_id = g.id
             WHERE l.school_id = ? AND l.academic_year_id = ?
+              AND (? IS NULL OR l.date >= ?) AND (? IS NULL OR l.date <= ?)
               AND (l.book_id = (SELECT sel.book_id FROM book_selections sel
                                  WHERE sel.academic_year_id = l.academic_year_id
                                    AND sel.subject_id = s.id)
@@ -2143,7 +2161,7 @@ class CurriculumStore(SchoolModelMixin, CoverMixin):
                                      AND sel.subject_id = s.id))
             ORDER BY g.number, s.name, ch.name, l.date
             """,
-            (school_id, academic_year_id),
+            (school_id, academic_year_id, from_date, from_date, to_date, to_date),
         )
 
         assignment_rows = self._fetchall(

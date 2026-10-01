@@ -9,10 +9,25 @@ from pathlib import Path
 from typing import Optional
 
 from ..storage.snapshot_sync import SnapshotSync
+from .automations import AUTOMATIONS_SCHEMA, AutomationsMixin
+from .exams import EXAMS_SCHEMA, ExamsMixin
+from .grants import GRANTS_SCHEMA, GrantsMixin
+from .calendar_feed import FEEDS_SCHEMA, FeedsMixin
+from .guardians import GUARDIANS_SCHEMA, GuardiansMixin
+from .homework_photos import PHOTOS_SCHEMA, PhotosMixin
+from .practice import PRACTICE_SCHEMA, PracticeMixin
+from .sign_in_codes import CODES_SCHEMA, CodesMixin
+from .homework import HOMEWORK_SCHEMA, HomeworkMixin
+from .learning import LEARNING_SCHEMA, LearningMixin
 from .notifications import NOTIFICATIONS_SCHEMA, NotificationsMixin
+from .paper_marks import MARKS_SCHEMA, MarksMixin
+from .paper_reviews import REVIEWS_SCHEMA, ReviewsMixin
+from .question_reviews import QUESTION_REVIEWS_SCHEMA, QuestionReviewsMixin
 
 
-class OperationsStore(NotificationsMixin):
+class OperationsStore(NotificationsMixin, HomeworkMixin, LearningMixin, GuardiansMixin, AutomationsMixin,
+                      ReviewsMixin, MarksMixin, ExamsMixin, GrantsMixin,
+                      FeedsMixin, PhotosMixin, PracticeMixin, CodesMixin, QuestionReviewsMixin):
     _SNAPSHOT_KEY = "operations.sqlite"
     _SNAPSHOT_DEBOUNCE_SECONDS = 20.0
 
@@ -36,7 +51,10 @@ class OperationsStore(NotificationsMixin):
 
     @classmethod
     def schema(cls) -> str:
-        return NOTIFICATIONS_SCHEMA
+        return (NOTIFICATIONS_SCHEMA + HOMEWORK_SCHEMA + LEARNING_SCHEMA + GUARDIANS_SCHEMA + AUTOMATIONS_SCHEMA
+                + REVIEWS_SCHEMA + MARKS_SCHEMA + EXAMS_SCHEMA + GRANTS_SCHEMA
+                + FEEDS_SCHEMA + PHOTOS_SCHEMA + PRACTICE_SCHEMA
+                + CODES_SCHEMA + QUESTION_REVIEWS_SCHEMA)
 
     def _exec(self, sql: str, params: tuple = ()) -> None:
         with self._conn_lock:

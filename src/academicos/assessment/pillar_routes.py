@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -23,7 +24,7 @@ from . import mailer as mailer_mod
 from . import remediation as remediation_mod
 from .authz import require_consent, require_own_school, require_school_owns_student
 from .authz import require_school_owns_assessment as _authz_require_school_owns_assessment
-from .auth_routes import get_current_user, require_principal, require_staff
+from .auth_routes import get_current_user, require_admin, require_principal, require_staff
 from .audit_log import AuditLog, get_audit_log, record_pii_read
 from .consent import ConsentStore, get_consent_store
 from .evaluate import Evaluation, evaluate_answer
@@ -45,7 +46,7 @@ from .schemas import (
 from .school_templates import TemplateStore
 from .store import AssessmentStore
 from .users import User, get_user_store
-from ..syllabus.cbse_syllabus import load_syllabus, taxonomy_chapters
+from ..syllabus.cbse_syllabus import SyllabusChapter, book_chapters, load_syllabus, taxonomy_chapters
 from ..syllabus.timetable import generate_timetable
 
 router = APIRouter(prefix="/api/v1")
@@ -70,6 +71,37 @@ def init(config: Config) -> None:
     # Same path routes.py's AssessmentStore uses -- read-only here (just the
     # school-ownership check below), routes.py remains the sole writer.
     _assessments = AssessmentStore(config.data_root / "assessments" / "assessments.sqlite")
+    _start_pool_warmup(config)
+
+
+def _start_pool_warmup(config: Config) -> None:
+    """Build every served question pool, and its catalog summary, in the
+    background after boot.
+
+    Pools are built on first use, and the first catalog call on a fresh
+    revision built them all inline: it took over 30 s and held the one
+    instance, which answered other callers "Rate exceeded" (production,
+    2026-10-01). Warming them as the revision starts puts that cost before
+    the first user. Skipped under pytest, which swaps banks per test, and
+    with ACOS_WARM_POOLS=0. A failure only means pools build on first use,
+    as before."""
+    import logging
+    import os
+    import threading
+
+    if "PYTEST_CURRENT_TEST" in os.environ or os.environ.get("ACOS_WARM_POOLS", "1") == "0":
+        return
+
+    def warm() -> None:
+        try:
+            for subject, grade in _catalog_scope(config):
+                pool = get_pool(config, subject=subject, grade=_int_grade_to_roman(grade))
+                if pool.questions:
+                    _pool_summary(pool)
+        except Exception:  # noqa: BLE001 - logged; pools then build on first use
+            logging.getLogger(__name__).warning("pool warm-up failed; pools build on first use", exc_info=True)
+
+    threading.Thread(target=warm, name="pool-warmup", daemon=True).start()
 
 
 def _require() -> tuple[Config, KnowledgeStore, TemplateStore]:
@@ -153,9 +185,11 @@ def _papers():
     raise HTTPException(503, "pillar module not initialized")
 
 
-def _pool_questions(subject: str, grade: str) -> list[QuestionSchema]:
+def _pool_questions(subject: str, grade: str, school_id: Optional[str] = None) -> list[QuestionSchema]:
+    """The class's questions less those `school_id`'s reviewers rejected."""
+    from ..operations.question_reviews import usable
     cfg, _, _ = _require()
-    return [to_question_schema(q) for q in get_pool(cfg, subject=subject, grade=grade).questions]
+    return [to_question_schema(q) for q in usable(get_pool(cfg, subject=subject, grade=grade).questions, school_id)]
 
 
 # ---------------- Pillar 1: templates + marking ----------------
@@ -285,15 +319,33 @@ def _catalog_scope(cfg) -> list[tuple[str, int]]:
     it from the bank still keeps the catalog from probing hundreds of empty
     (subject, grade) pairs on every request.
     """
-    from .pool import _baked_bank_paths
+    from .pool import _baked_bank_paths, _baked_records
 
     for path in _baked_bank_paths(cfg):
         if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
+            # The pools' own parsed copy: reading the 14.6 MB file here cost
+            # every catalog call ~0.6 s (production, 2026-10-01).
             pairs = {(q.get("subject", ""), grades.to_int(q.get("grade")))
-                     for q in data.get("questions", [])}
+                     for q in _baked_records(path)}
             return sorted((s, g) for s, g in pairs if s and g)
     return []
+
+
+def _pool_summary(pool) -> tuple[int, int, list[int]]:
+    """(questions, chapters, marks available) for the catalog, worked out
+    once per pool and kept on it, so a rebuilt pool is summarised afresh.
+
+    Converting every question on every call took about 1 s of CPU, and on
+    the one-CPU release a burst of catalog calls starved every other request:
+    240 public reads at 24 at a time gave a median of 7.5 s and a 30 s
+    timeout, /health included (production, 2026-10-01)."""
+    cached = getattr(pool, "_catalog_summary", None)
+    if cached is None:
+        schemas = [to_question_schema(q) for q in pool.questions]
+        cached = (len(schemas), len({c for q in schemas for c in q.chapter_ids}),
+                  sorted({q.marks for q in schemas}))
+        pool._catalog_summary = cached
+    return cached
 
 
 @router.get("/catalog", response_model=CatalogResponse)
@@ -310,14 +362,12 @@ def catalog(response: Response) -> CatalogResponse:
         pool = get_pool(cfg, subject=subject, grade=_int_grade_to_roman(grade))
         if not pool.questions:
             continue
-        schemas = [to_question_schema(q) for q in pool.questions]
-        chapters = {c for q in schemas for c in q.chapter_ids}
+        count, chapters, marks = _pool_summary(pool)
         entries.append(CatalogEntry(
-            subject=subject, grade=grade, question_count=len(schemas),
-            chapters=len(chapters),
-            marks_available=sorted({q.marks for q in schemas}),
+            subject=subject, grade=grade, question_count=count,
+            chapters=chapters, marks_available=marks,
         ))
-        total += len(schemas)
+        total += count
     entries.sort(key=lambda e: (e.grade, -e.question_count))
     response.headers["Cache-Control"] = "public, max-age=300"
     return CatalogResponse(entries=entries, total_questions=total)
@@ -330,7 +380,8 @@ def _name_key(name: str) -> str:
     Refraction")."""
     name = (name.replace("–", "-").replace("—", "-")
                 .replace("’", "'").replace("…", ""))
-    return re.sub(r"[^a-z0-9]", "", name.lower())
+    # Any script's letters, as chapter_filing.name_key (the two stay equal).
+    return "".join(ch for ch in unicodedata.normalize("NFC", name).lower() if unicodedata.category(ch)[0] in "LMN")
 
 
 def _chapter_of(q: QuestionSchema, known: set[str], by_name: dict[str, str],
@@ -356,7 +407,7 @@ def _chapter_of(q: QuestionSchema, known: set[str], by_name: dict[str, str],
     if tid:
         if not known or tid in known:
             return tid
-        twin = by_name.get(_name_key(book_names.get(tid, "")))
+        twin = by_name.get(_name_key(book_names.get(tid, ""))) if book_names.get(tid) else None
         if twin:
             return twin
     for cid in q.chapter_ids:
@@ -377,6 +428,12 @@ def catalog_chapters(subject: str, grade: int, response: Response) -> list[Chapt
     # silently hidden behind an "unmapped" bucket.
     syllabus = load_syllabus(subject, grade)
     chapters = syllabus.all_chapters() if syllabus is not None else []
+    # The current NCERT book's chapters the file does not list (a new edition,
+    # or a language file that lists CBSE assessment units), in book order;
+    # chapter_filing.ChapterFiling.for_class reads the same.
+    listed = {chapter.id for _unit, chapter in chapters}
+    chapters = chapters + [(None, SyllabusChapter(id=c["id"], name=c["name"]))
+                           for c in book_chapters(subject, grade) if c["id"] not in listed]
     known = {chapter.id for _unit, chapter in chapters}
     # The syllabus chapter that a taxonomy tag belongs to, by the name the
     # book prints. Only Science 6 and Science 10 need it: their files list the
@@ -385,8 +442,12 @@ def catalog_chapters(subject: str, grade: int, response: Response) -> list[Chapt
     # and the taxonomy read different editions no name matches, and the tag
     # falls through to "unmapped" instead of being filed under a chapter of a
     # book the class does not study.
-    by_name = {_name_key(chapter.name): chapter.id for _unit, chapter in chapters}
-    book_names = taxonomy_chapters(subject, grade)
+    # A syllabus name wins over the book's, as in ChapterFiling.for_class.
+    by_name = {_name_key(c["name"]): c["id"] for c in book_chapters(subject, grade)}
+    by_name.update({_name_key(chapter.name): chapter.id for _unit, chapter in chapters if chapter.id in listed})
+    by_name.pop("", None)
+    book_names = {**{c["id"]: c["name"] for c in book_chapters(subject, grade)},
+                  **taxonomy_chapters(subject, grade)}
 
     by_chapter: dict[str, list[QuestionSchema]] = {}
     for q in schemas:
@@ -965,7 +1026,11 @@ def student_progress_report(student_id: str, student_name: str = "Student",
     if not views:
         raise HTTPException(404, f"no graded answers recorded for {student_id}")
     _log_read(current, "progress_report", student_id=student_id)
-    template = TemplateStore(cfg.data_root / "templates" / "templates.sqlite").default_for("school_1")
+    # The caller's own school's branding and name; this read "school_1" for
+    # every school, so another school's report printed school_1's.
+    from ..curriculum.school_profile import branding_for_school
+    template = branding_for_school(
+        current.school_id, TemplateStore(cfg.data_root / "templates" / "templates.sqlite").default_for(current.school_id))
     path = report_pdf.export_progress_report_pdf(
         student_name, student_id, subject, views, cfg.data_root / "exports", template=template)
     return FileResponse(str(path), media_type="application/pdf", filename=path.name)
@@ -1014,7 +1079,7 @@ def generate_practice(req: PracticeRequestBody, current: User = Depends(get_curr
     weak = knowledge.weak_concepts(req.student_id, limit=3)
     if not weak:
         raise HTTPException(400, "No weak concepts for this student — nothing to remediate yet.")
-    pool = _pool_questions(req.subject, req.grade)
+    pool = _pool_questions(req.subject, req.grade, current.school_id)
     pset = remediation_mod.build_practice_set(
         req.student_id, weak, pool, per_concept=req.per_concept,
         answer_key=req.correct_options)
@@ -1149,15 +1214,40 @@ class SchoolInsightsResponse(Camel):
 
 
 @router.get("/insights/school/{school_id}", response_model=SchoolInsightsResponse)
-def school_report(school_id: str, principal: User = Depends(require_principal)) -> SchoolInsightsResponse:
+def school_report(school_id: str, principal: User = Depends(require_admin("reports"))) -> SchoolInsightsResponse:
     require_own_school(school_id, principal)
-    cfg, knowledge, _ = _require()
+    _, knowledge, _ = _require()
     graded = _require_graded()
-    student_ids = sorted(graded.all_student_ids())
-    if not student_ids:
-        student_ids = [p.stem for p in (cfg.data_root / "knowledge").glob("*.json")]
-    si = insights_mod.school_insights(school_id, knowledge, student_ids,
-                                      assessments=graded.assessment_count())
+    if _assessments is None:
+        raise HTTPException(503, "pillar module not initialized")
+    # Only this school's papers, and only the sheets graded on them: the
+    # graded store and the learner models hold every school's students.
+    evidence: dict[tuple[str, int], insights_mod.ClassEvidence] = {}
+    graded_papers = 0
+    from .marks_routes import chapters_by_student_from_marks
+    typed = chapters_by_student_from_marks(school_id)
+    for a in _assessments.list_by_school(school_id):
+        sheets = graded.chapters_by_student(a.id)
+        for sid, chapters in typed.get(a.id, {}).items():
+            sheets.setdefault(sid, set()).update(chapters)
+        if not sheets:
+            continue
+        graded_papers += 1
+        group = evidence.get((a.subject, a.grade))
+        if group is None:
+            syllabus = load_syllabus(a.subject, a.grade)
+            chapters = [c for _, c in syllabus.all_chapters()] if syllabus else []
+            names = {**taxonomy_chapters(a.subject, a.grade),
+                     **{c["id"]: c["name"] for c in book_chapters(a.subject, a.grade)},
+                     **{c.id: c.name for c in chapters}}
+            group = evidence[(a.subject, a.grade)] = insights_mod.ClassEvidence(
+                subject=a.subject, grade=a.grade, students=set(), concepts=set(),
+                total_chapters=len(chapters), names=names)
+        group.students.update(sheets)
+        for concepts in sheets.values():
+            group.concepts.update(concepts)
+    si = insights_mod.school_insights(school_id, knowledge, list(evidence.values()),
+                                      assessments=graded_papers)
     return SchoolInsightsResponse(
         school_id=si.school_id, students=si.students, assessments=si.assessments,
         average_mastery=si.average_mastery,

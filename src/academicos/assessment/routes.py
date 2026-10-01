@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -12,7 +13,6 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
 from typing import get_args
 
 from ..config import Config
@@ -24,7 +24,7 @@ from .authz import (
     require_own_school, require_own_subtopics, require_school_owns_assessment,
     require_school_owns_paper,
 )
-from .auth_routes import get_current_user, require_principal, require_staff
+from .auth_routes import get_current_user, require_admin, require_principal, require_staff
 from .competency import CBSE_COMPETENCY_TARGET
 from .users import User, get_user_store
 from .mapping import grade_to_int, to_question_schema
@@ -52,6 +52,7 @@ from .schemas import (
     SchoolTemplate,
     SectionBlueprint,
 )
+from ..operations.question_reviews import usable
 from .paper_store import PaperStore
 from .store import AssessmentStore
 from .templates import (
@@ -99,6 +100,36 @@ def _require_editable(assessment: Assessment) -> None:
             f"assessment {assessment.id} is {assessment.status} — the paper is locked; "
             "question selection and paper content cannot be changed after principal approval",
         )
+    if assessment.status == "underReview":
+        # The reviewer's decision has to be about the paper they read.
+        raise HTTPException(
+            409,
+            f"assessment {assessment.id} is under review — its questions cannot change until "
+            "the reviewer sends it back for changes",
+        )
+
+
+def _require_status_change(old: str, new: str) -> None:
+    """The lifecycle moves that PATCH /status and PUT may make. Review is
+    entered and left only through the review request and the reviewer's
+    decision (paper_review_routes), and a paper leaves authoring only through
+    the principal's approval (PATCH /approve), which is audited."""
+    if new == old:
+        return
+    if new not in _KNOWN_STATUSES:
+        raise HTTPException(
+            422, f"unknown status {new!r}; expected one of {sorted(_KNOWN_STATUSES)}")
+    if "underReview" in (old, new):
+        raise HTTPException(
+            409, "a paper goes under review by asking a reviewer, and leaves it by the "
+                 "reviewer's decision or the principal's approval")
+    if old in _EDITABLE_STATUSES and new not in _EDITABLE_STATUSES:
+        raise HTTPException(
+            403, f"only the principal's approval moves a paper from {old} to {new}")
+    if old not in _EDITABLE_STATUSES and new in _EDITABLE_STATUSES:
+        raise HTTPException(
+            409, f"the paper is {old} — its status cannot move back to an editable state "
+                 "after principal approval")
 
 
 def init(config: Config) -> None:
@@ -207,7 +238,8 @@ def search_questions(params: QuestionSearchParams,
         require_own_subtopics(curriculum, params.subtopic_ids, current)
     grade_roman = _int_grade_to_roman(params.grade)
     pool = get_pool(cfg, subject=params.subject, grade=grade_roman)
-    candidates = pool.filter(subject=params.subject, grade=grade_roman, chapter_ids=params.chapter_ids)
+    candidates = usable(pool.filter(subject=params.subject, grade=grade_roman, chapter_ids=params.chapter_ids),
+                        current.school_id)
     schemas = [to_question_schema(c) for c in candidates]
 
     if curriculum is not None:
@@ -258,7 +290,8 @@ def optimize_questions(request: QuestionOptimizationRequest,
         subject = request.candidates[0].subject
         grade_roman = _int_grade_to_roman(request.candidates[0].grade)
         pool = get_pool(cfg, subject=subject, grade=grade_roman)
-        fallback = [to_question_schema(c) for c in pool.filter(subject=subject, grade=grade_roman)]
+        fallback = [to_question_schema(c) for c in usable(pool.filter(subject=subject, grade=grade_roman),
+                                                          current.school_id)]
     return selection.optimize(request.candidates, request.blueprint, fallback_candidates=fallback)
 
 
@@ -394,8 +427,8 @@ def generate_paper_endpoint(
         grade_roman = _int_grade_to_roman(grade)
         chapters = assessment.chapter_ids if assessment else []
         alternatives = [to_question_schema(c) for c in
-                        get_pool(cfg, subject=subject, grade=grade_roman).filter(
-                            chapter_ids=chapters or None)]
+                        usable(get_pool(cfg, subject=subject, grade=grade_roman).filter(
+                            chapter_ids=chapters or None), current.school_id)]
     paper = generate_paper_sets(
         paper_id=f"paper_{uuid.uuid4().hex[:12]}",
         assessment_id=request.assessment_id,
@@ -467,10 +500,11 @@ def quick_generate_paper(request: QuickPaperRequest, current: User = Depends(req
     target_chapters = request.chapter_ids or []
     chapter_candidates = []
     if target_chapters:
-        p_cands = pool.filter(subject=subject, grade=grade_roman, chapter_ids=target_chapters)
+        p_cands = usable(pool.filter(subject=subject, grade=grade_roman, chapter_ids=target_chapters),
+                         current.school_id)
         chapter_candidates = [to_question_schema(c) for c in p_cands]
 
-    all_pool_questions = [to_question_schema(c) for c in pool.questions]
+    all_pool_questions = [to_question_schema(c) for c in usable(pool.questions, current.school_id)]
     candidates = chapter_candidates if chapter_candidates else all_pool_questions
     fallback = all_pool_questions if chapter_candidates else None
 
@@ -582,8 +616,15 @@ def generate_from_ids(request: GenerateFromIdsRequest, current: User = Depends(r
 
     grade_roman = _int_grade_to_roman(request.grade)
     pool = get_pool(cfg, subject=request.subject, grade=grade_roman)
-    all_pool_questions = [to_question_schema(c) for c in pool.questions]
+    all_pool_questions = [to_question_schema(c) for c in usable(pool.questions, current.school_id)]
     by_id = {q.id: q for q in all_pool_questions}
+    # A hand-picked question the school's reviewers rejected is refused by
+    # name, as homework does, never dropped from the paper without a word.
+    known = {q.id for q in pool.questions}
+    refused = [qid for qid in request.question_ids if qid in known and qid not in by_id]
+    if refused:
+        raise HTTPException(422, "your school's reviewers rejected the answer to "
+                                 + ", ".join(refused[:5]) + "; choose another question")
     found_questions: list[QuestionSchema] = [by_id[qid] for qid in request.question_ids if qid in by_id]
 
     if not found_questions:
@@ -701,7 +742,7 @@ def generate_from_ids(request: GenerateFromIdsRequest, current: User = Depends(r
 
 @router.get("/paper-timing")
 def get_paper_timing(term_id: Optional[str] = Query(None, alias="termId"),
-                     current: User = Depends(require_principal)) -> dict:
+                     current: User = Depends(require_admin("reports"))) -> dict:
     """Time saved and exam coverage, for one term -- the renewal criterion and
     the principal's first dashboard metric, made answerable.
 
@@ -743,11 +784,11 @@ def get_paper_timing(term_id: Optional[str] = Query(None, alias="termId"),
         if term.manual_baseline_minutes is not None:
             baseline = (float(term.manual_baseline_minutes),
                         f"set by the principal for {term.name}")
-        # The classes 6-10 the school declared for the term's year, and their
+        # The classes 1-10 (requirements v3) the school declared for the term's year, and their
         # subjects: what "not yet" is measured against.
         universe = [(g.number, s.name)
                     for g in curriculum.grades_for_year(term.academic_year_id)
-                    if 6 <= g.number <= 10
+                    if 1 <= g.number <= 10
                     for s in curriculum.subjects_for_grade(g.id)]
     rep = paper_timing.report(
         cfg.data_root, school_id=current.school_id, attribute=attribute, baseline=baseline,
@@ -776,12 +817,20 @@ def get_paper(paper_id: str, current: User = Depends(require_staff)) -> Generate
     return require_school_owns_paper(_require_papers(), store, paper_id, current)
 
 
+_SERVER_PATH = re.compile(r"(?:[A-Za-z]:)?(?:[\\/]+[^\\/\s'\"\]]+){2,}")
+
+
+def _render_cause(exc: Exception) -> str:
+    """The renderer's reason, for the teacher, without this server's file
+    paths (a broken logo's message named the container's data directory)."""
+    return _SERVER_PATH.sub("<file>", str(exc)).strip() or type(exc).__name__
+
 @router.post("/papers/{paper_id}/export/{fmt}")
 def export_paper(paper_id: str, fmt: str, current: User = Depends(require_staff)) -> dict:
     cfg, store = _require()
     paper = require_school_owns_paper(_require_papers(), store, paper_id, current)
-    if fmt not in ("pdf", "answer-key", "answer_key", "answerKey"):
-        raise HTTPException(400, "only pdf and answer-key exports are supported currently")
+    if fmt not in ("pdf", "docx", "answer-key", "answer_key", "answerKey"):
+        raise HTTPException(400, "exports are pdf, docx (an editable Word file) and answer-key")
     out_dir = cfg.artifacts_dir / "papers"
     template = _require_papers().get_template(paper_id)
     if template is None:
@@ -796,6 +845,9 @@ def export_paper(paper_id: str, fmt: str, current: User = Depends(require_staff)
         t_store = TemplateStore(cfg.data_root / "templates" / "templates.sqlite")
         configured = t_store.default_for(owner.school_id) if owner is not None else None
         template = configured if configured is not None and configured.id != "default" else None
+    # The school's own name and logo over the branding (EX-5, audit D41).
+    from ..curriculum.school_profile import branding_for_school
+    template = branding_for_school(current.school_id, template)
     # Every export gets a unique, audit-logged watermark ID stamped into the
     # footer -- if a printed/exported copy of an unreleased paper leaks, it's
     # traceable to exactly which export request produced it, not just "the
@@ -803,41 +855,73 @@ def export_paper(paper_id: str, fmt: str, current: User = Depends(require_staff)
     # _page_furniture docstring and docs/compliance.md's paper-release-
     # locking checklist item.
     watermark_id = f"exp_{uuid.uuid4().hex[:10]}"
+    # Each export renders into its own directory and is then published as the
+    # paper's latest copy (export_files): two exports at once tore downloads.
+    from . import export_files
+    papers_dir, out_dir = out_dir, export_files.run_dir(out_dir, watermark_id)
+    export_files.sweep(papers_dir)
     # A render failure is the paper's content, not the server: say so with a
     # 422 naming the cause instead of a bare 500 (ReportLab raises
     # LayoutError/IndexError/ValueError on content it cannot lay out).
     if fmt in ("answer-key", "answer_key", "answerKey"):
         try:
-            path = pdf_export.export_answer_key_pdf(paper, out_dir, template=template)
+            path = pdf_export.export_answer_key_pdf(paper, out_dir, template=template,
+                                                    watermark_id=watermark_id)
         except Exception as exc:
             log.exception("answer key for paper %s failed to render", paper_id)
-            raise HTTPException(422, f"this answer key could not be rendered: {exc}") from exc
+            raise HTTPException(422, f"this answer key could not be rendered: {_render_cause(exc)}") from exc
+        export_files.publish(papers_dir, path)
         get_audit_log(cfg.data_root).append(
-            "answer_key_exported", assessment_id=paper.assessment_id,
+            "answer_key_exported", assessment_id=paper.assessment_id, actor=current.id,
             details={"paperId": paper_id, "format": fmt, "file": path.name, "watermarkId": watermark_id},
         )
-        return {"url": f"/api/v1/papers/{paper_id}/file?format=answer-key", "watermarkId": watermark_id}
+        return {"url": f"/api/v1/papers/{paper_id}/file?format=answer-key&export={watermark_id}",
+                "watermarkId": watermark_id}
     try:
-        path = pdf_export.export_pdf(paper, out_dir, template=template, watermark_id=watermark_id)
+        if fmt == "docx":
+            from . import docx_export
+            path = docx_export.export_docx(paper, out_dir, template=template, watermark_id=watermark_id)
+        else:
+            path = pdf_export.export_pdf(paper, out_dir, template=template, watermark_id=watermark_id)
     except Exception as exc:
         log.exception("paper %s failed to render", paper_id)
-        raise HTTPException(422, f"this paper could not be rendered: {exc}") from exc
+        raise HTTPException(422, f"this paper could not be rendered: {_render_cause(exc)}") from exc
+    export_files.publish(papers_dir, path)
     get_audit_log(cfg.data_root).append(
-        "paper_exported", assessment_id=paper.assessment_id,
+        "paper_exported", assessment_id=paper.assessment_id, actor=current.id,
         details={"paperId": paper_id, "format": fmt, "watermarkId": watermark_id},
     )
-    return {"url": f"/api/v1/papers/{paper_id}/file", "watermarkId": watermark_id}
+    query = f"format=docx&export={watermark_id}" if fmt == "docx" else f"export={watermark_id}"
+    return {"url": f"/api/v1/papers/{paper_id}/file?{query}", "watermarkId": watermark_id}
 
 
 @router.get("/papers/{paper_id}/file")
-def get_paper_file(paper_id: str, format: str = "pdf", current: User = Depends(require_staff)):
+def get_paper_file(paper_id: str, format: str = "pdf", export: Optional[str] = None,
+                   current: User = Depends(require_staff)):
+    """The exported file: with `export` (the id an export returned), exactly
+    that export's file; without, the paper's latest export."""
+    from fastapi.responses import Response
+    from . import export_files
     cfg, store = _require()
     require_school_owns_paper(_require_papers(), store, paper_id, current)
-    suffix = "_answer_key.pdf" if format in ("answer-key", "answer_key") else ".pdf"
-    path = cfg.artifacts_dir / "papers" / f"{paper_id}{suffix}"
+    fmt = "answer-key" if format in ("answer-key", "answer_key") else "docx" if format == "docx" else "pdf"
+    if export is not None and not export_files.EXPORT_ID.match(export):
+        raise HTTPException(422, "export is the id an export returned (exp_ and 10 hex digits)")
+    path = export_files.exported_file(cfg.artifacts_dir / "papers", paper_id, fmt, export)
     if not path.exists():
-        raise HTTPException(404, "pdf not generated yet")
-    return FileResponse(str(path), media_type="application/pdf", filename=f"{paper_id}{suffix}")
+        raise HTTPException(404, "that export has expired; export the paper again" if export
+                            else f"{'docx' if fmt == 'docx' else 'pdf'} not generated yet")
+    data = export_files.read_whole(path)
+    paper = _require_papers().get(paper_id)
+    get_audit_log(cfg.data_root).append(
+        "paper_downloaded", assessment_id=paper.assessment_id if paper else None, actor=current.id,
+        details={"paperId": paper_id, "format": format, "schoolId": current.school_id,
+                 **({"watermarkId": export} if export else {})},
+    )
+    media = ("application/vnd.openxmlformats-officedocument.wordprocessingml.document" if fmt == "docx"
+             else "application/pdf")
+    return Response(content=data, media_type=media,
+                    headers={"Content-Disposition": f'attachment; filename="{path.name}"'})
 
 
 # ---- Assessments ----
@@ -928,11 +1012,19 @@ def update_assessment(
         if existing.school_id != current.school_id:
             raise HTTPException(403, "this assessment belongs to a different school")
         _require_editable(existing)
+        _require_status_change(existing.status, assessment.status)
+        # Authorship is not an editable field: it decides who may ask for a
+        # review, delete the paper, and whom a reviewer's decision reaches.
+        assessment.teacher_id = existing.teacher_id
     elif assessment.school_id != current.school_id:
         # No pre-existing row to check ownership against (first PUT acting as
         # create) -- the body must still claim the caller's own school, same
         # rule as POST /assessments, not an arbitrary one.
         raise HTTPException(403, "cannot create an assessment for a different school")
+    elif assessment.status not in _EDITABLE_STATUSES or assessment.status == "underReview":
+        raise HTTPException(
+            403, f"a new paper cannot start as {assessment.status}; approval and review "
+                 "have their own actions")
     assessment.id = assessment_id
     assessment.school_id = current.school_id
     assessment.updated_at = _now()
@@ -943,31 +1035,38 @@ def update_assessment(
 
 @router.delete("/assessments/{assessment_id}")
 def delete_assessment(assessment_id: str, current: User = Depends(require_staff)) -> dict:
-    _, store = _require()
-    require_school_owns_assessment(store, assessment_id, current)
+    cfg, store = _require()
+    a = require_school_owns_assessment(store, assessment_id, current)
+    if current.role != "principal" and a.teacher_id != current.id:
+        raise HTTPException(403, "only the paper's author or the principal deletes it")
+    if a.status not in _EDITABLE_STATUSES or a.status == "underReview":
+        raise HTTPException(
+            409, f"a {a.status} paper cannot be deleted: an approved paper is the record "
+                 "of what was set, and a paper under review is the reviewer's to decide")
     store.delete(assessment_id)
+    get_audit_log(cfg.data_root).append(
+        "assessment_deleted", assessment_id=assessment_id, actor=current.id,
+        details={"title": a.title, "status": a.status, "authorId": a.teacher_id},
+    )
     return {"ok": True}
 
 
 @router.patch("/assessments/{assessment_id}/status", response_model=Assessment)
 def update_status(assessment_id: str, body: dict, current: User = Depends(require_staff)) -> Assessment:
-    _, store = _require()
+    cfg, store = _require()
     a = require_school_owns_assessment(store, assessment_id, current)
     new_status = body.get("status", a.status)
-    if new_status not in _KNOWN_STATUSES:
-        raise HTTPException(
-            422,
-            f"unknown status {new_status!r}; expected one of {sorted(_KNOWN_STATUSES)}",
-        )
-    if a.status not in _EDITABLE_STATUSES and new_status in _EDITABLE_STATUSES:
-        raise HTTPException(
-            409,
-            f"assessment {assessment_id} is {a.status} — its status cannot move back to "
-            "an editable state after principal approval",
-        )
+    _require_status_change(a.status, new_status)
+    if new_status == a.status:
+        return a
+    before = a.status
     a.status = new_status
     a.updated_at = _now()
     store.save(a)
+    get_audit_log(cfg.data_root).append(
+        "assessment_status_changed", assessment_id=assessment_id, actor=current.id,
+        details={"before": before, "after": new_status},
+    )
     return a
 
 
@@ -979,13 +1078,21 @@ def update_status(assessment_id: str, body: dict, current: User = Depends(requir
 # users.py's "first registrant per school" bootstrap rule) rather than a
 # bare status PATCH anyone could call.
 @router.patch("/assessments/{assessment_id}/approve", response_model=Assessment)
-def approve_assessment(assessment_id: str, principal: User = Depends(require_principal)) -> Assessment:
+def approve_assessment(assessment_id: str, principal: User = Depends(require_admin("exams"))) -> Assessment:
     cfg, store = _require()
     a = store.get(assessment_id)
     if a is None:
         raise HTTPException(404, "assessment not found")
     if a.school_id != principal.school_id:
         raise HTTPException(403, "this assessment belongs to a different school")
+    if a.status == "principalApproved":
+        return a
+    if a.teacher_id == principal.id and principal.role != "principal":
+        # An exams admin is a teacher too: their own paper needs someone else.
+        raise HTTPException(403, "you cannot approve your own paper; ask the principal")
+    if a.status not in _EDITABLE_STATUSES:
+        # Re-approving a printed or conducted paper would wind its lifecycle back.
+        raise HTTPException(409, f"a {a.status} paper was approved already")
     a.status = "principalApproved"
     a.updated_at = _now()
     store.save(a)

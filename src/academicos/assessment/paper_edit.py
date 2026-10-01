@@ -62,12 +62,14 @@ from .competency import CBSE_COMPETENCY_TARGET, below_target, is_competency_ques
     share_summary
 from .mapping import to_question_schema
 from .paper import answer_key_entry, competency_counts, generated_question, \
-    or_answer_key_entry, render_text, report_competency
+    or_answer_key_entry, reletter, render_text, report_competency, restate_set_repeats
 from .paper_templates import ScopeFilter, _all_competency, _content_fits, _fits, \
     build_scope_filter, has_verified_key
 from .pool import QuestionPool, get_pool, near_duplicate
 from .schemas import Camel, GeneratedPaper, GeneratedQuestionSchema, GeneratedSectionSchema, \
     QuestionSchema, TemplateScope, TemplateSection
+from .template_presets import instructions_for_paper, reads_as_generated, section_attempts, \
+    section_title
 
 RECENT_PAPERS = 5
 
@@ -247,7 +249,11 @@ class Choice:
 
 
 def choose_swap(slot: Slot, rule: SlotRule, bank: Bank, printed: list[Printed],
-                removed: set[str], recent: set[str]) -> Choice:
+                removed: set[str], recent: set[str],
+                other_sets: frozenset[str] | set[str] = frozenset()) -> Choice:
+    """The next best question for `slot`. `other_sets`: questions the
+    paper's other sets print -- taken only when nothing else fits, so a swap
+    does not make two parallel sets share a question, and said in a note."""
     others = [p for p in printed if p.key != slot.key]
     on_paper = {p.id for p in printed}
     target = bank.by_id.get(slot.question_id)
@@ -294,9 +300,12 @@ def choose_swap(slot: Slot, rule: SlotRule, bank: Bank, printed: list[Printed],
                        + _no_alternative_reason(section, counts),
             "counts": counts.model_dump(by_alias=True)})
     inside, best = min(usable, key=lambda iq: (
-        not iq[0], iq[1].id in recent, iq[1].difficulty != difficulty,
+        not iq[0], iq[1].id in other_sets, iq[1].id in recent, iq[1].difficulty != difficulty,
         -iq[1].quality_score, iq[1].id))
     notes = []
+    if best.id in other_sets:
+        notes.append(f"{slot.label}: {best.id} is also printed on another set of this paper -- "
+                     "no other question in the paper's chapters fits this slot.")
     if best.id in recent:
         notes.append(f"{slot.label}: {best.id} is on one of your recent papers (your last "
                      f"{RECENT_PAPERS} for this class and subject) -- no other question "
@@ -327,6 +336,7 @@ def _no_alternative_reason(section: TemplateSection, c: SwapCounts) -> str:
 
 def check_pick(slot: Slot, rule: SlotRule, bank: Bank, question_id: str,
                printed: list[Printed], recent: set[str], *, grade: int, subject: str,
+               other_sets: frozenset[str] | set[str] = frozenset(),
                ) -> Choice:
     q = bank.by_id.get(question_id)
     if q is None:
@@ -360,6 +370,8 @@ def check_pick(slot: Slot, rule: SlotRule, bank: Bank, question_id: str,
     if question_id in recent:
         notes.append(f"{slot.label}: {question_id} is on one of your recent papers (your "
                      f"last {RECENT_PAPERS} for this class and subject).")
+    if question_id in other_sets:
+        notes.append(f"{slot.label}: {question_id} is also printed on another set of this paper.")
     return Choice(q, notes)
 
 
@@ -444,7 +456,7 @@ def replace_question(paper: GeneratedPaper, old_id: str, new: QuestionSchema, *,
         "sections": sections, "answer_key": answer_key,
         "sets": [replace_question(s, old_id, new, target=target) for s in paper.sets]})
     edited.formatted_content = render_text(edited)
-    return _restamped(edited, target)
+    return _restamped(restate_set_repeats(_with_instructions(edited)), target)
 
 
 # ---- removing
@@ -456,30 +468,75 @@ def printed_numbers(paper: GeneratedPaper) -> list[int]:
 _KEY_RE = re.compile(r"^(\d+)(_OR)?$")
 
 
+Position = tuple[str, int]      # (section id, index of the question in it)
+
+
+def slot_position(slot: Slot) -> Position:
+    """Where `slot`'s question sits: its section and its place in it."""
+    index = next(i for i, q in enumerate(slot.section.questions)
+                 if q.display_number == slot.question.display_number)
+    return slot.section.section_id, index
+
+
+def _prints(paper: GeneratedPaper, question_id: Optional[str]) -> bool:
+    return bool(question_id) and any(
+        question_id in (q.question_id, q.internal_choice_question_id)
+        for s in paper.sections for q in s.questions)
+
+
+def _at(paper: GeneratedPaper, position: Optional[Position]) -> Optional[GeneratedQuestionSchema]:
+    if position is None:
+        return None
+    section_id, index = position
+    section = next((s for s in paper.sections if s.section_id == section_id), None)
+    if section is None or index >= len(section.questions):
+        return None
+    return section.questions[index]
+
+
 def drop_question(paper: GeneratedPaper, question_id: str, *,
+                  position: Optional[Position] = None,
                   target: Optional[float] = None) -> GeneratedPaper:
     """The printed question whose compulsory or OR id is `question_id` taken
-    off, with its alternative, from the paper and each of its sets (a set
-    rotates questions and turns OR pairs round, so it is found by id, not
-    number). What follows is renumbered from 1 with no hole -- a printed
-    paper that jumps from Q6 to Q8 reads as a misprint -- and the answer key
-    moves with the numbers. A section left with no question is not printed;
-    the section's and the paper's marks, and its competency share against
-    `target`, are recounted."""
+    off, with its alternative, from the paper and each of its sets. What
+    follows is renumbered from 1 with no hole -- a printed paper that jumps
+    from Q6 to Q8 reads as a misprint -- and the answer key moves with the
+    numbers. A section left with no question is not printed; the section's
+    and the paper's marks, and its competency share against `target`, are
+    recounted.
+
+    A set that prints the question (a rotated set, which turns OR pairs
+    round, or a set that repeats it) loses it wherever it sits. A set that
+    prints its own questions (builder and quick-generate sets B, C) loses
+    the question at the same `position` -- the same section, the same place
+    in it -- so the sets stay the same paper in shape."""
+    if not _prints(paper, question_id):
+        here = _at(paper, position)
+        return _dropped(paper, here.question_id if here is not None else None,
+                        position=position, question_id=question_id, target=target)
+    return _dropped(paper, question_id, position=position, question_id=question_id,
+                    target=target)
+
+
+def _dropped(paper: GeneratedPaper, drop_id: Optional[str], *, position: Optional[Position],
+             question_id: str, target: Optional[float]) -> GeneratedPaper:
     numbers: dict[int, int] = {}
     sections = []
     n = 0
     for section in paper.sections:
         questions = []
         for gq in section.questions:
-            if question_id in (gq.question_id, gq.internal_choice_question_id):
+            if drop_id is not None and drop_id in (gq.question_id, gq.internal_choice_question_id):
                 continue
             n += 1
             numbers[gq.display_number] = n
             questions.append(gq.model_copy(update={"display_number": n}))
         if questions:
-            sections.append(section.model_copy(update={
-                "questions": questions, "total_marks": sum(q.marks for q in questions)}))
+            sections.append(_section_after_removal(section, questions))
+    if len(sections) < len(paper.sections):
+        # A section gone: the ones after it move up a letter, as generation
+        # letters a paper with an empty section (audit D44).
+        sections = reletter(sections)
     answer_key = {}
     for key, value in paper.answer_key.items():
         m = _KEY_RE.match(key)
@@ -491,19 +548,65 @@ def drop_question(paper: GeneratedPaper, question_id: str, *,
         "sections": sections, "answer_key": answer_key,
         "metadata": paper.metadata.model_copy(update={
             "total_marks": sum(s.total_marks for s in sections)}),
-        "sets": [drop_question(s, question_id, target=target) for s in paper.sets]})
+        "sets": [drop_question(s, question_id, position=position, target=target)
+                 for s in paper.sets]})
     edited.formatted_content = render_text(edited)
-    return _restamped(edited, target)
+    return _restamped(restate_set_repeats(_with_instructions(edited)), target)
+
+
+def _section_after_removal(section: GeneratedSectionSchema,
+                           questions: list[GeneratedQuestionSchema]) -> GeneratedSectionSchema:
+    """`section` holding `questions`, what is left of it. An "attempt any N"
+    section keeps N while it prints more than N (the student still answers
+    N, so its marks do not drop) and says "attempt any N of" the questions
+    it now prints; every other section loses the removed question's marks."""
+    attempts = min(section_attempts(section), len(questions))
+    marks = {q.marks for q in questions}
+    total = attempts * next(iter(marks)) if len(marks) == 1 else sum(q.marks for q in questions)
+    name = section_title(section.name)
+    if attempts < len(questions):
+        name = f"{name} (attempt any {attempts} of {len(questions)})"
+    return section.model_copy(update={"questions": questions, "total_marks": total, "name": name})
+
+
+def _with_instructions(edited: GeneratedPaper) -> GeneratedPaper:
+    """`edited` with its generated General Instructions rebuilt from its
+    sections as they now stand (`instructions_for_paper`), so the stored
+    text says what the exporters print. The teacher's own words are left as
+    written. A paper stored before the flag existed has its text checked:
+    generated text is rebuilt, and the paper then says it is generated."""
+    m = edited.metadata
+    generated = m.instructions_generated
+    if generated is None:
+        generated = reads_as_generated(m.instructions or "") or None
+    if generated:
+        edited.metadata = m.model_copy(update={"instructions": instructions_for_paper(edited),
+                                               "instructions_generated": True})
+    return edited
 
 
 def drop_alternative(paper: GeneratedPaper, kept: GeneratedQuestionSchema,
-                     kept_key: str, *, target: Optional[float] = None) -> GeneratedPaper:
+                     kept_key: str, *, position: Optional[Position] = None,
+                     target: Optional[float] = None) -> GeneratedPaper:
     """`kept`'s OR alternative taken off the paper and each of its sets;
     `kept` stays, now with no choice. A set that printed the pair the other
     way round (the alternative compulsory, `kept` as its OR) prints `kept`
     as the compulsory question again, with its own answer-key entry
     (`kept_key`, the paper's), so that set's competency share is recounted
-    against `target`. Marks and numbering do not change."""
+    against `target`. Marks and numbering do not change.
+
+    A set that prints its own questions and not this alternative drops the
+    OR of its question at the same `position` (see `drop_question`), so
+    every set offers the same number of choices."""
+    if position is not None and not _prints(paper, kept.internal_choice_question_id):
+        here = _at(paper, position)
+        if here is not None and here.internal_choice_question_id:
+            kept, kept_key = here, paper.answer_key.get(str(here.display_number), "")
+    return _alternative_dropped(paper, kept, kept_key, position=position, target=target)
+
+
+def _alternative_dropped(paper: GeneratedPaper, kept: GeneratedQuestionSchema, kept_key: str, *,
+                         position: Optional[Position], target: Optional[float]) -> GeneratedPaper:
     alt = kept.internal_choice_question_id
     answer_key = dict(paper.answer_key)
     sections = []
@@ -524,6 +627,7 @@ def drop_alternative(paper: GeneratedPaper, kept: GeneratedQuestionSchema,
         sections.append(section.model_copy(update={"questions": questions}))
     edited = paper.model_copy(update={
         "sections": sections, "answer_key": answer_key,
-        "sets": [drop_alternative(s, kept, kept_key, target=target) for s in paper.sets]})
+        "sets": [drop_alternative(s, kept, kept_key, position=position, target=target)
+                 for s in paper.sets]})
     edited.formatted_content = render_text(edited)
-    return _restamped(edited, target)
+    return _restamped(restate_set_repeats(_with_instructions(edited)), target)

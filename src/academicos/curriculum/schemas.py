@@ -284,11 +284,11 @@ class SeedCbse10Request(Camel):
 
 
 class SeedGradeRequest(SeedCbse10Request):
-    """PRD section 0 decision 4 is all grades 6-12. The bound is pydantic's so
-    the answer to grade 5 or 13 is a 422 naming the range, before any row is
+    """Requirements v3: grades 1-12 (PRD section 0 decision 4 said 6-12). The bound is pydantic's so
+    the answer to grade 0 or 13 is a 422 naming the range, before any row is
     created -- there is no syllabus data outside it (seed_cbse10.MIN_GRADE /
     MAX_GRADE, which raises the same bound for the CLI and library callers)."""
-    grade: int = Field(ge=6, le=12)
+    grade: int = Field(ge=1, le=12)
 
 
 class SubjectTemplateReportResponse(Camel):
@@ -369,6 +369,10 @@ class AddHolidayRequest(Camel):
     # Set for a real multi-day block (a 30-45 day summer break) instead of
     # entering one row per date; omitted/None means a single-day holiday.
     end_date: Optional[str] = None
+    # NTF-3: lessons still to teach on these days move to the next teaching
+    # periods, and the teachers and students affected are told. False only
+    # records the day (e.g. entering last year's list before any plan exists).
+    move_lessons: bool = True
 
 
 class HolidayResponse(Camel):
@@ -378,6 +382,10 @@ class HolidayResponse(Camel):
     label: str
     kind: str
     end_date: Optional[str] = None
+    # On the add only: lessons moved off the holiday, and the plans that
+    # could not be moved (no cadence to reflow them on), named.
+    lessons_moved: Optional[int] = None
+    not_moved: Optional[list[str]] = None
 
 
 class TermRequest(Camel):

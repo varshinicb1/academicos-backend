@@ -46,14 +46,27 @@ MAX_LIMIT = 200
 DEFAULT_LIMIT = 25
 
 # The provenances that make a scheme a PUBLISHED answer key: CBSE's own marking
-# scheme, and NCERT's answer from an Exemplar book (4,192 of the 5,427 served
-# records). Everything else -- a teacher's answer, a sandbox fabrication, an
-# unlabelled scheme of unknown origin -- may be a perfectly good answer, but it
-# is not the board's, and Q1 is about what the bank may serve as authoritative.
-KEY_PROVENANCE: frozenset[str] = frozenset({
+# scheme, NCERT's answer from an Exemplar book (4,192 of the 5,427 served
+# records), and an answer a textbook prints (its answers page).
+PUBLISHED_PROVENANCE: frozenset[str] = frozenset({
     "cbse_marking_scheme",
     "ncert_exemplar_answer",
+    "ncert_textbook_answer",
 })
+# Answers no board published but that were CHECKED before they were served
+# (corpus/textbook.py): every value point quoting the chapter, the quote found
+# in the chapter's own text; a worked answer two independent solves agree on;
+# an answer a teacher of the school reviewed and approved. Classes 1-5 have no
+# published keys at all, so without this tier they could have no bank.
+# Everything else -- a teacher's own answer not yet reviewed, a sandbox
+# fabrication, an unlabelled scheme -- is not a key. Every surface reports
+# which tier a key is (`key_tier`), and `?key_provenance=` narrows to one.
+CHECKED_PROVENANCE: frozenset[str] = frozenset({
+    "textbook_grounded",
+    "two_model_solved",
+    "teacher_verified",
+})
+KEY_PROVENANCE: frozenset[str] = PUBLISHED_PROVENANCE | CHECKED_PROVENANCE
 
 
 class InvalidCursor(ValueError):
@@ -199,6 +212,13 @@ def source_document_of(rec: dict[str, Any]) -> str:
     -- by name.
     """
     return str((rec.get("provenance") or {}).get("sourceDocumentId") or "")
+
+
+def key_tier(rec: dict[str, Any]) -> str:
+    """"published", "checked", or "none" -- how far a record's key can be
+    trusted, reported next to the key on every surface."""
+    p = key_provenance_of(rec)
+    return "published" if p in PUBLISHED_PROVENANCE else "checked" if p in CHECKED_PROVENANCE else "none"
 
 
 def key_provenance_of(rec: dict[str, Any]) -> str:
