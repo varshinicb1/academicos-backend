@@ -80,11 +80,6 @@ ROUTE_POLICY: dict[tuple[str, str], Policy] = {
     # staff and parents only (a student is a minor: their parent is messaged).
     ("GET", "/api/v1/me/contact"): _p(ANY_USER, "the caller's own number only; students refused in the handler"),
     ("PUT", "/api/v1/me/contact"): _p(ANY_USER, "the caller's own number only; students refused in the handler"),
-    # EX-8 report cards: the student, their parent, the principal or a reports
-    # admin, and the section's class teacher -- checked in the handler; logged.
-    ("GET", "/api/v1/report-cards/students/{student_id}"): _p(ANY_USER, "the student, their linked parent, a reports admin or the class teacher; logged"),
-    ("GET", "/api/v1/report-cards/students/{student_id}/pdf"): _p(ANY_USER, "as above; logged"),
-    ("GET", "/api/v1/report-cards/sections/{section_id}/pdf"): _p(ANY_USER, "a reports admin or the section's class teacher; logged"),
     ("GET", "/v1/registry/stats"): _p(ANY_USER, "one corpus-wide document count"),
     ("POST", "/v1/search"): _p(ANY_USER, "shared NCERT corpus, no school data"),
     ("POST", "/v1/agent/doubt"): _p(ANY_USER, "a student asking a doubt is the intended user"),
@@ -480,9 +475,6 @@ def iter_routes(app) -> Iterable[tuple[str, str, object]]:
 # and their linked children's pages, each of which checks the link itself.
 PARENT_PATHS = frozenset({
     "/api/v1/auth/me",
-    # EX-8: a linked parent reads their child's report card (checked in the handler).
-    "/api/v1/report-cards/students/{student_id}",
-    "/api/v1/report-cards/students/{student_id}/pdf",
     "/api/v1/notifications",
     "/api/v1/notifications/{notification_id}/read",
     "/api/v1/notifications/read-all",

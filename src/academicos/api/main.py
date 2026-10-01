@@ -401,11 +401,6 @@ from ..operations import messaging_routes  # noqa: E402
 
 app.include_router(messaging_routes.router)
 
-# EX-8: report cards from the marks entered.
-from ..operations import report_cards  # noqa: E402
-
-app.include_router(report_cards.router)
-
 
 class SearchRequest(BaseModel):
     query: str = Field(min_length=2, max_length=MAX_QUERY_CHARS)
