@@ -455,6 +455,28 @@ def _reflow(store: CurriculumStore, audit_log: AuditLog, *, academic_year_id: st
     return moves, dropped
 
 
+def reteach(store: CurriculumStore, audit_log: AuditLog, *, lesson, changed_by: str,
+            reason: str) -> list[RescheduleResult]:
+    """A lesson not taught, or taught only in part, is taught again at the
+    plan's next free period, and every later lesson moves one period on.
+
+    "Not taught" only set the status: the subtopic silently lost its period
+    while the page told the teacher the plan would catch up (v3 audit N-4-1).
+    Now a new 'scheduled' lesson for the same subtopic is placed on the
+    missed lesson's day; the missed lesson keeps that period (it is the
+    record), so _reflow puts the new one on the next free period and pushes
+    the rest. Lessons that no longer fit before the year ends become
+    'unscheduled', as with PUSH."""
+    store.create_scheduled_lesson(school_id=lesson.school_id, academic_year_id=lesson.academic_year_id,
+                                  book_id=lesson.book_id, subtopic_id=lesson.subtopic_id, date=lesson.date,
+                                  section_id=lesson.section_id)
+    cadence = _resolve_cadence(store, lesson.academic_year_id, lesson.book_id, None, lesson.section_id)
+    moves, _ = _reflow(store, audit_log, academic_year_id=lesson.academic_year_id, book_id=lesson.book_id,
+                       periods_per_week=cadence, from_date=lesson.date, skip_disruption_day=False,
+                       reason=reason, changed_by=changed_by, section_id=lesson.section_id)
+    return moves
+
+
 @dataclass(frozen=True)
 class PushResult:
     academic_year_id: str

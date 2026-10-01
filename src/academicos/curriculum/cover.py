@@ -803,6 +803,12 @@ class CoverMixin:
 
     # ---------------- the day (what actually happens) ----------------
 
+    def handover_for(self, sub: "Substitution") -> Optional[str]:
+        """The absent teacher's note for whoever covers: the leave's handover
+        note, else the substitution's own note."""
+        leave = self.get_leave(sub.leave_id) if sub.leave_id else None
+        return (leave.handover_note if leave and leave.handover_note else None) or sub.note
+
     def day_view(self, academic_year_id: str, on: str, *, section_id: Optional[str] = None,
                  teacher_id: Optional[str] = None) -> list[dict[str, Any]]:
         """One day as it will run: the week's periods, with that day's
@@ -862,6 +868,11 @@ class CoverMixin:
                     row = {**row, "kind": "away", "note": "on leave; see the handover" if s else row["note"]}
                 elif not mine and row["teacherId"] != teacher_id:
                     continue
+                elif not mine and s is not None:
+                    # The cover teacher reads what the absent teacher left for
+                    # them: the note was stored on the leave and reached no one
+                    # (v3 audit N-4-3, N-3-13).
+                    row = {**row, "note": self.handover_for(s) or row["note"]}
             rows.append(row)
         for lp in self._lost_where("academic_year_id=? AND compensation_date=? AND status='compensated'",
                                    (academic_year_id, on)):

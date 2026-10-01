@@ -131,6 +131,18 @@ CATALOGUE: dict[str, Kind] = {k.key: k for k in (
     Kind("homework_graded", "Homework marked", True, False,
          ("Homework marked: {subject}", "{title}: {marks}."),
          ("गृहकार्य जाँचा गया: {subject}", "{title}: {marks}।")),
+    # TA-7: a teacher had no notice that work was handed in, or that a period
+    # was about to start (v3 audit).
+    Kind("homework_submitted", "Homework handed in", False, False,
+         ("Handed in: {title}", "{student} handed in {title} ({count} of {total} so far)."),
+         ("जमा हुआ: {title}", "{student} ने {title} जमा किया (अब तक {total} में से {count})।")),
+    Kind("period_starting", "A period about to start", True, False,
+         ("Period {period} at {start}", "{section} {subject}{room}."),
+         ("पीरियड {period} {start} पर", "{section} {subject}{room}।")),
+    # SA-5: students heard of homework results but not of a test's.
+    Kind("test_marks", "Marks for a test", True, False,
+         ("Marks: {title}", "{subject}: {marks}."),
+         ("अंक: {title}", "{subject}: {marks}।")),
     Kind("homework_overdue", "Homework with students missing", True, False,
          ("{count} not submitted: {title}", "{title} was due {due}; {count} students have not submitted."),
          ("{count} ने जमा नहीं किया: {title}", "{title} {due} तक था; {count} विद्यार्थियों ने जमा नहीं किया।")),

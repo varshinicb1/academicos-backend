@@ -132,7 +132,7 @@ def submit_practice(practice_id: str, req: PracticeSubmit, current: User = Depen
     known = {q["id"] for q in p["questions"]}
     if set(req.answers) - known:
         raise HTTPException(422, "those are not questions of this set")
-    _consent(current.school_id, current.id)
+    _consent(current.school_id, current.id, own=True)
     answers = {k: (v or "")[:5000] for k, v in req.answers.items()}
     evaluations, marks, _ = grade_answers(p["questions"], answers)
     p = store().finish_practice(p["id"], answers=answers, evaluations=evaluations, marks=marks)

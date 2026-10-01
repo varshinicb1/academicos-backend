@@ -204,6 +204,42 @@ def teacher_daily_digest(ops, cs, users, notify, now: datetime) -> int:
     return n
 
 
+PERIOD_NOTICE_MINUTES = 10
+
+
+def period_starting(ops, cs, users, notify, now: datetime) -> int:
+    """Each teacher is told of a period (their own or a cover) starting in
+    the next ten minutes, once per period. Automations run every few minutes
+    on the school day's traffic (routes._maybe_run_automations)."""
+    local = now.astimezone(IST)
+    today = local.date().isoformat()
+    soon = (local + timedelta(minutes=PERIOD_NOTICE_MINUTES)).strftime("%H:%M")
+    at = local.strftime("%H:%M")
+    n = 0
+    for school in _schools(cs):
+        year = _year_on(cs, school, today)
+        if year is None:
+            continue
+        for r in cs.day_view(year.id, today):
+            teacher = r.get("teacherId")
+            if not teacher or r["kind"] in ("away", "lost", "uncovered", "combined"):
+                continue
+            section = cs.get_section(r["sectionId"])
+            bell = cs.bell_for_section(section) if section else None
+            start = next((sl.start for sl in (bell.slots if bell else [])
+                          if sl.kind == "teaching" and sl.period == r["period"]), None)
+            if start is None or not (at <= start <= soon):
+                continue
+            room = cs.get_room(r["roomId"]) if r.get("roomId") else None
+            notify(school_id=school, user_ids=[teacher], kind="period_starting",
+                   params={"period": r["period"], "start": start, "section": _label(cs, r["sectionId"]),
+                           "subject": _subject(cs, r["subjectId"]),
+                           "room": f", {room.name}" if room else ""},
+                   link=f"/my-day?date={today}", dedupe_key=f"period:{teacher}:{today}:{r['period']}")
+            n += 1
+    return n
+
+
 def principal_weekly_digest(ops, cs, users, notify, now: datetime) -> int:
     today = now.astimezone(IST).date()
     last_monday = today - timedelta(days=today.weekday() + 7)
@@ -447,6 +483,7 @@ JOBS: list[tuple[str, int, str, Optional[int], Callable[..., int]]] = [
     ("marking_due", 15, "day", None, marking_due),
     ("exam_reminders", 17, "day", None, exam_reminders),
     ("term_report", 15, "day", None, term_report),
+    ("period_starting", 7, "run", None, period_starting),
     ("user_digests", 0, "run", None, user_digests),
     ("deliveries", 0, "run", None, deliveries),
 ]

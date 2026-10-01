@@ -88,10 +88,12 @@ def _log_read(current: User, what: str, **kw: Any) -> None:
     record_pii_read(get_audit_log(cr._cfg.data_root), actor=current.id, what=what, **kw)
 
 
-def _consent(school_id: str, student_id: str) -> None:
-    from ..assessment.authz import require_consent
+def _consent(school_id: str, student_id: str, *, own: bool = False) -> None:
+    """`own`: the student (or their parent) is the caller, and reads a
+    refusal worded for them, not the staff wording (v3 audit N-5-1)."""
+    from ..assessment.authz import require_consent, require_own_consent
     from ..assessment.consent import get_consent_store
-    require_consent(get_consent_store(cr._cfg.data_root), school_id, student_id)
+    (require_own_consent if own else require_consent)(get_consent_store(cr._cfg.data_root), school_id, student_id)
 
 
 def _today() -> str:
@@ -336,6 +338,18 @@ def _notify_graded(hw: Homework, sub: Submission) -> None:
                   params={"subject": hw.subject_name, "title": hw.title,
                           "marks": f"{marks:g} out of {sub.max_marks}"},
                   link=f"/my-homework/{hw.id}", dedupe_key=f"hwgraded:{hw.id}:{sub.student_id}:{sub.graded_at}")
+
+
+def _notify_submitted(hw: Homework, student: User) -> None:
+    """The teacher hears that work is coming in: once a day per homework,
+    with the count so far, not once per student (TA-7)."""
+    if not hw.teacher_id:
+        return
+    handed_in = len(store().submissions_for(hw.id))
+    notify_safely(school_id=hw.school_id, user_ids=[hw.teacher_id], kind="homework_submitted",
+                  params={"title": hw.title, "student": student.name, "count": handed_in,
+                          "total": len(_students(hw))},
+                  link=f"/homework/{hw.id}", dedupe_key=f"hwsubmitted:{hw.id}:{_today()}")
 
 
 def _notify_assigned(hw: Homework) -> None:
@@ -624,7 +638,7 @@ def submit(homework_id: str, req: SubmitRequest, current: User = Depends(get_cur
     stray = sorted(set(req.answers) - {q["id"] for q in hw.questions})
     if stray:
         raise HTTPException(422, "these are not questions of this homework: " + ", ".join(stray[:5]))
-    _consent(hw.school_id, current.id)
+    _consent(hw.school_id, current.id, own=True)
     try:
         sub = store().submit_homework(hw, student_id=current.id, section_id=enrollment.section_id,
                                       answers={k: (v or "")[:5000] for k, v in req.answers.items()},
@@ -634,4 +648,5 @@ def submit(homework_id: str, req: SubmitRequest, current: User = Depends(get_cur
         raise HTTPException(409, str(e))
     if sub.status == "graded":
         _notify_graded(hw, sub)
+    _notify_submitted(hw, current)
     return my_homework_detail(homework_id, current)

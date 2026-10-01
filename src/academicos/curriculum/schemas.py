@@ -562,7 +562,9 @@ class ScheduledLessonResponse(Camel):
 # ---------------- completion tracking (§15) ----------------
 
 class MarkLessonRequest(Camel):
-    status: str = Field(pattern="^(scheduled|completed|skipped)$")
+    # "partly": taught, but not all of it -- recorded as completed with the
+    # note "Partly taught", and the rest is planned for the next period.
+    status: str = Field(pattern="^(scheduled|completed|skipped|partly)$")
     note: Optional[str] = None
 
 

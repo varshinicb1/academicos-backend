@@ -1935,7 +1935,21 @@ def mark_lesson(lesson_id: str, req: MarkLessonRequest,
         raise HTTPException(
             409, "this lesson has no day in the plan (it no longer fit before the year ends) -- "
                  "ADJUST it onto a working day first")
-    updated = store.mark_lesson(lesson_id, status=req.status, note=req.note, completed_by=current.id)
+    status, note = req.status, req.note
+    if status == "partly":
+        status, note = "completed", "Partly taught" + (f": {req.note}" if req.note else "")
+    updated = store.mark_lesson(lesson_id, status=status, note=note, completed_by=current.id)
+    if req.status in ("skipped", "partly") and lesson.status == "scheduled":
+        # The first time a lesson is marked missed or partly taught, its
+        # subtopic gets a period again (v3 audit N-4-1); re-marking does not
+        # add a second one.
+        from ..assessment.audit_log import get_audit_log
+        try:
+            scheduling_mod.reteach(store, get_audit_log(_cfg.data_root), lesson=updated,
+                                   changed_by=current.id,
+                                   reason="not taught" if req.status == "skipped" else "partly taught")
+        except ValueError as e:      # no teaching days left this year: recorded, not replanned
+            log.warning("lesson %s marked %s but not replanned: %s", lesson_id, req.status, e)
     return _lesson_response(updated)
 
 

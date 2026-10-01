@@ -123,12 +123,37 @@ def require_own_school(school_id: str, current: "User") -> None:
         raise HTTPException(403, "this action is scoped to a different school")
 
 
+def student_names(student_ids: "Iterable[str]") -> "list[str]":
+    """Each student's name, for a message a teacher reads: the refusal named
+    internal ids ("user_94019f5d5c24"), so nobody could tell which child was
+    missing consent (v3 audit N-4-5). An id stays when no account is found."""
+    from . import auth_routes
+    users = auth_routes._users
+    out = []
+    for sid in student_ids:
+        u = users.get(sid) if users is not None else None
+        out.append(u.name if u is not None else sid)
+    return out
+
+
 def _consent_refusal(student_ids: "list[str]") -> HTTPException:
-    who = (f"student {student_ids[0]}" if len(student_ids) == 1
-           else "students " + ", ".join(student_ids))
+    names = student_names(student_ids)
+    who = f"student {names[0]}" if len(names) == 1 else "students " + ", ".join(names)
     return HTTPException(
         409, f"no recorded parental consent for {who}; record it under Classes "
              "before grading")
+
+
+# What a student (or a parent submitting for them) reads instead: the staff
+# wording told them to "record it under Classes", which they cannot do (N-5-1).
+OWN_CONSENT_MESSAGE = ("Your school needs a parent's consent before your work can be saved and marked. "
+                       "Ask your parent to give it in the app, or ask your class teacher.")
+
+
+def require_own_consent(consent_store: "ConsentStore", school_id: str, student_id: str) -> None:
+    """require_consent, worded for the student whose work it is."""
+    if students_without_consent(consent_store, school_id, [student_id]):
+        raise HTTPException(409, OWN_CONSENT_MESSAGE)
 
 
 def students_without_consent(

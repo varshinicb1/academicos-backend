@@ -77,6 +77,8 @@ class SubstitutionResponse(Camel):
     status: str
     mode: str
     note: Optional[str] = None
+    # What the absent teacher left for whoever covers (the leave's handover note).
+    handover_note: Optional[str] = None
 
 
 class LeaveDecisionResponse(Camel):
@@ -169,6 +171,17 @@ class DayRowResponse(Camel):
     section_name: Optional[str] = None
     teacher_name: Optional[str] = None
     co_teacher_name: Optional[str] = None
+    # The period's clock time from the section's bell schedule ("HH:MM"), the
+    # booked room's name, and whether the period differs from the usual week
+    # (a cover, a lost or make-up period): My day and Today showed none of
+    # these (v3 audit N-4-2).
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    room_name: Optional[str] = None
+    changed: bool = False
+
+
+_UNCHANGED_KINDS = {"regular"}
 
 
 class DebtRowResponse(Camel):
@@ -230,7 +243,8 @@ def _leave(l) -> LeaveResponse:
 def _sub(s) -> SubstitutionResponse:
     return SubstitutionResponse(id=s.id, leave_id=s.leave_id, date=s.date, section_id=s.section_id,
                                 period=s.period, subject_id=s.subject_id, absent_teacher_id=s.absent_teacher_id,
-                                substitute_id=s.substitute_id, status=s.status, mode=s.mode, note=s.note)
+                                substitute_id=s.substitute_id, status=s.status, mode=s.mode, note=s.note,
+                                handover_note=cr._require().handover_for(s))
 
 
 def _lost(l) -> LostPeriodResponse:
@@ -526,6 +540,15 @@ def declare_closure(academic_year_id: str, req: ClosureRequest,
 
 # ---------------- the day ----------------
 
+def _period_times(store, section, period: int) -> tuple[Optional[str], Optional[str]]:
+    """The teaching slot numbered `period` in the section's bell schedule."""
+    bell = store.bell_for_section(section) if section else None
+    for slot in (bell.slots if bell else []):
+        if slot.kind == "teaching" and slot.period == period:
+            return slot.start, slot.end
+    return None, None
+
+
 def _row(r: dict) -> DayRowResponse:
     store = cr._require()
     subject = store.get_subject(r["subjectId"])
@@ -533,13 +556,17 @@ def _row(r: dict) -> DayRowResponse:
     users = cr._require_users()
     teacher = users.get(r["teacherId"]) if r.get("teacherId") else None
     co = users.get(r["coTeacherId"]) if r.get("coTeacherId") else None
+    start, end = _period_times(store, section, r["period"])
+    room = store.get_room(r["roomId"]) if r.get("roomId") else None
     return DayRowResponse(section_id=r["sectionId"], period=r["period"], subject_id=r["subjectId"],
                           teacher_id=r["teacherId"], co_teacher_id=r.get("coTeacherId"), room_id=r["roomId"],
                           kind=r["kind"], substitution_id=r["substitutionId"], lost_period_id=r["lostPeriodId"],
                           note=r["note"], subject_name=subject.name if subject else None,
                           section_name=store._section_label(section) if section else None,
                           teacher_name=teacher.name if teacher else None,
-                          co_teacher_name=co.name if co else None)
+                          co_teacher_name=co.name if co else None,
+                          start_time=start, end_time=end, room_name=room.name if room else None,
+                          changed=r["kind"] not in _UNCHANGED_KINDS)
 
 
 @router.get("/day", response_model=list[DayRowResponse])

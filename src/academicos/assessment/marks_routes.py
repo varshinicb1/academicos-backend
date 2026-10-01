@@ -22,7 +22,7 @@ from ..curriculum import routes as cr
 from ..curriculum.schemas import Camel
 from ..operations.routes import store as ops
 from .auth_routes import require_staff
-from .authz import require_consent_for_all, require_school_owns_paper
+from .authz import require_consent_for_all, require_school_owns_paper, student_names, students_without_consent
 from .users import User
 
 router = APIRouter(prefix="/api/v1")
@@ -74,6 +74,10 @@ class MarksGrid(Camel):
     total_marks: int
     questions: list[GridQuestion]
     rows: list[GridRow]
+    # Students whose marks this save left out because no parental consent is
+    # on file, by name. One such student refused the whole section's marks,
+    # naming an internal id (v3 audit N-4-5).
+    without_consent: list[str] = []
 
 
 class QuestionAnalysis(Camel):
@@ -309,18 +313,40 @@ def enter_marks(paper_id: str, req: MarksRequest, section_id: Optional[str] = Qu
             raise HTTPException(422, f"{e.question_id} is out of {maxes[e.question_id]}; {e.marks:g} is too many")
     if set(req.absent) & {e.student_id for e in req.entries}:
         raise HTTPException(422, "a student cannot be absent and have marks")
-    require_consent_for_all(get_consent_store(cr._cfg.data_root), current.school_id,
-                            {e.student_id for e in req.entries})
-    ops().save_marks(paper.id, [(e.student_id, e.question_id, e.marks) for e in req.entries],
+    consents = get_consent_store(cr._cfg.data_root)
+    marked = sorted({e.student_id for e in req.entries})
+    missing = students_without_consent(consents, current.school_id, marked)
+    if missing and len(missing) == len(marked):
+        require_consent_for_all(consents, current.school_id, marked)      # 409 naming them
+    entries = [e for e in req.entries if e.student_id not in set(missing)]
+    ops().save_marks(paper.id, [(e.student_id, e.question_id, e.marks) for e in entries],
                      absent=req.absent, present=req.present, entered_by=current.id)
     get_audit_log(cr._cfg.data_root).append(
         "marks_entered", assessment_id=paper.assessment_id, actor=current.id,
-        details={"schoolId": current.school_id, "paperId": paper.id, "cells": len(req.entries),
-                 "students": len({e.student_id for e in req.entries}), "absent": len(req.absent)})
-    if assessment is not None and req.entries:
+        details={"schoolId": current.school_id, "paperId": paper.id, "cells": len(entries),
+                 "students": len({e.student_id for e in entries}), "absent": len(req.absent),
+                 "withoutConsent": len(missing)})
+    if assessment is not None and entries:
         all_marks = ops().marks_for(paper.id)
-        _feed_learning(paper, assessment, {sid: all_marks.get(sid, {}) for sid in {e.student_id for e in req.entries}})
-    return _grid(paper, section_id, current)
+        _feed_learning(paper, assessment, {sid: all_marks.get(sid, {}) for sid in {e.student_id for e in entries}})
+        _tell_results(paper, assessment, {e.student_id for e in entries}, all_marks)
+    return _grid(paper, section_id, current).model_copy(update={"without_consent": student_names(missing)})
+
+
+def _tell_results(paper, assessment, students: set[str], all_marks: dict[str, dict[str, float]]) -> None:
+    """Each student whose marks were entered, and their parents, hear their
+    total once per paper (SA-5: only homework results were ever sent). Later
+    corrections are seen in the app; they are not sent again."""
+    from ..operations.routes import notify_parents_safely, notify_safely
+    total = sum(q.max_marks for q in _questions(paper))
+    for sid in sorted(students):
+        got = sum(all_marks.get(sid, {}).values())
+        params = {"title": paper.metadata.assessment_title, "subject": assessment.subject,
+                  "marks": f"{got:g} out of {total}"}
+        notify_safely(school_id=assessment.school_id, user_ids=[sid], kind="test_marks", params=params,
+                      link="/my-learning", dedupe_key=f"testmarks:{paper.id}:{sid}")
+        notify_parents_safely(school_id=assessment.school_id, student_ids=[sid], kind="test_marks",
+                              params=params, dedupe_key=f"testmarks-parent:{paper.id}:{sid}")
 
 
 @router.get("/papers/{paper_id}/marks", response_model=MarksGrid)
