@@ -63,6 +63,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Literal, Optional
 
+from .wording import counted
 from .competency import CBSE_COMPETENCY_TARGET, COMPETENCY_RULE_TEXT, competency_ceiling, \
     competency_signal, is_competency_question, share_summary, whole_percent
 from .pool import near_duplicate
@@ -279,6 +280,10 @@ class ScopeFilter:
     """`in_scope(q)` plus the notes explaining what the filter could not do."""
     in_scope: Callable[[QuestionSchema], bool]
     notes: list[str] = field(default_factory=list)
+    # In scope, but printed only where nothing else fits (`plan` ranks them
+    # with the stale ones): on a whole-syllabus paper, the questions not
+    # filed under a chapter of the class's current syllabus.
+    last_resort: frozenset[str] = frozenset()
 
 
 def build_scope_filter(scope: TemplateScope, candidates: list[QuestionSchema],
@@ -312,6 +317,7 @@ def build_scope_filter(scope: TemplateScope, candidates: list[QuestionSchema],
                           "chosen subtopics yet, so the paper uses the chosen chapters.")
 
     in_chapters = _chapter_selector(chapters, candidates) if chapters else None
+    last_resort = frozenset() if chapters else _off_syllabus(candidates)
 
     def in_scope(q: QuestionSchema) -> bool:
         if in_chapters is not None and not in_chapters(q):
@@ -322,7 +328,38 @@ def build_scope_filter(scope: TemplateScope, candidates: list[QuestionSchema],
             return False
         return True
 
-    return ScopeFilter(in_scope=in_scope, notes=notes)
+    return ScopeFilter(in_scope=in_scope, notes=notes, last_resort=last_resort)
+
+
+def _off_syllabus(candidates: list[QuestionSchema]) -> frozenset[str]:
+    """The questions a whole-syllabus paper prints only where nothing else
+    fits: those not filed under a chapter of the class's current syllabus
+    (chapter_filing) -- the bank's unmatched ones, among them NCERT Exemplar
+    questions from chapters CBSE dropped. They ranked with every other
+    question, so a Class 10 Science annual printed three on Sources of
+    Energy (QA P-04). Ranked last rather than left out: Class 7 Mathematics
+    and Science have case-based questions only among the unmatched, and
+    leaving them out made every annual paper short. A class whose syllabus
+    is not known has none."""
+    from .chapter_filing import UNMAPPED, ChapterFiling
+    filings: dict[tuple[str, int], ChapterFiling] = {}
+    off: dict[tuple[str, int], set[str]] = {}
+    matched: set[tuple[str, int]] = set()
+    for q in candidates:
+        key = (q.subject, q.grade)
+        if key not in filings:
+            filings[key] = ChapterFiling.for_class(*key)
+        filing = filings[key]
+        if not filing.known:
+            continue
+        if filing.chapter_of(q.taxonomy_chapter_id, q.chapter_ids) == UNMAPPED:
+            off.setdefault(key, set()).add(q.id)
+        else:
+            matched.add(key)
+    # A class none of whose questions matches a syllabus chapter is a bank and
+    # a syllabus that disagree on every id, not a bank of dropped chapters:
+    # ranking all of it last would change nothing but the notes.
+    return frozenset(qid for key, ids in off.items() if key in matched for qid in ids)
 
 
 def _chapter_selector(chosen: set[str], candidates: list[QuestionSchema],
@@ -596,6 +633,7 @@ def plan(template: PaperTemplateDraft, template_id: str, candidates: list[Questi
     keyed = [q for q in candidates
              if (q.id in keyed_ids if keyed_ids is not None else has_verified_key(q))]
     keyed_ids = {q.id for q in keyed}
+    recent, stale = stale, stale | scope.last_resort
     claimed: set[str] = set()
     # Every question printed so far, compulsory or OR: a later pick must not
     # repeat one of them in other words (`pool.near_duplicate`).
@@ -665,12 +703,22 @@ def plan(template: PaperTemplateDraft, template_id: str, candidates: list[Questi
                                                    printed_later=printed_later)
         notes.extend(choice_notes)
         notes.extend(_content_notes(section))
-        reused = [q.id for q in [*picked, *borrowed, *alternatives.values()] if q.id in stale]
-        if reused:
+        used = [*picked, *borrowed, *alternatives.values()]
+        reused = [q.id for q in used if q.id in recent]
+        off = [q.id for q in used if q.id in scope.last_resort and q.id not in recent]
+        if off:
+            many = len(off) != 1
             notes.append(
-                f"{section.title}: {len(reused)} question(s) repeat your last paper "
-                f"({', '.join(reused)}) -- the bank has no other question in these "
-                "chapters that fits the section's marks, kind and difficulty mix.")
+                f"{section.title}: {len(off)} question{'s are' if many else ' is'} not matched to "
+                "a chapter of this class's current syllabus -- the bank has nothing else that "
+                "fits. Check before printing that it is in your syllabus.")
+        if reused:
+            many = len(reused) != 1
+            notes.append(
+                f"{section.title}: {len(reused)} question{'s' if many else ''} "
+                f"{'repeat' if many else 'repeats'} your recent papers for this class -- the "
+                "bank has no other question in these chapters that fits the section's marks, "
+                "kind and difficulty mix.")
 
         filled = len(picked) + len(borrowed)
         needed = section.question_count
@@ -688,6 +736,10 @@ def plan(template: PaperTemplateDraft, template_id: str, candidates: list[Questi
             # change-marks fix a competency shortfall does, so one fix per
             # kind and value is kept.
             fixes = _merge_fixes(gap_fixes, fixes)
+        # "2 questions", not "2 question(s)" (QA P-33).
+        notes[:] = [counted(n) for n in notes]
+        reason = counted(reason)
+        fixes = [x.model_copy(update={"label": counted(x.label)}) for x in fixes]
         availability = SectionAvailability(
             section_id=section.id, title=section.title, marks_each=section.marks_each,
             needed=needed, available=len(eligible), shortfall=shortfall, filled=filled,
@@ -702,7 +754,7 @@ def plan(template: PaperTemplateDraft, template_id: str, candidates: list[Questi
         template_id=template_id, grade=template.grade, subject=template.subject,
         bank_questions=len(candidates), keyed_questions=len(keyed),
         complete=all(p.availability.shortfall == 0 for p in plans),
-        sections=[p.availability for p in plans], scope_notes=scope.notes,
+        sections=[p.availability for p in plans], scope_notes=[counted(n) for n in scope.notes],
     )
     return report, plans
 
@@ -893,9 +945,38 @@ def _choice_notes(section: TemplateSection, printed: list[QuestionSchema],
 
 def _order(pool: list[QuestionSchema],
            stale: frozenset[str] = frozenset()) -> list[QuestionSchema]:
-    """Best first, deterministic: the same bank and template give the same
-    paper. `stale` questions (see `plan`) go after every other one."""
-    return sorted(pool, key=lambda q: (q.id in stale, -q.quality_score, q.id))
+    """Best first within each chapter, the chapters taken in turn, and
+    deterministic: the same bank, template and recent papers give the same
+    paper. `stale` questions (see `plan`) go after every other one.
+
+    Best first alone ranked by quality and then by id, and most of the bank
+    shares one quality score, so the id decided -- and ids run chapter by
+    chapter. Once a teacher's recent questions went to the back (QA P-03),
+    each new paper took the next block of ids: a whole-syllabus Class 10
+    Science annual printed 29 of its 31 questions from Our Environment (QA
+    R-03). Taking the chapters in turn spreads a paper over them."""
+    ranked = sorted(pool, key=lambda q: (-q.quality_score, q.id))
+    return (_chapters_in_turn([q for q in ranked if q.id not in stale])
+            + _chapters_in_turn([q for q in ranked if q.id in stale]))
+
+
+def _chapter_key(q: QuestionSchema) -> str:
+    return q.taxonomy_chapter_id or (q.chapter_ids[0] if q.chapter_ids else "")
+
+
+def _chapters_in_turn(ranked: list[QuestionSchema]) -> list[QuestionSchema]:
+    """`ranked` re-ordered round by round: each chapter's best remaining
+    question, chapters in the order of their best question."""
+    groups: dict[str, list[QuestionSchema]] = {}
+    for q in ranked:
+        groups.setdefault(_chapter_key(q), []).append(q)
+    queues = [list(reversed(g)) for g in groups.values()]
+    out: list[QuestionSchema] = []
+    while queues:
+        for g in queues:
+            out.append(g.pop())
+        queues = [g for g in queues if g]
+    return out
 
 
 def clashes(q: QuestionSchema, printed: list[QuestionSchema]) -> Optional[QuestionSchema]:
@@ -925,7 +1006,21 @@ def _pick(pool: list[QuestionSchema], section: TemplateSection, n: int, *,
     printed = list(avoid or [])
     remaining = _order(pool, stale)
     targets = _difficulty_targets(section.difficulty_mix, n)
-    cbq_target = round((section.competency_share or 0.0) * n)
+    # A section that names no competency share takes competency-based
+    # questions first, wherever the bank has them. Only the presets'
+    # case-study sections name a share, so the rest of a paper's share was
+    # whatever the order gave: 95% on a Class 10 Mathematics half-yearly while
+    # the CBE items sorted first by id, 8% once a teacher's recent papers held
+    # them (QA R-03). Half of each section would not reach CBSE's 50% either:
+    # where the long-answer sections have no competency-based questions, the
+    # objective section has to carry them. A share the template names, 0
+    # included, is kept.
+    named = section.competency_share is not None
+    share = section.competency_share if named else 1.0
+    cbq_target = round(share * n)
+    # CBSE's minimum, which a question from a recent paper may be brought back
+    # to reach when the section names no share of its own.
+    cbq_floor = round(CBSE_COMPETENCY_TARGET * n)
     picked: list[QuestionSchema] = []
     repeats: set[str] = set()      # clash once, clash for good: `printed` only grows
 
@@ -938,10 +1033,15 @@ def _pick(pool: list[QuestionSchema], section: TemplateSection, n: int, *,
         return True
 
     def take(from_list: list[QuestionSchema]) -> Optional[QuestionSchema]:
-        want_cbq = sum(1 for q in picked if is_competency_question(q)) < cbq_target
-        if want_cbq:
+        cbq_now = sum(1 for q in picked if is_competency_question(q))
+        if cbq_now < cbq_target:
+            # A question from the teacher's recent papers comes back for being
+            # competency-based only to reach the share the template names, or,
+            # naming none, CBSE's 50%: preferring them all would reprint every
+            # one of a small bank's on each new paper (QA P-03).
+            reuse = named or cbq_now < cbq_floor
             for q in from_list:
-                if is_competency_question(q) and usable(q):
+                if is_competency_question(q) and usable(q) and (reuse or q.id not in stale):
                     return q
         return next((q for q in from_list if usable(q)), None)
 

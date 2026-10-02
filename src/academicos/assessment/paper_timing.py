@@ -232,9 +232,11 @@ def kept_papers(assessments: Iterable) -> dict[str, Hashable]:
     assessment, are not here, so they no longer count.
 
     Papers the same teacher generated with the same questions for the same
-    class and subject share a key and count once: that is Generate pressed
-    again on the same choices (generation is deterministic). "Make another
-    like this" prints other questions, so it is another paper.
+    class and subject share a key and count once: the same paper made twice.
+    Since 2026-10-01 pressing Generate again on the same choices prints
+    other questions where the bank has them (QA P-03: a teacher's recent
+    papers rank last), so like "Make another like this" it is another paper
+    and counts.
     """
     out: dict[str, Hashable] = {}
     for a in assessments:

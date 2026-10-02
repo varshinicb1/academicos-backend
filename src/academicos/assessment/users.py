@@ -756,6 +756,26 @@ class UserStore:
             self.conn.execute("UPDATE users SET role=? WHERE id=?", (role, user_id))
             self.conn.commit()
 
+    def check_password(self, user_id: str, password: str) -> bool:
+        user = self.get(user_id)
+        raw = self._raw_by_email(user.email) if user is not None else None
+        if raw is None:
+            return False
+        salt = bytes.fromhex(raw["password_salt"])
+        return secrets.compare_digest(_hash_password(password, salt), raw["password_hash"])
+
+    def set_password(self, user_id: str, password: str) -> None:
+        """A new password, with a new salt. Sessions are the caller's to end:
+        a reset ends them all, a change keeps the one making it."""
+        salt = secrets.token_bytes(16)
+        values = {"password_hash": _hash_password(password, salt), "password_salt": salt.hex()}
+        if self._remote.enabled:
+            self._remote.update(values, id=user_id)
+        with self._conn_lock:
+            self.conn.execute("UPDATE users SET password_hash=?, password_salt=? WHERE id=?",
+                              (values["password_hash"], values["password_salt"], user_id))
+            self.conn.commit()
+
     def delete_sessions_for(self, user_id: str) -> None:
         """Sign the user out everywhere."""
         if self._remote_sessions.enabled:

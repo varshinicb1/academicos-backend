@@ -454,6 +454,10 @@ def instructions_for(sections: list[TemplateSection],
                           for s, count, choices in rows])
 
 
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
 _FIRST_LINE = "This question paper has {n} section{s}."
 _LAST_LINE = "All questions are compulsory unless a choice is stated."
 
@@ -464,11 +468,13 @@ def _instructions(rows: Sequence[tuple[str, int, Optional[int], int, int]]) -> s
     lines = [_FIRST_LINE.format(n=len(rows), s="" if len(rows) == 1 else "s")]
     for title, count, marks_each, attempts, choices in rows:
         attempt = f" Attempt any {attempts}." if attempts < count else ""
-        choice = (f" {choices} of them offer an internal choice (OR): attempt only "
-                  "one of the two." if choices else "")
-        each = (f" of {marks_each} mark(s) each" if marks_each is not None
-                else ", marks as indicated")
-        lines.append(f"{title}: {count} question(s){each}.{attempt}{choice}")
+        # Plurals as a teacher writes them: the paper printed "19 question(s)
+        # of 1 mark(s) each" (QA P-33).
+        choice = (f" {choices} of them {'offers' if choices == 1 else 'offer'} an internal "
+                  "choice (OR): attempt only one of the two." if choices else "")
+        each = (f" of {_count(marks_each, 'mark')}{' each' if count != 1 else ''}"
+                if marks_each is not None else ", marks as indicated")
+        lines.append(f"{title}: {_count(count, 'question')}{each}.{attempt}{choice}")
     lines.append(_LAST_LINE)
     return "\n".join(lines)
 
@@ -515,10 +521,11 @@ def instructions_for_paper(paper: GeneratedPaper) -> str:
     return _instructions(rows)
 
 
+# Both spellings: a paper stored before 2026-10-01 says "question(s)".
 _GENERATED_LINE = re.compile(
-    r".+: \d+ question\(s\)(?: of \d+ mark\(s\) each|, marks as indicated)\."
+    r".+: \d+ question(?:\(s\)|s)?(?: of \d+ mark(?:\(s\)|s)?(?: each)?|, marks as indicated)\."
     r"(?: Attempt any \d+\.)?"
-    r"(?: \d+ of them offer an internal choice \(OR\): attempt only one of the two\.)?")
+    r"(?: \d+ of them offers? an internal choice \(OR\): attempt only one of the two\.)?")
 
 
 def reads_as_generated(text: str) -> bool:

@@ -57,6 +57,9 @@ class ReviewResponse(Camel):
     comment: Optional[str] = None
     requested_at: str
     decided_at: Optional[str] = None
+    # A colleague approved it for the principal and the paper still waits for
+    # the principal's approval (it is "underReview" until then).
+    awaiting_principal: bool = False
 
 
 def _assessments():
@@ -70,12 +73,18 @@ def _audit(action: str, user: User, assessment_id: str, details: dict[str, Any])
                                             details={"schoolId": user.school_id, **details})
 
 
-def _out(r: dict, title: str = "") -> ReviewResponse:
+def _out(r: dict, title: str = "", assessment=None) -> ReviewResponse:
     u = cr._require_users().get(r["reviewer_id"])
     return ReviewResponse(id=r["id"], assessment_id=r["assessment_id"], title=title, author_id=r["author_id"],
                           reviewer_id=r["reviewer_id"], reviewer_name=u.name if u else "", state=r["state"],
                           request_note=r["request_note"], comment=r["comment"], requested_at=r["requested_at"],
-                          decided_at=r["decided_at"])
+                          decided_at=r["decided_at"],
+                          awaiting_principal=_awaits_principal(r, assessment))
+
+
+def _awaits_principal(r: dict, assessment) -> bool:
+    return (r["state"] == "approved" and assessment is not None
+            and assessment.status == "underReview")
 
 
 def _set_status(assessment, status: str) -> None:
@@ -162,19 +171,26 @@ def decide_review(assessment_id: str, req: ReviewDecision, current: User = Depen
 @router.get("/assessments/{assessment_id}/reviews", response_model=list[ReviewResponse])
 def list_reviews(assessment_id: str, current: User = Depends(require_staff)) -> list[ReviewResponse]:
     a = require_school_owns_assessment(_assessments(), assessment_id, current)
-    return [_out(r, a.title) for r in ops().reviews_for(a.id)]
+    return [_out(r, a.title, a) for r in ops().reviews_for(a.id)]
 
 
 @router.get("/paper-reviews", response_model=list[ReviewResponse])
 def my_reviews(state: Optional[str] = Query(default="pending"), current: User = Depends(require_staff)
                ) -> list[ReviewResponse]:
     """The papers waiting for the caller's review; the principal sees the
-    school's."""
-    rows = ops().reviews_where(current.school_id, reviewer_id=None if current.role == "principal" else current.id,
+    school's. For the principal, "pending" also holds the papers a colleague
+    approved for them: until 2026-10-01 those left the list the moment the
+    colleague approved, and the principal's Waiting tab read "Nothing to
+    review" while the paper waited for them (QA P-12)."""
+    principal = current.role == "principal"
+    rows = ops().reviews_where(current.school_id, reviewer_id=None if principal else current.id,
                                state=state or None)
     store = _assessments()
+    if principal and state == "pending":
+        approved = ops().reviews_where(current.school_id, reviewer_id=None, state="approved")
+        rows = rows + [r for r in approved if _awaits_principal(r, store.get(r["assessment_id"]))]
     out = []
     for r in rows:
         a = store.get(r["assessment_id"])
-        out.append(_out(r, a.title if a else ""))
+        out.append(_out(r, a.title if a else "", a))
     return out

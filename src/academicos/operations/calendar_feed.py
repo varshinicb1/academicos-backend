@@ -119,7 +119,8 @@ class _Cal:
         self.now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
     def event(self, uid: str, summary: str, *, day: date, start: Optional[str] = None, end: Optional[str] = None,
-              until: Optional[date] = None, end_day: Optional[date] = None, description: str = "") -> None:
+              until: Optional[date] = None, end_day: Optional[date] = None, description: str = "",
+              skip: tuple[date, ...] = ()) -> None:
         ev = ["BEGIN:VEVENT", f"UID:{uid}@academicos", f"DTSTAMP:{self.now}", f"SUMMARY:{_esc(summary)}"]
         if start and end:
             ev += [f"DTSTART;TZID=Asia/Kolkata:{_stamp(day, start)}", f"DTEND;TZID=Asia/Kolkata:{_stamp(day, end)}"]
@@ -128,6 +129,8 @@ class _Cal:
                    f"DTEND;VALUE=DATE:{((end_day or day) + timedelta(days=1)).strftime('%Y%m%d')}"]
         if until is not None:
             ev.append(f"RRULE:FREQ=WEEKLY;UNTIL={until.strftime('%Y%m%d')}T235959Z")
+            if skip and start:
+                ev.append("EXDATE;TZID=Asia/Kolkata:" + ",".join(_stamp(d, start) for d in skip))
         if description:
             ev.append(f"DESCRIPTION:{_esc(description)}")
         ev.append("END:VEVENT")
@@ -158,6 +161,22 @@ class CalEvent:
     end: Optional[str] = None
     until: Optional[date] = None
     end_day: Optional[date] = None
+    # The weeks a weekly period does not happen: holidays, weekly offs and
+    # the Saturdays the school is closed.
+    skip: tuple[date, ...] = ()
+
+
+def _closed_days(cs, year) -> Optional[set[date]]:
+    """Every day of the year the school does not teach, or None when it has
+    no calendar yet. The feed's weekly periods recurred through holidays
+    and the 2nd/4th Saturdays off (QA S-13)."""
+    from ..curriculum.calendar import working_days_for_year
+    try:
+        open_days = {date.fromisoformat(d) for d in working_days_for_year(cs, year.id).dates}
+    except ValueError:
+        return None
+    start, end = date.fromisoformat(year.start_date), date.fromisoformat(year.end_date)
+    return {start + timedelta(days=i) for i in range((end - start).days + 1)} - open_days
 
 
 def calendar_events(user: User, today: date) -> list[CalEvent]:
@@ -184,6 +203,7 @@ def calendar_events(user: User, today: date) -> list[CalEvent]:
         return cs._section_label(s) if s else ""
 
     # the week, as weekly recurring periods at the bell's times
+    closed = _closed_days(cs, year)
     section = None
     if user.role == "student":
         e = cs.enrollment_for_student(user.id)
@@ -201,7 +221,8 @@ def calendar_events(user: User, today: date) -> list[CalEvent]:
         start, end = slot.start, slot.end
         first = first_day + timedelta(days=(t.day_of_week - first_day.weekday()) % 7)
         what = subject(t.subject_id) if user.role == "student" else f"{subject(t.subject_id)} {label(t.section_id)}"
-        out.append(CalEvent(f"tt-{t.id}", "period", what, first, start, end, until=yend))
+        skip = tuple(sorted(d for d in (closed or ()) if d >= first and d <= yend and d.weekday() == first.weekday()))
+        out.append(CalEvent(f"tt-{t.id}", "period", what, first, start, end, until=yend, skip=skip))
 
     # holidays
     cal_row = cs.get_calendar_for_year(year.id)
@@ -250,7 +271,8 @@ def calendar_events(user: User, today: date) -> list[CalEvent]:
 def build_calendar(user: User, today: date) -> str:
     cal = _Cal(f"School - {user.name}")
     for e in calendar_events(user, today):
-        cal.event(e.uid, e.title, day=e.day, start=e.start, end=e.end, until=e.until, end_day=e.end_day)
+        cal.event(e.uid, e.title, day=e.day, start=e.start, end=e.end, until=e.until, end_day=e.end_day,
+                  skip=e.skip)
     return cal.text()
 
 

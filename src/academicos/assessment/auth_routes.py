@@ -17,11 +17,14 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import ConfigDict
+from pydantic.alias_generators import to_camel
 
 from ..api.rate_limit import account_failures, rate_limit_login, rate_limit_register
 from ..config import Config
@@ -442,6 +445,78 @@ def reopen_account(user_id: str, admin: User = Depends(require_admin("users"))) 
     if before != reopened.role:
         _audit_account("account_reopened", admin, reopened, before)
     return _to_response(reopened)
+
+
+# ---------------- passwords ----------------
+#
+# There was no way back in for a teacher, student or parent who forgot their
+# password: no reset, no change, and the emailed code is off where email is
+# not configured (QA S-05, 2026-10-01). The principal (or a teacher holding
+# the "users" grant) resets a school account to a one-time password they
+# read out; anyone signed in changes their own. The principal's own account
+# is the operator's, as for closing it.
+
+# Unambiguous when read aloud or copied from a screen: no 0/O, 1/l/I.
+_TEMP_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
+
+
+class PasswordResetResponse(Camel):
+    user_id: str
+    name: str
+    temporary_password: str
+
+
+class PasswordChangeRequest(Camel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+    current_password: str
+    new_password: str
+
+
+def _temporary_password() -> str:
+    """Three groups of four, e.g. "k7mq-x2rw-9tpd": 60 bits, easy to dictate."""
+    return "-".join("".join(secrets.choice(_TEMP_ALPHABET) for _ in range(4)) for _ in range(3))
+
+
+@router.post("/users/{user_id}/password-reset", response_model=PasswordResetResponse)
+def reset_password(user_id: str, admin: User = Depends(require_admin("users"))) -> PasswordResetResponse:
+    """Set a one-time password for a school account and sign it out
+    everywhere. The response is the only place the password appears; it is
+    not stored in the clear or written to the audit log."""
+    user = _school_account(user_id, admin)
+    if user.id == admin.id:
+        raise HTTPException(403, "change your own password under Settings, not here")
+    if user.role == "principal":
+        raise HTTPException(403, "the principal's account is changed by the operator, not in the app")
+    if is_closed(user.role):
+        raise HTTPException(409, "this account is closed; reopen it first")
+    password = _temporary_password()
+    store = _require()
+    store.set_password(user.id, password)
+    store.delete_sessions_for(user.id)
+    if _cfg is not None:
+        from .audit_log import get_audit_log
+        get_audit_log(_cfg.data_root).append(
+            "password_reset", actor=admin.id, details={"userId": user.id, "name": user.name,
+                                                        "schoolId": admin.school_id})
+    return PasswordResetResponse(user_id=user.id, name=user.name, temporary_password=password)
+
+
+@router.post("/password")
+def change_password(req: PasswordChangeRequest, current: User = Depends(get_current_user)) -> dict:
+    """The signed-in person's own password. Other sessions end; this one
+    stays signed in."""
+    store = _require()
+    if not store.check_password(current.id, req.current_password):
+        raise HTTPException(400, "the current password is not right")
+    if len(req.new_password) < 8:
+        raise HTTPException(400, "password must be at least 8 characters")
+    store.set_password(current.id, req.new_password)
+    store.delete_sessions_for(current.id)
+    if _cfg is not None:
+        from .audit_log import get_audit_log
+        get_audit_log(_cfg.data_root).append(
+            "password_changed", actor=current.id, details={"schoolId": current.school_id})
+    return {"ok": True, "token": store.create_session(current.id)}
 
 
 # ---------------- invites (principal only, own school only) ----------------

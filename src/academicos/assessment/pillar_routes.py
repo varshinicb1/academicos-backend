@@ -1198,6 +1198,42 @@ def class_report(assessment_id: str, class_id: str = "10A",
     )
 
 
+def _school_students(school_id: str) -> list[str]:
+    """The ids of the school's open student accounts."""
+    from . import auth_routes
+    from .users import is_closed
+    users = auth_routes._users
+    if users is None:
+        return []
+    return [u.id for u in users.users_for_school(school_id, role="student") if not is_closed(u.role)]
+
+
+def _question_chapters(questions: list[dict]) -> set[str]:
+    """The concept ids a set of served questions was recorded under (the
+    learner model files an answer under the question's own chapter ids)."""
+    return {c for q in questions for c in (q.get("chapterIds") or q.get("chapter_ids") or [])}
+
+
+def _homework_and_practice(school_id: str, students: list[str]):
+    """(subject, class, {student id: concept ids}) for the school's marked
+    homework and its students' finished practice sets."""
+    try:
+        from ..operations import routes as ops
+        store = ops.store()
+    except HTTPException:
+        return
+    for hw in store.homework_for_school(school_id):
+        marked = {s.student_id for s in store.submissions_for(hw.id) if s.status == "graded"}
+        concepts = _question_chapters(hw.questions)
+        if marked and concepts:
+            yield hw.subject_name, hw.grade, {sid: set(concepts) for sid in marked}
+    for sid in students:
+        for p in store.practice_for(sid, limit=200):
+            concepts = _question_chapters(p["questions"])
+            if p.get("submitted_at") and concepts:
+                yield p["subject"], int(p["grade"]), {sid: concepts}
+
+
 class SubjectRollupResponse(Camel):
     subject: str
     grade: int
@@ -1209,7 +1245,11 @@ class SubjectRollupResponse(Camel):
 
 class SchoolInsightsResponse(Camel):
     school_id: str
+    # The school's enrolled students. It counted only students with a marked
+    # paper, so a school with four students and marked homework read
+    # "0 Students" (QA S-04); that count is `students_with_evidence`.
     students: int
+    students_with_evidence: int = 0
     assessments: int
     average_mastery: float
     subjects: list[SubjectRollupResponse]
@@ -1229,6 +1269,22 @@ def school_report(school_id: str, principal: User = Depends(require_admin("repor
     graded_papers = 0
     from .marks_routes import chapters_by_student_from_marks
     typed = chapters_by_student_from_marks(school_id)
+    def add(subject: str, grade: int, sheets: dict[str, set[str]]) -> None:
+        key = (subject.casefold(), grade)
+        group = evidence.get(key)
+        if group is None:
+            syllabus = load_syllabus(subject, grade)
+            chapters = [c for _, c in syllabus.all_chapters()] if syllabus else []
+            names = {**taxonomy_chapters(subject, grade),
+                     **{c["id"]: c["name"] for c in book_chapters(subject, grade)},
+                     **{c.id: c.name for c in chapters}}
+            group = evidence[key] = insights_mod.ClassEvidence(
+                subject=subject, grade=grade, students=set(), concepts=set(),
+                total_chapters=len(chapters), names=names)
+        group.students.update(sheets)
+        for concepts in sheets.values():
+            group.concepts.update(concepts)
+
     for a in _assessments.list_by_school(school_id):
         sheets = graded.chapters_by_student(a.id)
         for sid, chapters in typed.get(a.id, {}).items():
@@ -1236,23 +1292,19 @@ def school_report(school_id: str, principal: User = Depends(require_admin("repor
         if not sheets:
             continue
         graded_papers += 1
-        group = evidence.get((a.subject, a.grade))
-        if group is None:
-            syllabus = load_syllabus(a.subject, a.grade)
-            chapters = [c for _, c in syllabus.all_chapters()] if syllabus else []
-            names = {**taxonomy_chapters(a.subject, a.grade),
-                     **{c["id"]: c["name"] for c in book_chapters(a.subject, a.grade)},
-                     **{c.id: c.name for c in chapters}}
-            group = evidence[(a.subject, a.grade)] = insights_mod.ClassEvidence(
-                subject=a.subject, grade=a.grade, students=set(), concepts=set(),
-                total_chapters=len(chapters), names=names)
-        group.students.update(sheets)
-        for concepts in sheets.values():
-            group.concepts.update(concepts)
+        add(a.subject, a.grade, sheets)
+    # Marked homework and finished practice feed the same learner models
+    # (homework_routes._record_mastery, practice_routes.submit_practice), and
+    # the rollup read only papers: a school whose evidence so far is homework
+    # read "0% mastery" while a student's own Progress showed 75-82% (S-04).
+    enrolled = _school_students(school_id)
+    for subject, grade, sheets in _homework_and_practice(school_id, enrolled):
+        add(subject, grade, sheets)
     si = insights_mod.school_insights(school_id, knowledge, list(evidence.values()),
                                       assessments=graded_papers)
     return SchoolInsightsResponse(
-        school_id=si.school_id, students=si.students, assessments=si.assessments,
+        school_id=si.school_id, students=len(enrolled) or si.students,
+        students_with_evidence=si.students, assessments=si.assessments,
         average_mastery=si.average_mastery,
         subjects=[SubjectRollupResponse(
             subject=s.subject, grade=s.grade, average_mastery=s.average_mastery,

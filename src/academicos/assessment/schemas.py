@@ -307,6 +307,10 @@ class SchoolTemplate(Camel):
     school_id: str
     name: str
     tagline: str = ""
+    # The school profile's address and affiliation, as one printed line under
+    # its name (school_profile.printed_branding). Not stored by a school; set
+    # where a paper is exported.
+    address_line: str = ""
     brand_color: str = "#000000"
     header_html: str = ""
     footer_html: str = ""

@@ -64,6 +64,14 @@ def paper_question_ids(paper: GeneratedPaper) -> set[str]:
     return ids
 
 
+def printed_marks(paper: GeneratedPaper) -> int:
+    """The marks the paper prints now, after any question was removed. The
+    Papers list showed the blueprint's total, so a paper cut to 79 still read
+    "80 marks" (QA P-16); generation and every edit record this on the
+    assessment's metadata as `paperMarks`."""
+    return sum(s.total_marks for s in paper.sections)
+
+
 class PaperStore:
     def __init__(self, db_path: Path):
         self._remote = durable_table("papers")

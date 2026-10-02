@@ -800,10 +800,16 @@ class CoverMixin:
                     lp.period, lp.reason, lp.source_id, lp.status, lp.created_at, lp.updated_at))
         return lp
 
-    def _clear_lost(self, sub: Substitution, *, replan: bool = True) -> None:
+    def _clear_lost(self, sub: Substitution, *, replan: bool = True, keep_made_up: bool = False) -> None:
         """A period that now has a teacher of its subject is no longer lost,
-        and the plan may teach in it again (`replan`)."""
-        where = ("date=? AND section_id=? AND period=? AND status='owed' AND source_id=?",
+        and the plan may teach in it again (`replan`). Its make-up goes with
+        it: a teacher marked absent by mistake and then present kept the
+        period "lost" and an extra make-up period booked (QA S-02), because
+        only a period still owed was cleared. `keep_made_up` is for a period
+        that stays lost for another reason (a closure), whose booked make-up
+        still stands."""
+        statuses = "('owed')" if keep_made_up else "('owed','compensated')"
+        where = (f"date=? AND section_id=? AND period=? AND status IN {statuses} AND source_id=?",
                  (sub.date, sub.section_id, sub.period, sub.id))
         if not self._lost_where(*where):
             return
@@ -856,7 +862,7 @@ class CoverMixin:
             for sub in self._subs_where("academic_year_id=? AND date=? AND status NOT IN ('resolved','cancelled')",
                                         (academic_year_id, on)):
                 if section_ids is None or sub.section_id in section_ids:
-                    self._clear_lost(sub, replan=False)
+                    self._clear_lost(sub, replan=False, keep_made_up=True)
             for e in self.timetable_for_year(academic_year_id):
                 if e.day_of_week != wd:
                     continue

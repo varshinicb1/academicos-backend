@@ -21,8 +21,10 @@ from . import pdf as pdf_export
 from . import grades, paper_timing, selection
 from .audit_log import get_audit_log
 from .authz import (
-    require_own_school, require_own_subtopics, require_school_owns_assessment,
-    require_school_owns_paper,
+    may_download_paper, paper_permissions, papers_visible_to, require_may_change_paper,
+    require_may_download_paper,
+    require_own_school, require_own_subtopics, require_school_owns_assessment, require_school_owns_paper,
+    without_answer_key,
 )
 from .auth_routes import get_current_user, require_admin, require_principal, require_staff
 from .competency import CBSE_COMPETENCY_TARGET
@@ -53,7 +55,7 @@ from .schemas import (
     SectionBlueprint,
 )
 from ..operations.question_reviews import usable
-from .paper_store import PaperStore
+from .paper_store import PaperStore, printed_marks
 from .store import AssessmentStore
 from .templates import (
     TIER_BLOOM,
@@ -380,9 +382,10 @@ def _shortfall_warnings(paper: GeneratedPaper, blueprint: Blueprint) -> list[str
 
 
 def _overlap_warnings(paper: GeneratedPaper) -> list[str]:
-    return [f"Set {label} repeats {n} question(s) from an earlier set: the question bank "
-            f"has no unused question of the same marks and type left in the chapters "
-            f"this paper draws from."
+    from .wording import counted
+    return [counted(f"Set {label} repeats {n} question(s) from an earlier set: the question bank "
+                    f"has no unused question of the same marks and type left in the chapters "
+                    f"this paper draws from.")
             for label, n in paper.set_overlap.items() if n]
 
 
@@ -447,6 +450,7 @@ def generate_paper_endpoint(
     if assessment:
         assessment.generated_paper_id = paper.id
         assessment.selected_question_ids = [q.id for q in request.selected_questions]
+        assessment.metadata = {**assessment.metadata, "paperMarks": printed_marks(paper)}
         assessment.status = "paperGenerated"
         assessment.updated_at = _now()
         store.save(assessment)
@@ -579,6 +583,7 @@ def quick_generate_paper(request: QuickPaperRequest, current: User = Depends(req
         updated_at=_now(),
         generated_paper_id=paper.id,
         selected_question_ids=[q.id for q in opt_result.selected_questions],
+        metadata={"paperMarks": printed_marks(paper)},
     )
     store.save(assessment)
 
@@ -699,6 +704,7 @@ def generate_from_ids(request: GenerateFromIdsRequest, current: User = Depends(r
     if existing_asm:
         existing_asm.generated_paper_id = paper.id
         existing_asm.selected_question_ids = [q.id for q in found_questions]
+        existing_asm.metadata = {**existing_asm.metadata, "paperMarks": printed_marks(paper)}
         existing_asm.status = "paperGenerated"
         existing_asm.updated_at = _now()
         store.save(existing_asm)
@@ -717,6 +723,7 @@ def generate_from_ids(request: GenerateFromIdsRequest, current: User = Depends(r
             updated_at=_now(),
             generated_paper_id=paper.id,
             selected_question_ids=[q.id for q in found_questions],
+            metadata={"paperMarks": printed_marks(paper)},
         )
         store.save(new_asm)
 
@@ -819,7 +826,10 @@ def get_paper_timing(term_id: Optional[str] = Query(None, alias="termId"),
 @router.get("/papers/{paper_id}", response_model=GeneratedPaper)
 def get_paper(paper_id: str, current: User = Depends(require_staff)) -> GeneratedPaper:
     _, store = _require()
-    return require_school_owns_paper(_require_papers(), store, paper_id, current)
+    paper = require_school_owns_paper(_require_papers(), store, paper_id, current)
+    if may_download_paper(store.get(paper.assessment_id), current):
+        return paper
+    return without_answer_key(paper)
 
 
 _SERVER_PATH = re.compile(r"(?:[A-Za-z]:)?(?:[\\/]+[^\\/\s'\"\]]+){2,}")
@@ -834,6 +844,7 @@ def _render_cause(exc: Exception) -> str:
 def export_paper(paper_id: str, fmt: str, current: User = Depends(require_staff)) -> dict:
     cfg, store = _require()
     paper = require_school_owns_paper(_require_papers(), store, paper_id, current)
+    require_may_download_paper(store.get(paper.assessment_id), current)
     if fmt not in ("pdf", "docx", "answer-key", "answer_key", "answerKey"):
         raise HTTPException(400, "exports are pdf, docx (an editable Word file) and answer-key")
     out_dir = cfg.artifacts_dir / "papers"
@@ -908,7 +919,8 @@ def get_paper_file(paper_id: str, format: str = "pdf", export: Optional[str] = N
     from fastapi.responses import Response
     from . import export_files
     cfg, store = _require()
-    require_school_owns_paper(_require_papers(), store, paper_id, current)
+    paper = require_school_owns_paper(_require_papers(), store, paper_id, current)
+    require_may_download_paper(store.get(paper.assessment_id), current)
     fmt = "answer-key" if format in ("answer-key", "answer_key") else "docx" if format == "docx" else "pdf"
     if export is not None and not export_files.EXPORT_ID.match(export):
         raise HTTPException(422, "export is the id an export returned (exp_ and 10 hex digits)")
@@ -984,7 +996,8 @@ def create_assessment(
 @router.get("/assessments/{assessment_id}", response_model=Assessment)
 def get_assessment(assessment_id: str, current: User = Depends(require_staff)) -> Assessment:
     _, store = _require()
-    return require_school_owns_assessment(store, assessment_id, current)
+    a = require_school_owns_assessment(store, assessment_id, current)
+    return _with_author_names([a], current)[0]
 
 
 @router.get("/assessments", response_model=list[Assessment])
@@ -1003,8 +1016,49 @@ def list_assessments(
     if teacher_id:
         if teacher_id != current.id and current.role != "principal":
             raise HTTPException(403, "cannot list another teacher's assessments")
-        return [a for a in store.list_by_teacher(teacher_id) if a.school_id == current.school_id]
-    return store.list_by_school(current.school_id)
+        rows = [a for a in store.list_by_teacher(teacher_id) if a.school_id == current.school_id]
+    else:
+        rows = papers_visible_to(store.list_by_school(current.school_id), current)
+    return _with_author_names(rows, current)
+
+
+# Written by the server, never taken from a client's PUT: the printed marks
+# and edit log follow the paper, and the author's name is added at read time.
+_SERVER_METADATA = frozenset({"paperMarks", "paperEdits", "authorName", "permissions"})
+
+
+def _with_author_names(rows: list[Assessment], current: User) -> list[Assessment]:
+    """Each paper with its author's name in `metadata.authorName`, for the
+    Papers list (QA P-16: no author was shown, even in the principal's
+    school-wide list), and what the caller may do with it in
+    `metadata.permissions` (QA R-01, R-04). Read-time only: update_assessment
+    drops both again."""
+    names = {u.id: u.name for u in _users().users_for_school(current.school_id)}
+    may = paper_permissions(rows, current)
+    return [a.model_copy(update={"metadata": {**_with_paper_marks(a).metadata,
+                                              "authorName": names.get(a.teacher_id, ""),
+                                              "permissions": may[a.id]}})
+            for a in rows]
+
+
+def _with_paper_marks(a: Assessment) -> Assessment:
+    """`a` with `metadata.paperMarks`, read from its paper once and kept, when
+    it has a paper and was generated or last edited before the field
+    existed: such a paper still listed the blueprint's total (QA P-16)."""
+    if "paperMarks" in a.metadata or not a.generated_paper_id:
+        return a
+    try:
+        paper = _require_papers().get(a.generated_paper_id)
+    except HTTPException:
+        return a
+    if paper is None:
+        return a
+    a = a.model_copy(update={"metadata": {**a.metadata, "paperMarks": printed_marks(paper)}})
+    try:
+        _require()[1].save(a)
+    except Exception:  # noqa: BLE001 - a list must not fail for want of a cache write
+        log.warning("could not record paperMarks on %s", a.id, exc_info=True)
+    return a
 
 
 @router.put("/assessments/{assessment_id}", response_model=Assessment)
@@ -1016,11 +1070,17 @@ def update_assessment(
     if existing is not None:
         if existing.school_id != current.school_id:
             raise HTTPException(403, "this assessment belongs to a different school")
+        require_may_change_paper(existing, current)
         _require_editable(existing)
         _require_status_change(existing.status, assessment.status)
         # Authorship is not an editable field: it decides who may ask for a
         # review, delete the paper, and whom a reviewer's decision reaches.
         assessment.teacher_id = existing.teacher_id
+        # Nor is what the server records about the paper: a client renaming
+        # a paper sends back the metadata it listed, which may predate an edit.
+        assessment.metadata = {
+            **{k: v for k, v in assessment.metadata.items() if k not in _SERVER_METADATA},
+            **{k: v for k, v in existing.metadata.items() if k in _SERVER_METADATA}}
     elif assessment.school_id != current.school_id:
         # No pre-existing row to check ownership against (first PUT acting as
         # create) -- the body must still claim the caller's own school, same
@@ -1060,6 +1120,7 @@ def delete_assessment(assessment_id: str, current: User = Depends(require_staff)
 def update_status(assessment_id: str, body: dict, current: User = Depends(require_staff)) -> Assessment:
     cfg, store = _require()
     a = require_school_owns_assessment(store, assessment_id, current)
+    require_may_change_paper(a, current)
     new_status = body.get("status", a.status)
     _require_status_change(a.status, new_status)
     if new_status == a.status:

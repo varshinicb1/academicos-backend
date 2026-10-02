@@ -695,6 +695,15 @@ def mark_teacher_attendance(req: AttendanceRequest, on: Optional[str] = Query(de
     return _attendance(day, principal, opened)
 
 
+@router.get("/my-attendance", response_model=AttendanceRow)
+def my_attendance(current: User = Depends(require_staff)) -> AttendanceRow:
+    """The caller's own attendance today, as the day's register holds it.
+    The register is the principal's, so My day could not tell a teacher who
+    had checked in that they had: "I'm here" was offered again every time it
+    opened (QA S-12)."""
+    return next(r for r in _attendance(_today(), current).rows if r.teacher_id == current.id)
+
+
 @router.post("/my-attendance", response_model=AttendanceRow)
 def check_in(current: User = Depends(require_staff)) -> AttendanceRow:
     """A teacher marks themselves present today (arrival). It never

@@ -58,6 +58,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from . import grades
+from .wording import counted
 from .competency import CBSE_COMPETENCY_TARGET, below_target, is_competency_question, \
     share_summary
 from .mapping import to_question_schema
@@ -304,14 +305,14 @@ def choose_swap(slot: Slot, rule: SlotRule, bank: Bank, printed: list[Printed],
         -iq[1].quality_score, iq[1].id))
     notes = []
     if best.id in other_sets:
-        notes.append(f"{slot.label}: {best.id} is also printed on another set of this paper -- "
-                     "no other question in the paper's chapters fits this slot.")
+        notes.append(f"{slot.label}: the new question is also printed on another set of this "
+                     "paper -- no other question in the paper's chapters fits this slot.")
     if best.id in recent:
-        notes.append(f"{slot.label}: {best.id} is on one of your recent papers (your last "
+        notes.append(f"{slot.label}: the new question is on one of your recent papers (your last "
                      f"{RECENT_PAPERS} for this class and subject) -- no other question "
                      "in the paper's chapters fits this slot.")
     if not inside:
-        notes.append(f"{slot.label}: {best.id} is from outside the paper's chapters.")
+        notes.append(f"{slot.label}: the new question is from outside the paper's chapters.")
     return Choice(best, notes, counts)
 
 
@@ -324,12 +325,12 @@ def _no_alternative_reason(section: TemplateSection, c: SwapCounts) -> str:
                     (c.not_competency, "are not competency-based"),
                     (c.on_paper, "are already on this paper"),
                     (c.swapped_out_earlier, "were swapped out of this paper earlier "
-                                            "(pick one by id to bring it back)"),
+                                            "(pick one from the bank to bring it back)"),
                     (c.outside_scope, "are outside the paper's chapters"),
                     (c.near_duplicate, "repeat a question already on the paper")):
         if n:
             parts.append(f"{n} {text}")
-    return "; ".join(parts) + "."
+    return counted("; ".join(parts) + ".")
 
 
 # ---- pick
@@ -340,38 +341,38 @@ def check_pick(slot: Slot, rule: SlotRule, bank: Bank, question_id: str,
                ) -> Choice:
     q = bank.by_id.get(question_id)
     if q is None:
-        raise EditError(404, f"{question_id} is not in the Class {grade} {subject} bank")
+        raise EditError(404, f"That question is not in the Class {grade} {subject} bank.")
     if question_id not in bank.keyed:
-        raise EditError(422, f"{question_id} has no verified answer key, so it cannot be "
+        raise EditError(422, "That question has no verified answer key, so it cannot be "
                              "printed (rule Q1: no answer key, no question).")
     marks = slot.question.marks
     if q.marks != marks:
-        raise EditError(422, f"{slot.label} is a {marks}-mark slot and {question_id} carries "
+        raise EditError(422, f"{slot.label} is a {marks}-mark slot and that question carries "
                              f"{q.marks} marks: choose a {marks}-mark question, or change "
                              "the section's marks in the template.")
     for p in printed:
         if p.id == question_id:
-            raise EditError(409, f"{question_id} is already on the paper as {p.label}.")
+            raise EditError(409, f"That question is already on the paper as {p.label}.")
     other = _repeats(q, [p for p in printed if p.key != slot.key])
     if other is not None:
-        raise EditError(409, f"{question_id} is a near-duplicate of {other.label} "
-                             f"({other.id}) on this paper.")
+        raise EditError(409, f"That question repeats {other.label} of this paper in other words.")
     notes = []
     section = rule.section
     if section.question_types and not _content_fits(q, section.question_types):
-        notes.append(f"{slot.label}: {question_id} is not a "
+        notes.append(f"{slot.label}: the question you picked is not a "
                      f"{'/'.join(t.replace('_', ' ') for t in section.question_types)} "
                      "question, which this section asks for.")
     if _all_competency(section) and not is_competency_question(q):
-        notes.append(f"{slot.label}: {question_id} is not competency-based, which this "
+        notes.append(f"{slot.label}: the question you picked is not competency-based, which this "
                      "section asks for.")
     if not rule.scope.in_scope(q):
-        notes.append(f"{slot.label}: {question_id} is from outside the paper's chapters.")
+        notes.append(f"{slot.label}: the question you picked is from outside the paper's chapters.")
     if question_id in recent:
-        notes.append(f"{slot.label}: {question_id} is on one of your recent papers (your "
-                     f"last {RECENT_PAPERS} for this class and subject).")
+        notes.append(f"{slot.label}: the question you picked is on one of your recent papers "
+                     f"(your last {RECENT_PAPERS} for this class and subject).")
     if question_id in other_sets:
-        notes.append(f"{slot.label}: {question_id} is also printed on another set of this paper.")
+        notes.append(f"{slot.label}: the question you picked is also printed on another set "
+                     "of this paper.")
     return Choice(q, notes)
 
 

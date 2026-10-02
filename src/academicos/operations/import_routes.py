@@ -224,10 +224,25 @@ def _plan_sections(ctx: _Ctx, line: int, r: dict) -> _Row:
     return _Row(line, "ok", msg + (f", class teacher {teacher.name}" if teacher else ""), apply)
 
 
+def _wrong_role(line: int, r: dict, kind: str, roles: tuple[str, ...]) -> Optional[_Row]:
+    """A row that names its own role (the people export carries a role
+    column) and names another: pasting the people export into the teachers
+    import invited a role=student row as a teacher (QA S-08)."""
+    role = (r.get("role") or "").strip().lower()
+    if role and role not in roles:
+        other = {"student": "students", "teacher": "teachers", "principal": "teachers"}.get(role)
+        hint = f"; import it with Import {other}" if other and other != kind else ""
+        return _Row(line, "error", f"this row's role is {role}, not {' or '.join(roles)}{hint}")
+    return None
+
+
 def _plan_teachers(ctx: _Ctx, line: int, r: dict) -> _Row:
     email = r.get("email", "").lower()
     if not _EMAIL.match(email):
         return _Row(line, "error", f"{r.get('email')!r} is not an email address")
+    wrong = _wrong_role(line, r, "teachers", ("teacher", "principal"))
+    if wrong is not None:
+        return wrong
     if ("email", email) in ctx.planned:
         return _Row(line, "skip", "this email is already earlier in this file")
     ctx.planned.add(("email", email))
@@ -235,6 +250,9 @@ def _plan_teachers(ctx: _Ctx, line: int, r: dict) -> _Row:
     if u is not None:
         if u.school_id == ctx.principal.school_id and u.role in ("teacher", "principal"):
             return _Row(line, "skip", f"{u.name} already has a staff account")
+        if u.school_id == ctx.principal.school_id:
+            return _Row(line, "error", f"{u.name} already has a {u.role} account at this school, "
+                                       "not a staff one")
         return _Row(line, "error", "this email already has an account that is not this school's staff")
     if _open_invite(ctx, email, "teacher"):
         return _Row(line, "skip", "already invited; the invite is still open")
@@ -248,6 +266,9 @@ def _plan_students(ctx: _Ctx, line: int, r: dict) -> _Row:
     if ("email", email) in ctx.planned:
         return _Row(line, "skip", "this email is already earlier in this file")
     ctx.planned.add(("email", email))
+    wrong = _wrong_role(line, r, "students", ("student",))
+    if wrong is not None:
+        return wrong
     section = _section(ctx, r.get("grade", ""), r.get("section", ""))
     if section is None:
         return _Row(line, "error", f"there is no section {r.get('grade')}-{r.get('section')} this year; "

@@ -448,16 +448,40 @@ def _tables(r: TermReport) -> list[tuple[str, list[list[Any]]]]:
             ("Question bank", bank), ("Progress", progress)]
 
 
-def to_xlsx(r: TermReport) -> bytes:
+class Letterhead:
+    """The school's name, address line and logo, as its papers and report
+    cards print them. The term report carried none of them (QA S-11), though
+    the profile promises them "at the top of every paper, answer key and
+    report"."""
+
+    def __init__(self, name: str = "", address_line: str = "", logo=None):
+        self.name, self.address_line, self.logo = name, address_line, logo
+
+    @classmethod
+    def for_school(cls, school_id: str) -> "Letterhead":
+        from ..curriculum.school_profile import local_logo
+        try:
+            profile = cr._require().get_school_profile(school_id)
+        except HTTPException:
+            return cls()
+        if profile is None:
+            return cls()
+        line = " | ".join(x for x in (profile.address, profile.affiliation) if x)
+        logo = local_logo(cr._cfg.data_root, profile) if cr._cfg is not None else None
+        return cls(profile.name, line, logo)
+
+
+def to_xlsx(r: TermReport, letterhead: Optional[Letterhead] = None) -> bytes:
     from .xlsx import workbook
     head, sub = _title(r)
     sheets = _tables(r)
     name, rows = sheets[0]
-    sheets[0] = (name, [[head], [sub], [r.scope.note or ""], []] + rows)
+    school = [[x] for x in ((letterhead.name, letterhead.address_line) if letterhead else ()) if x]
+    sheets[0] = (name, school + [[head], [sub], [r.scope.note or ""], []] + rows)
     return workbook(sheets)
 
 
-def to_pdf(r: TermReport) -> bytes:
+def to_pdf(r: TermReport, letterhead: Optional[Letterhead] = None) -> bytes:
     import io
     from xml.sax.saxutils import escape
     from reportlab.lib import colors
@@ -472,7 +496,19 @@ def to_pdf(r: TermReport) -> bytes:
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=12 * mm, rightMargin=12 * mm,
                             topMargin=12 * mm, bottomMargin=12 * mm, title="Term report")
     head, sub = _title(r)
-    story: list[Any] = [Paragraph(escape(head), styles["Title"]), Paragraph(escape(sub), styles["Normal"])]
+    story: list[Any] = []
+    if letterhead is not None and letterhead.name:
+        block = [Paragraph(escape(letterhead.name), styles["Heading1"])]
+        if letterhead.address_line:
+            block.append(Paragraph(escape(letterhead.address_line), styles["Normal"]))
+        if letterhead.logo is not None:
+            from reportlab.platypus import Image
+            story.append(Table([[Image(str(letterhead.logo), width=16 * mm, height=16 * mm), block]],
+                               colWidths=[20 * mm, None], hAlign="LEFT",
+                               style=TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")])))
+        else:
+            story.extend(block)
+    story += [Paragraph(escape(head), styles["Title"]), Paragraph(escape(sub), styles["Normal"])]
     if r.scope.note:
         story.append(Paragraph(escape(r.scope.note), styles["Italic"]))
     for name, rows in _tables(r):
@@ -524,8 +560,9 @@ def export_term_report(format: Literal["xlsx", "pdf"] = "xlsx",
     r = build(principal, term_id=term_id, grade=grade, section_id=section_id, subject=subject)
     _audit(principal, "term_report_exported", r)
     stem = "".join(ch if ch.isalnum() else "-" for ch in f"term-report-{r.scope.name}-{r.scope.as_of}").strip("-")
+    letterhead = Letterhead.for_school(principal.school_id)
     if format == "pdf":
-        return Response(to_pdf(r), media_type="application/pdf",
+        return Response(to_pdf(r, letterhead), media_type="application/pdf",
                         headers={"Content-Disposition": f'attachment; filename="{stem}.pdf"'})
-    return Response(to_xlsx(r), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    return Response(to_xlsx(r, letterhead), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": f'attachment; filename="{stem}.xlsx"'})

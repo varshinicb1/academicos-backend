@@ -24,7 +24,8 @@ function of its inputs instead of creating a new cross-module coupling.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Iterable
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Iterable, Optional
 
 from fastapi import HTTPException
 
@@ -64,6 +65,150 @@ def require_school_owns_paper(
     # assessment_id rather than carrying a redundant column.
     require_school_owns_assessment(assessment_store, paper.assessment_id, current)
     return paper
+
+
+PAPER_CHANGE_DETAIL = ("only the paper's author, the principal or an exams admin can change this paper; "
+                       "ask its author to make the change")
+PAPER_READ_DETAIL = ("an exam paper and its answer key are downloaded only by the paper's author, its "
+                     "reviewer, the principal or an exams admin")
+
+
+def may_change_paper(assessment: "Assessment", current: "User") -> bool:
+    """The paper's author, the principal, or a teacher holding the exams grant.
+
+    Until 2026-10-01 the paper routes checked only that the caller was staff
+    of the paper's school: QA found any teacher could swap or remove a
+    colleague's questions and download the colleague's answer key before the
+    exam (P-09)."""
+    from .auth_routes import holds
+    if assessment.teacher_id and assessment.teacher_id == current.id:
+        return True
+    try:
+        grade: Optional[int] = int(assessment.grade)
+    except (TypeError, ValueError):
+        grade = None
+    return holds(current, "exams", grade=grade)
+
+
+def require_may_change_paper(assessment: "Assessment", current: "User") -> None:
+    if not may_change_paper(assessment, current):
+        raise HTTPException(403, PAPER_CHANGE_DETAIL)
+
+
+# From here on the exam has been sat: a colleague marking a section's scripts
+# needs the key, and there is nothing left to leak.
+AFTER_EXAM = frozenset({"conducted", "scanning", "scanned", "evaluating", "evaluated",
+                        "teacherReviewed", "reportsGenerated", "remediationSent", "archived"})
+
+
+def exam_held(assessment: "Assessment") -> bool:
+    """The paper's status says the exam was sat, or the date it was
+    scheduled for (the planner's) has passed."""
+    if assessment.status in AFTER_EXAM:
+        return True
+    when = assessment.scheduled_at
+    if when is None:
+        return False
+    now = datetime.now(timezone.utc) if when.tzinfo else datetime.now()
+    return when < now
+
+
+def may_download_paper(assessment: "Assessment", current: "User") -> bool:
+    """Who may take a paper or its answer key off the system: those who may
+    change it, a colleague asked to review it (they read the files), and,
+    once the exam has been held, any staff member of the school."""
+    if may_change_paper(assessment, current) or exam_held(assessment):
+        return True
+    try:
+        from ..operations import routes as ops
+        return any(r["reviewer_id"] == current.id for r in ops.store().reviews_for(assessment.id))
+    except HTTPException:
+        return False
+
+
+def require_may_download_paper(assessment: "Assessment", current: "User") -> None:
+    if not may_download_paper(assessment, current):
+        raise HTTPException(403, PAPER_READ_DETAIL)
+
+
+def without_answer_key(paper: "GeneratedPaper") -> "GeneratedPaper":
+    """The paper as a colleague may read it on screen: its questions, not its
+    answers (GET /papers/{id} returned the key to every teacher, P-09)."""
+    return paper.model_copy(update={
+        "answer_key": {},
+        "sets": [s.model_copy(update={"answer_key": {}}) for s in paper.sets],
+    })
+
+
+def papers_visible_to(assessments: "Iterable[Assessment]", current: "User") -> "list[Assessment]":
+    """The school's papers a staff member has a reason to see: the principal
+    sees all; a teacher, the ones they wrote, review, administer (the exams
+    grant for its class) or teach the subject of in its class -- the last so
+    a section teacher still finds a colleague's common paper to enter marks
+    on and scan. Every teacher saw every colleague's papers (QA P-09)."""
+    rows = list(assessments)
+    if current.role == "principal":
+        return rows
+    try:
+        from .marks_routes import teaching_cells
+        cells = teaching_cells(current)
+    except HTTPException:
+        cells = set()
+    try:
+        from ..operations import routes as ops
+        reviewing = {r["assessment_id"] for r in
+                     ops.store().reviews_where(current.school_id, reviewer_id=current.id, state=None)}
+    except HTTPException:
+        reviewing = set()
+
+    def teaches(a: "Assessment") -> bool:
+        try:
+            return (int(a.grade), str(a.subject).casefold()) in cells
+        except (TypeError, ValueError):
+            return False
+    return [a for a in rows if a.id in reviewing or may_change_paper(a, current) or teaches(a)]
+
+
+def paper_permissions(assessments: "Iterable[Assessment]", current: "User") -> "dict[str, dict[str, bool]]":
+    """What `current` may do with each paper, by the rules the routes
+    enforce, so a screen offers only those: the re-test found Download
+    buttons and an editable marks grid that could only answer 403 (QA R-01,
+    R-04). Reads the caller's teaching cells and reviews once for the lot.
+
+    change -- swap, pick, remove, rename (may_change_paper);
+    download -- the paper, the Word file, the key (may_download_paper);
+    enterMarks -- the marks grid (marks_routes.may_enter_marks);
+    delete -- its author or the principal (routes.delete_assessment)."""
+    from .auth_routes import holds
+    rows = list(assessments)
+    principal = current.role == "principal"
+    try:
+        from .marks_routes import teaching_cells
+        cells = set() if principal else teaching_cells(current)
+    except HTTPException:
+        cells = set()
+    try:
+        from ..operations import routes as ops
+        reviewing = {r["assessment_id"] for r in
+                     ops.store().reviews_where(current.school_id, reviewer_id=current.id, state=None)}
+    except HTTPException:
+        reviewing = set()
+    out: dict[str, dict[str, bool]] = {}
+    for a in rows:
+        author = bool(a.teacher_id) and a.teacher_id == current.id
+        try:
+            grade: Optional[int] = int(a.grade)
+        except (TypeError, ValueError):
+            grade = None
+        change = author or holds(current, "exams", grade=grade)
+        teaches = grade is not None and (grade, str(a.subject).casefold()) in cells
+        out[a.id] = {
+            "change": change,
+            "download": change or a.id in reviewing or exam_held(a),
+            "enterMarks": change or teaches,
+            "delete": author or principal,
+        }
+    return out
 
 
 def require_school_owns_scan_session(

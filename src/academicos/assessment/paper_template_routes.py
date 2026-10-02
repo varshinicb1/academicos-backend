@@ -30,10 +30,10 @@ from ..config import Config
 from . import paper_edit
 from .audit_log import get_audit_log
 from .auth_routes import require_staff
-from .authz import require_own_school, require_school_owns_paper
+from .authz import require_may_change_paper, require_own_school, require_school_owns_paper
 from .paper import generate_paper_sets, lettered, report_competency, set_repeat_warnings
 from .paper_edit import Bank, SwapCounts, bank_for
-from .paper_store import PaperStore, paper_question_ids
+from .paper_store import PaperStore, paper_question_ids, printed_marks
 from .paper_templates import AvailabilityReport, SectionAvailability, SectionPlan, \
     build_scope_filter, check_scope_ids, clashes, competency_check, plan, tier_check
 from .school_templates import TemplateStore
@@ -386,8 +386,13 @@ def template_availability(
     _scoped(school_id, current)
     if req.scope is not None:
         _checked_scope(req.scope)
-    report, _ = _plan(_load(template_id, current), req.scope,
-                      fill_from_outside_scope=req.fill_from_outside_scope, school_id=current.school_id)
+    template = _load(template_id, current)
+    # The repeats generation will avoid, so the check says the same as the
+    # paper it previews ("1 question repeats your recent papers").
+    report, _ = _plan(template, req.scope,
+                      fill_from_outside_scope=req.fill_from_outside_scope,
+                      stale=frozenset(_recent_ids(current.id, template.grade, template.subject)),
+                      school_id=current.school_id)
     return report
 
 
@@ -404,8 +409,16 @@ def generate_from_template(
     if req.scope is not None:
         _checked_scope(req.scope)
         template = template.model_copy(update={"scope": req.scope})
+    # A new paper prints questions the teacher's recent papers for this class
+    # and subject did not, where the bank has others: every paper for a
+    # class started with the same questions, and a 25-mark class test shared
+    # 15 of its 16 with the half-yearly (QA P-03). Soft, as "Make another
+    # like this" always was: a repeat is printed only where nothing else
+    # fits, and named in a note.
+    stale = frozenset(req.avoid_question_ids) | frozenset(
+        _recent_ids(current.id, template.grade, template.subject))
     report, plans = _plan(template, None, fill_from_outside_scope=req.fill_from_outside_scope,
-                          stale=frozenset(req.avoid_question_ids), school_id=current.school_id)
+                          stale=stale, school_id=current.school_id)
 
     # The gaps are the availability report's own: one plan run decides both.
     gaps: list[SectionAvailability] = [p.availability for p in plans if p.availability.shortfall]
@@ -424,7 +437,7 @@ def generate_from_template(
     # a set that repeats one of them must not inherit set A's OR with it.
     set_plans = [plans] + (_parallel_sets(
         template, plans, req.set_count, fill_from_outside_scope=req.fill_from_outside_scope,
-        stale=frozenset(req.avoid_question_ids), school_id=current.school_id)
+        stale=stale, school_id=current.school_id)
         if req.set_count > 1 else [])
     for sp in set_plans:
         _attach_choices(sp)
@@ -470,7 +483,8 @@ def generate_from_template(
                           "id": s.id or f"s{i + 1}"}
                          for i, s in enumerate(template.sections)],
             "scope": template.scope.model_dump(by_alias=True, mode="json"),
-            "fillFromOutsideScope": req.fill_from_outside_scope}},
+            "fillFromOutsideScope": req.fill_from_outside_scope},
+            "paperMarks": printed_marks(paper)},
     ))
     get_audit_log(cfg.data_root).append(
         "template_paper_generated", assessment_id=asm_id,
@@ -795,6 +809,7 @@ def remove_paper_question(paper_id: str, slot: str,
         raise HTTPException(503, "paper template module not initialized")
     paper = require_school_owns_paper(_papers, _assessments, paper_id, current)
     asm = _assessments.get(paper.assessment_id)
+    require_may_change_paper(asm, current)
     _require_editable(asm)
     try:
         slot = paper_edit.find_slot(paper, slot)
@@ -856,6 +871,7 @@ def _edit_question(paper_id: str, slot_key: str, current: User, *,
         raise HTTPException(503, "paper template module not initialized")
     paper = require_school_owns_paper(_papers, _assessments, paper_id, current)
     asm = _assessments.get(paper.assessment_id)
+    require_may_change_paper(asm, current)
     _require_editable(asm)
     try:
         bank = bank_usable(bank_for(cfg, paper.metadata.subject, paper.metadata.grade), current.school_id)
@@ -926,7 +942,7 @@ def _edited_metadata(metadata: dict, edits: dict, edited: GeneratedPaper) -> dic
     """The assessment's metadata after an edit: the edit log, and the
     instructions it records for the paper as the paper now prints them when
     they are generated (the teacher's own words do not change)."""
-    out = {**metadata, "paperEdits": edits}
+    out = {**metadata, "paperEdits": edits, "paperMarks": printed_marks(edited)}
     tpl = metadata.get("paperTemplate")
     if isinstance(tpl, dict) and edited.metadata.instructions_generated:
         out["paperTemplate"] = {**tpl, "instructions": edited.metadata.instructions or ""}
@@ -936,11 +952,15 @@ def _edited_metadata(metadata: dict, edits: dict, edited: GeneratedPaper) -> dic
 def _recent_question_ids(asm: Assessment) -> set[str]:
     """Every question on the teacher's `RECENT_PAPERS` most recent other
     papers for this class and subject (see paper_edit's module doc)."""
+    return _recent_ids(asm.teacher_id, asm.grade, asm.subject, exclude=asm.id)
+
+
+def _recent_ids(teacher_id: str, grade: int, subject: str, *, exclude: Optional[str] = None) -> set[str]:
     assert _assessments is not None and _papers is not None
     others = sorted(
-        (a for a in _assessments.list_by_teacher(asm.teacher_id)
-         if a.id != asm.id and a.generated_paper_id and a.grade == asm.grade
-         and a.subject.lower() == asm.subject.lower()),
+        (a for a in _assessments.list_by_teacher(teacher_id)
+         if a.id != exclude and a.generated_paper_id and a.grade == grade
+         and a.subject.lower() == subject.lower()),
         key=lambda a: a.created_at, reverse=True)
     ids: set[str] = set()
     for a in others[:paper_edit.RECENT_PAPERS]:

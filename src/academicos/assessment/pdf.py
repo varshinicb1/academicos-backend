@@ -43,6 +43,7 @@ from reportlab.platypus import (
 )
 
 from .duration import format_duration
+from .paper import ALL_OR_NOTHING_NOTE
 from .schemas import GeneratedPaper, GeneratedSectionSchema, SchoolTemplate
 from .template_presets import instructions_for_paper, reads_as_generated
 
@@ -142,46 +143,78 @@ def _register_unicode_font() -> None:
             log.warning("could not register font %s: %s", regular, e)
 
 
-# A line-for-line port of frontend/lib/core/local_engine/pdf_text_safety.dart,
-# so a question prints the same on the web as on the phone. The web had no
-# equivalent: CBE Maths writes variables as Mathematical Alphanumeric letters
-# (U+1D434-) and symbol-font private-use characters, and those vanished --
-# "12x^2 + 11x - 15" printed as "122 + 11-15". In production it is worse: the
-# container falls back to Helvetica (WinAnsi only) when DejaVu is missing.
+# Two tables. `_PDF_NORMALISE` always applies: it turns a character that
+# stands in for another (an OCR artifact, a styled Greek letter, a CJK
+# substitution, a combining mark ReportLab cannot position) into the one it
+# means. `_PDF_MATH` is the ASCII spelling of a symbol, used only when the
+# font the paper is set in has no glyph for it.
+#
+# Until 2026-10-01 every symbol was spelled out whatever the font: the
+# production image sets papers in DejaVu Sans, which draws all of them, and a
+# Class 10 paper still printed "a^2 + b^2", "sqrt 3", "theta", "pi" and "<="
+# where a teacher writes a², √3, θ, π and ≤ (QA finding P-02). The spelling
+# began as a line-for-line port of
+# frontend/lib/core/local_engine/pdf_text_safety.dart, whose phone exporter
+# has only Helvetica; set in Helvetica, this still prints exactly what the
+# phone prints.
 _PDF_PUNCTUATION = (("—", "-"), ("–", "-"), ("•", "-"),
                     ("‘", "'"), ("’", "'"), ("“", '"'), ("”", '"'))
 # Subscript digits U+2080-2089. A subscript names a thing -- H2O, a1 -- and
-# never changes a value, so a plain digit reads as the ASCII spelling already
-# in use.
-_SUB_DIGITS = str.maketrans("₀₁₂₃₄₅₆₇₈₉", "0123456789")
+# never changes a value, so where the font cannot draw it a plain digit reads
+# as the ASCII spelling already in use.
+_SUB_DIGITS = {c: d for c, d in zip("₀₁₂₃₄₅₆₇₈₉", "0123456789")}
+_SUB_RUN = re.compile(f"[{''.join(_SUB_DIGITS)}]+")
 # Superscripts are an exponent, and a plain digit is a DIFFERENT quantity:
 # cbe:q:Maths8BS2 is "(A) 4y³ (B) 9y³ (C) 13y³ (D) 36y³" and printed
 # "(A) 4y3 (B) 9y3 ..." -- the whole point of the question, gone (re-audit,
-# 2026-09-23). Printed with the caret a teacher writes on a board, over the
-# whole run, so "10⁻³" is "10^-3" and not "10^-^3".
+# 2026-09-23). Where the font cannot draw them they print with the caret a
+# teacher writes on a board, over the whole run, so "10⁻³" is "10^-3" and not
+# "10^-^3".
 _SUPERSCRIPTS = {"⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4", "⁵": "5",
                  "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9", "⁺": "+", "⁻": "-",
                  "⁼": "=", "⁽": "(", "⁾": ")", "ⁿ": "n"}
 _SUPER_RUN = re.compile(f"[{''.join(_SUPERSCRIPTS)}]+")
-
-
-def _exponent(match: re.Match) -> str:
-    return "^" + "".join(_SUPERSCRIPTS[c] for c in match.group(0))
-_PDF_MATH = (
-    ("−", "-"), ("√", "sqrt"), ("∴", "therefore"), ("∵", "because"),
-    ("∠", "angle "), ("⇒", "=>"), ("⟹", "=>"), ("≠", "!="),
-    ("≥", ">="), ("≤", "<="), ("∈", "in"), ("∞", "infinity"),
-    ("∫", "integral"),
+_PDF_NORMALISE = (
     # DOT OPERATOR (U+22C5): Segoe UI has no glyph for it, so it printed as a
     # notdef box, while MIDDLE DOT (U+00B7) draws the same mark and is Latin-1.
     # The papers use it for both a decimal point and a product -- Biology XII
     # 784bd959 Q27's "2⋅4 g/litre" -- so the mark is kept, not read.
     ("⋅", "·"),
-    ("′", "'"), ("θ", "theta"), ("π", "pi"), ("⃗", ""),
-    ("̂", ""), ("₹", "Rs."), ("…", "..."),
+    ("⃗", ""), ("̂", ""),   # combining marks: ReportLab cannot place them
     ("ଶ", "2"),        # an OCR artifact standing in for a superscript 2
-    ("𝛼", "alpha"), ("𝜃", "theta"), ("𝜋", "pi"),
-    # Every remaining value of `symbol_font.SYMBOL` that the registered font
+    ("↵", ""),         # Symbol 0xBF: a line break in the source, not content
+    ("ℎ", "h"),        # U+210E PLANCK CONSTANT, an italic h in "V = πr2ℎ"
+    # U+2218 RING OPERATOR after a number is a degree sign, not composition:
+    # SQP Mathematics X (Basic) 2024-25 Q13 prints "cos 60∘".
+    ("∘", "°"),
+    # U+2551 BOX DRAWINGS DOUBLE VERTICAL for "is parallel to": cbe:q:Maths9IM7
+    # prints "TS║QR". U+27D8 LARGE UP TACK for perpendicular: cbe:q:Maths10ASR11
+    # prints "QS ⟘ PR". U+2A6D CONGRUENT WITH DOT ABOVE for congruent: SQP
+    # Mathematics X (Basic) Q29 prints "𝛥𝑂𝐴𝑃⩭𝛥𝑂𝐵𝑃".
+    ("║", "∥"), ("⟘", "⊥"), ("⩭", "≅"),
+    # Styled Greek outside the Latin-only Mathematical Alphanumeric range
+    # `_demathify` covers. The capital delta keeps its plain code point so the
+    # triangle/change-in rule at the end of `pdf_safe` still reads it.
+    ("𝛼", "α"), ("𝜃", "θ"), ("𝜋", "π"), ("𝝅", "π"),
+    ("𝛥", "Δ"), ("𝛴", "Σ"), ("𝛽", "β"), ("𝜀", "ε"), ("𝜇", "μ"),
+    ("𝜎", "σ"), ("𝜔", "ω"),
+    # Fullwidth forms, from a CJK font substitution in the SQP Mathematics X
+    # 2024-25 marking schemes: "（𝑥-10)(𝑥-8）=0" (Standard VIC Q27), "FBD ～ DEF".
+    ("（", "("), ("）", ")"), ("～", "~"),
+    # U+571F, the CJK ideograph for "earth", from the same substitution: it
+    # stands where a plus-minus sign belongs -- "8 - x =土4 => x = 4, 12"
+    # (Standard Q23) and "= 土 1/(cosθ - sinθ)" (Q29), both plus-minus in
+    # context and nowhere near any CJK text.
+    ("土", "±"),
+)
+_PDF_MATH = (
+    ("−", "-"), ("√", "sqrt"), ("∴", "therefore"), ("∵", "because"),
+    ("∠", "angle "), ("⇒", "=>"), ("⟹", "=>"), ("≠", "!="),
+    ("≥", ">="), ("≤", "<="), ("∈", "in"), ("∞", "infinity"),
+    ("∫", "integral"),
+    ("′", "'"), ("θ", "theta"), ("π", "pi"), ("α", "alpha"),
+    ("₹", "Rs."), ("…", "..."),
+    # Every remaining value of `symbol_font.SYMBOL` that a candidate font
     # draws as a notdef box, measured by rendering the whole table and reading
     # it back (tests/test_assessment_pdf.py::
     # test_every_symbol_the_repair_can_restore_reaches_the_page). The repair
@@ -195,48 +228,29 @@ _PDF_MATH = (
     ("∧", "and"), ("∨", "or"), ("⊂", "subset of"), ("⊃", "superset of"),
     ("⊄", "not a subset of"), ("⊆", "subset of or equal to"),
     ("⊇", "superset of or equal to"), ("⊕", "(+)"), ("⊗", "(x)"),
-    ("〈", "<"), ("〉", ">"),   # Symbol 0xE1/0xF1 angle brackets
+    # Symbol 0xE1/0xF1 angle brackets, U+2329/U+232A, written as escapes:
+    # an editor that normalises text turns them into U+3008/U+3009.
+    ("\u2329", "<"), ("\u232a", ">"),
     ("⇐", "<=="), ("⇔", "<=>"), ("⇑", "up"), ("⇓", "down"),
     ("ℵ", "aleph"), ("ℑ", "Im"), ("ℜ", "Re"), ("℘", "P"),
-    ("↵", ""),         # Symbol 0xBF: a line break in the source, not content
-    # And every other non-ASCII character the served bank holds that the font
-    # cannot draw, from the same measurement over the bank itself.
-    ("ℎ", "h"),        # U+210E PLANCK CONSTANT, an italic h in "V = πr2ℎ"
-    # U+2218 RING OPERATOR after a number is a degree sign, not composition:
-    # SQP Mathematics X (Basic) 2024-25 Q13 prints "cos 60∘".
-    ("∘", "°"),
+    # And every other non-ASCII character the served bank holds that a
+    # candidate font cannot draw, from the same measurement over the bank.
     ("∛", "cbrt"), ("∜", "4th root "),
     ("∥", "||"),
-    # U+2551 BOX DRAWINGS DOUBLE VERTICAL for "is parallel to": cbe:q:Maths9IM7
-    # prints "TS║QR". U+27D8 LARGE UP TACK for perpendicular: cbe:q:Maths10ASR11
-    # prints "QS ⟘ PR". U+2A6D CONGRUENT WITH DOT ABOVE for congruent: SQP
-    # Mathematics X (Basic) Q29 prints "𝛥𝑂𝐴𝑃⩭𝛥𝑂𝐵𝑃".
-    ("║", "||"), ("⟘", "perpendicular"), ("⩭", "congruent"),
     ("△", "triangle "),
-    # Styled Greek outside the Latin-only Mathematical Alphanumeric range
-    # `_demathify` covers. The capital delta keeps its plain code point so the
-    # triangle/change-in rule at the end of `pdf_safe` still reads it.
-    ("𝛥", "Δ"), ("𝛴", "Σ"), ("𝛽", "β"), ("𝜀", "ε"), ("𝜇", "μ"),
-    ("𝜎", "σ"), ("𝜔", "ω"), ("𝝅", "pi"),
-    # Fullwidth forms, from a CJK font substitution in the SQP Mathematics X
-    # 2024-25 marking schemes: "（𝑥-10)(𝑥-8）=0" (Standard VIC Q27), "FBD ～ DEF".
-    ("（", "("), ("）", ")"), ("～", "~"),
-    # U+571F, the CJK ideograph for "earth", from the same substitution: it
-    # stands where a plus-minus sign belongs -- "8 - x =土4 => x = 4, 12"
-    # (Standard Q23) and "= 土 1/(cosθ - sinθ)" (Q29), both plus-minus in
-    # context and nowhere near any CJK text.
-    ("土", "±"),
 )
 # Symbol-font glyph references left by the source PDFs' OCR: no defined
 # meaning, so dropped rather than guessed.
-_PRIVATE_USE = re.compile("[-]")
+_PRIVATE_USE = re.compile("[\ue000-\uf8ff]")
 # U+2206 INCREMENT and U+0394 GREEK CAPITAL DELTA. Geometry writes a triangle
 # as "∆ABC" (often with italic math letters, so this runs after _demathify),
 # but Economics, Physics and Chemistry use the same glyph for "change in":
 # "Increase in Income (ΔY)", "Energy released = ∆m x 931.5 MeV",
 # "∆E_I > ∆E_II". Mapping every delta to "triangle" printed "triangle Y".
-# So "triangle" only before a three-capital vertex name that is not an
-# energy-level subscript; everything else is "delta".
+# So, where the font cannot draw the delta, "triangle" only before a
+# three-capital vertex name that is not an energy-level subscript, and
+# everything else is "delta". Where it can, the delta is printed as written:
+# both readings are what the paper's own author wrote.
 _TRIANGLE = re.compile(r"[∆Δ] ?(?=(?!E[IVX]{2}\b)[A-Z]{3}(?![A-Za-z]))")
 _DELTA = re.compile(r"[∆Δ] ?")
 _MATH_LETTER_BLOCKS = (0x1D400, 0x1D434, 0x1D468, 0x1D49C, 0x1D4D0, 0x1D504, 0x1D538,
@@ -254,16 +268,61 @@ def _demathify(cp: int) -> int | None:
     return None
 
 
-def pdf_safe(text: str) -> str:
-    """Text a base PDF font can print, keeping every symbol's meaning."""
+_GLYPHS: dict[str, frozenset[int]] = {}
+
+
+def _glyphs(font: str) -> frozenset[int]:
+    """The code points `font` has a real glyph for. Empty for ReportLab's
+    built-in Type 1 fonts (Helvetica): they are Latin-1 only, and nothing in
+    `_PDF_MATH` is Latin-1."""
+    if font not in _GLYPHS:
+        try:
+            cmap = getattr(pdfmetrics.getFont(font).face, "charToGlyph", None) or {}
+        except KeyError:
+            cmap = {}
+        _GLYPHS[font] = frozenset(cp for cp, glyph in cmap.items() if glyph)
+    return _GLYPHS[font]
+
+
+def _drawable_set(font: Optional[str]) -> frozenset[int]:
+    """What every face a paper's text may be set in can draw: the regular and
+    the bold body font (titles and the school name are bold), or `font` and
+    its bold face when a caller names one."""
+    if font is None:
+        _register_unicode_font()
+        regular, bold = _BODY_FONT, _BODY_FONT_BOLD
+    else:
+        regular = font
+        bold = f"{font}-Bold" if f"{font}-Bold" in pdfmetrics.getRegisteredFontNames() else font
+    return _glyphs(regular) & _glyphs(bold)
+
+
+def pdf_safe(text: str, font: Optional[str] = None) -> str:
+    """Text the paper's font can print, keeping every symbol's meaning: a
+    symbol the font draws stays a symbol, one it cannot is spelled out.
+
+    `font` is the registered font name to measure against; by default, the
+    body font papers are set in."""
+    can = _drawable_set(font)
     for a, b in _PDF_PUNCTUATION:
         text = text.replace(a, b)
-    text = _SUPER_RUN.sub(_exponent, text.translate(_SUB_DIGITS))
-    for a, b in _PDF_MATH:
+    for a, b in _PDF_NORMALISE:
         text = text.replace(a, b)
+    text = _SUB_RUN.sub(
+        lambda m: m.group(0) if all(ord(c) in can for c in m.group(0))
+        else "".join(_SUB_DIGITS[c] for c in m.group(0)), text)
+    text = _SUPER_RUN.sub(
+        lambda m: m.group(0) if all(ord(c) in can for c in m.group(0))
+        else "^" + "".join(_SUPERSCRIPTS[c] for c in m.group(0)), text)
+    for a, b in _PDF_MATH:
+        if ord(a) not in can:
+            text = text.replace(a, b)
     text = _PRIVATE_USE.sub("", text)
     text = "".join(chr(_demathify(ord(c)) or ord(c)) for c in text)
-    return _DELTA.sub("delta ", _TRIANGLE.sub("triangle ", text))
+
+    def spell(word: str):
+        return lambda m: m.group(0) if ord(m.group(0)[0]) in can else word
+    return _DELTA.sub(spell("delta "), _TRIANGLE.sub(spell("triangle "), text))
 
 
 def escape(text: str) -> str:
@@ -436,6 +495,15 @@ def printable_school_name(explicit: Optional[str], template: Optional[SchoolTemp
     return "" if name in PLACEHOLDER_NAMES else name
 
 
+def printable_address(school_name: str, template: Optional[SchoolTemplate]) -> str:
+    """The address and affiliation line under the school's name, when the
+    name printed is the school's own (a teacher's header naming a branch or a
+    joint exam is not given the main school's address)."""
+    if school_name and template and template.address_line and school_name == template.name:
+        return template.address_line
+    return ""
+
+
 def _beside_logo(title_block: list, logo_path: Optional[Path], content_width: float) -> list:
     """The title block with the school's logo to its left, when there is one:
     the paper's header and its answer key print the same band."""
@@ -467,6 +535,8 @@ def _header(paper: GeneratedPaper, template: Optional[SchoolTemplate],
 
     logo_path = Path(template.logo_url) if template and template.logo_url else None
     title_block = [Paragraph(escape(school_name), styles.school)] if school_name else []
+    if printable_address(school_name, template):
+        title_block.append(Paragraph(escape(printable_address(school_name, template)), styles.meta))
     # The exam name is normally the title; a teacher who gave the paper its
     # own title still gets the exam name their template set.
     if m.exam_name and m.exam_name != m.assessment_title:
@@ -675,7 +745,12 @@ def _page_furniture(paper: GeneratedPaper, template: Optional[SchoolTemplate],
         canvas.saveState()
         canvas.setFont(_BODY_FONT, 7.5)
         canvas.setFillColor(colors.HexColor("#555555"))
-        canvas.drawString(doc.leftMargin, 12 * mm, left)
+        # The left half of the line is the school's; the page count and
+        # "P.T.O." are on the right (`_paged_canvas`). A long school name ran
+        # into the centred page number: "Q.P. Code FAFCE43AB9Page 1 of 5"
+        # (QA P-30).
+        canvas.drawString(doc.leftMargin, 12 * mm,
+                          _fit(left, _BODY_FONT, 7.5, doc.width * 0.62))
         if watermark_id:
             canvas.setFont(_BODY_FONT, 6)
             canvas.setFillColor(colors.HexColor("#AAAAAA"))
@@ -684,6 +759,15 @@ def _page_furniture(paper: GeneratedPaper, template: Optional[SchoolTemplate],
         canvas.restoreState()
 
     return draw
+
+
+def _fit(text: str, font: str, size: float, width: float) -> str:
+    """`text`, cut with an ellipsis to fit `width` points."""
+    if pdfmetrics.stringWidth(text, font, size) <= width:
+        return text
+    while text and pdfmetrics.stringWidth(text + "…", font, size) > width:
+        text = text[:-1]
+    return text.rstrip() + "…"
 
 
 def _paged_canvas(right_margin: float):
@@ -718,9 +802,8 @@ def _paged_canvas(right_margin: float):
             self.saveState()
             self.setFont(_BODY_FONT, 7.5)
             self.setFillColor(colors.HexColor("#555555"))
-            self.drawCentredString(A4[0] / 2.0, 12 * mm, f"Page {number} of {total}")
-            if number < total:
-                self.drawRightString(A4[0] - right_margin, 12 * mm, "P.T.O.")
+            line = f"Page {number} of {total}" + ("   P.T.O." if number < total else "")
+            self.drawRightString(A4[0] - right_margin, 12 * mm, line)
             self.restoreState()
 
     return _PagedCanvas
@@ -785,6 +868,8 @@ def export_answer_key_pdf(paper: GeneratedPaper, output_dir: Path,
     set_suffix = f" — SET {escape(paper.set_label)}" if paper.set_label else ""
     school = printable_school_name(m.school_name, template)
     title_block = [Paragraph(escape(school), styles.school)] if school else []
+    if printable_address(school, template):
+        title_block.append(Paragraph(escape(printable_address(school, template)), styles.meta))
     if m.exam_name and m.exam_name != m.assessment_title:
         title_block.append(Paragraph(escape(m.exam_name), styles.exam))
     title_block += [
@@ -804,22 +889,41 @@ def export_answer_key_pdf(paper: GeneratedPaper, output_dir: Path,
     rows = [[Paragraph("<b>Q.No.</b>", styles.option),
              Paragraph("<b>Marks</b>", styles.option),
              Paragraph("<b>Expected answer / Value points</b>", styles.option)]]
+    lumped = False
+
+    def entry(answer: str) -> str:
+        """One answer as its cell prints it. The all-or-nothing note printed
+        in full under nearly every row of a board key (QA P-31); a row says
+        "(all or nothing)" and the note prints once, above the table."""
+        nonlocal lumped
+        text = str(answer)
+        if ALL_OR_NOTHING_NOTE in text:
+            lumped = True
+            text = text.replace(ALL_OR_NOTHING_NOTE, "").rstrip()
+            return escape(text).replace("\n", "<br/>") + " <i>(all or nothing)</i>"
+        return escape(text).replace("\n", "<br/>")
+
     for section in paper.sections:
         for gq in section.questions:
             answer = paper.answer_key.get(str(gq.display_number), "")
-            ans_formatted = escape(str(answer)).replace("\n", "<br/>") if answer else "<i>(pending teacher entry)</i>"
+            ans_formatted = entry(answer) if answer else "<i>(pending teacher entry)</i>"
             if gq.internal_choice_text:
                 or_answer = paper.answer_key.get(f"{gq.display_number}_OR", "")
                 if or_answer:
-                    or_formatted = escape(str(or_answer)).replace("\n", "<br/>")
-                    ans_formatted += f"<br/><br/><b>[OR CHOICE]:</b><br/>{or_formatted}"
+                    ans_formatted += f"<br/><br/><b>[OR CHOICE]:</b><br/>{entry(or_answer)}"
             rows.append([
                 Paragraph(str(gq.display_number), styles.option),
                 Paragraph(str(gq.marks), styles.option),
                 Paragraph(ans_formatted, styles.option),
             ])
+    if lumped:
+        story.append(Paragraph(
+            "<i>(all or nothing)</i>: the source prints no split for this answer, so it is "
+            "all or nothing unless you set your own value points.", styles.instr))
+        story.append(Spacer(1, 6))
     # splitInRow: a model answer longer than a page is one row that must split.
-    table = Table(rows, colWidths=[14 * mm, 14 * mm, None], repeatRows=1, splitInRow=1)
+    # 16 mm: at 14 the bold "Marks" header wrapped to "Mark / s" (QA P-31).
+    table = Table(rows, colWidths=[14 * mm, 16 * mm, None], repeatRows=1, splitInRow=1)
     table.setStyle(TableStyle([
         ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#888888")),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EEEEEE")),

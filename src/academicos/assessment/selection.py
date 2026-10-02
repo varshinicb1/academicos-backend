@@ -229,7 +229,8 @@ def _cannot_reach(target: float, ceiling: int, printed: int, asked: int,
     else:
         why = (f"No question in the chosen chapters fits these sections; of the {len(usable)} "
                f"in the whole bank that do, {in_bank} are competency-based.")
-    return f"{head} {why}"
+    from .wording import counted
+    return counted(f"{head} {why}")
 
 
 def optimize(candidates: list[QuestionSchema], blueprint: Blueprint,

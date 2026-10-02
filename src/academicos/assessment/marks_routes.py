@@ -270,14 +270,20 @@ def may_enter_marks(current: User, assessment) -> bool:
         return False
     if holds(current, "exams", grade=grade):
         return True
+    return (grade, str(assessment.subject).casefold()) in teaching_cells(current)
+
+
+def teaching_cells(current: User) -> set[tuple[int, str]]:
+    """(class number, subject name casefolded) for every subject the teacher
+    teaches in some section, co-taught cells included."""
     store = cr._require()
-    cells = store.allocations_for_teacher(current.id) + store.co_taught_allocations(current.id)
-    for cell in cells:
+    out: set[tuple[int, str]] = set()
+    for cell in store.allocations_for_teacher(current.id) + store.co_taught_allocations(current.id):
         subject = store.get_subject(cell.subject_id)
         g = store.get_grade(subject.grade_id) if subject else None
-        if subject and g and g.number == grade and subject.name.casefold() == str(assessment.subject).casefold():
-            return True
-    return False
+        if subject and g:
+            out.add((g.number, subject.name.casefold()))
+    return out
 
 
 def chapters_by_student_from_marks(school_id: str) -> dict[str, dict[str, set[str]]]:
@@ -319,7 +325,9 @@ def enter_marks(paper_id: str, req: MarksRequest, section_id: Optional[str] = Qu
     if not may_enter_marks(current, assessment):
         raise HTTPException(403, "only the paper's author, a teacher of its subject in its class, "
                                  "an exams admin or the principal enters marks on it")
-    maxes = {q.question_id: q.max_marks for q in _questions(paper)}
+    grid = _questions(paper)
+    maxes = {q.question_id: q.max_marks for q in grid}
+    numbers = {q.question_id: q.number for q in grid}
     users = cr._require_users()
     students = {e.student_id for e in req.entries} | set(req.absent) | set(req.present)
     for sid in students:
@@ -330,7 +338,14 @@ def enter_marks(paper_id: str, req: MarksRequest, section_id: Optional[str] = Qu
         if e.question_id not in maxes:
             raise HTTPException(422, f"{e.question_id} is not a question of this paper")
         if e.marks > maxes[e.question_id]:
-            raise HTTPException(422, f"{e.question_id} is out of {maxes[e.question_id]}; {e.marks:g} is too many")
+            # The question as the grid numbers it and the student by name:
+            # "cbe:q:Maths10MM1 is out of 1" named neither (QA P-19).
+            u = users.get(e.student_id)
+            number = numbers[e.question_id]
+            raise HTTPException(422, f"{'Q' + number if number.isdigit() else number} for "
+                                     f"{u.name if u else e.student_id}: "
+                                     f"{e.marks:g} is more than its {maxes[e.question_id]:g} "
+                                     f"mark{'s' if maxes[e.question_id] != 1 else ''}")
     if set(req.absent) & {e.student_id for e in req.entries}:
         raise HTTPException(422, "a student cannot be absent and have marks")
     consents = get_consent_store(cr._cfg.data_root)

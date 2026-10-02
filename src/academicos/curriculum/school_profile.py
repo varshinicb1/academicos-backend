@@ -223,7 +223,11 @@ def printed_branding(template, profile: Optional[SchoolProfile], logo: Optional[
         return None
     base = template or SchoolTemplate(id="profile", school_id=school_id, name="")
     if profile is not None:
-        update: dict = {"name": profile.name}
+        # The profile screen promises address and affiliation "at the top of
+        # every paper, answer key and report"; papers printed only the name
+        # and logo (QA P-17).
+        update: dict = {"name": profile.name, "address_line": " | ".join(
+            x for x in (profile.address, profile.affiliation) if x)}
     else:
         update = {"name": "" if base.name in PLACEHOLDER_NAMES else base.name}
     if logo is not None:

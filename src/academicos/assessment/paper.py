@@ -7,6 +7,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
+from .wording import counted
 from .competency import CBSE_COMPETENCY_TARGET, below_target, share_summary
 from .duration import format_duration
 from .schemas import (
@@ -74,14 +75,17 @@ def _key_note(scheme, marks: int) -> str:
     points = getattr(scheme, "marking_points", None) or []
     any_of = meta.get("anyOf")
     if any_of and points:
-        return (f"\n(Any {int(any_of)} of the above value points, "
-                f"{points[0].marks} mark(s) each.)")
+        return counted(f"\n(Any {int(any_of)} of the above value points, "
+                       f"{points[0].marks} mark(s) each.)")
     if meta.get("objective"):
         return ""
     if len(points) == 1 and (marks or 0) > 1:
-        return ("\n(The source prints no split for this answer: it is all or nothing "
-                "unless you set your own value points.)")
+        return "\n" + ALL_OR_NOTHING_NOTE
     return ""
+
+
+ALL_OR_NOTHING_NOTE = ("(The source prints no split for this answer: it is all or nothing "
+                       "unless you set your own value points.)")
 
 
 def generate_paper(*, paper_id: str, assessment_id: str, assessment_title: str,
@@ -153,6 +157,9 @@ def generate_paper(*, paper_id: str, assessment_id: str, assessment_title: str,
             total_marks=total_marks,
             duration_minutes=blueprint.duration_minutes,
             generated_at=datetime.now(timezone.utc),
+            # The report card names a paper by it; it stayed None, so a
+            # Half-yearly printed as "Test" (QA P-21).
+            exam_type=blueprint.exam_type,
         ),
         set_label=set_label,
     )
@@ -301,10 +308,10 @@ def set_repeat_warnings(paper: GeneratedPaper) -> list[str]:
     """One line per set that prints a question an earlier set prints: how
     many and where. A later set repeats one only where the bank has nothing
     else its section's rules and the paper's chapters allow."""
-    return [f"Set {label} repeats {len(slots)} question(s) from an earlier set "
+    return [counted(f"Set {label} repeats {len(slots)} question(s) from an earlier set "
             f"({', '.join(slots)}): no other question in the bank fits "
             f"{'that slot' if len(slots) == 1 else 'those slots'} under the section's rules "
-            "and the paper's chapters."
+            "and the paper's chapters.")
             for label, slots in set_repeats(paper).items() if slots]
 
 

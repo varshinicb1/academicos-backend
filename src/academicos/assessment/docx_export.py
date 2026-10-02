@@ -164,9 +164,11 @@ def _beside_logo(title: list[str], logo: Optional[_Logo]) -> list[str]:
 
 def _body(paper, template, logo: Optional[_Logo] = None) -> str:
     m = paper.metadata
-    from .pdf import printable_school_name
+    from .pdf import printable_address, printable_school_name
     school = printable_school_name(m.school_name, template)
     title_block = [_p(_run(school, bold=True, size=32), align="center", space_after=40)] if school else []
+    if printable_address(school, template):
+        title_block.append(_p(_run(printable_address(school, template)), align="center", space_after=40))
     if m.exam_name and m.exam_name != m.assessment_title:
         title_block.append(_p(_run(m.exam_name, bold=True, size=26), align="center", space_after=40))
     title = m.assessment_title + (f"  |  SET {paper.set_label}" if paper.set_label else "")
