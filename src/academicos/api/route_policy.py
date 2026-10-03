@@ -441,6 +441,10 @@ ROUTE_POLICY: dict[tuple[str, str], Policy] = {
         PRINCIPAL, "choosing the year's edition is the school's decision; Depends(require_principal)"),
     ("POST", "/api/v1/curriculum/seed/cbse"): _p(
         PRINCIPAL, "seeds any class 6-12; same posture as /seed/cbse10, which delegates here"),
+    # The setup wizard: a new school's year, classes, calendar, terms and bell
+    # in one call (curriculum/school_setup.py), for the caller's own school.
+    ("POST", "/api/v1/curriculum/school-setup"): _p(
+        PRINCIPAL, "sets up the caller's own school; idempotent; Depends(require_principal)"),
     ("GET", "/api/v1/curriculum/chapters/by-slug/{subject}/{grade}/{slug}/topics"): _p(
         ANY_USER, "read-only; resolves a syllabus slug to the caller's own school's chapter, so a teacher's subtopic picker can find one"),
     ("GET", "/api/v1/curriculum/chapters/{chapter_id}/proposed-topics"): _p(
