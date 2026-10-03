@@ -385,6 +385,21 @@ def _follows_label_in_list(stem: str, matches: list[re.Match], i: int) -> bool:
     return bool(_LIST_JOINER.fullmatch(stem, prev_close, matches[i].start()))
 
 
+def _is_mention(stem: str, matches: list[re.Match], i: int) -> bool:
+    """matches[i] names an option instead of opening one.
+
+    A mention word before it is not enough: "... is a salt of (A) strong acid and strong
+    base (B) ..." (exemplar:q:10:science:2:-:5, and 12 more Exemplar and CBE items) has "of"
+    before a real first option. A mention is followed by nothing, or only a joiner, before the
+    next label: "All of (A), (B) and (C)".
+    """
+    m = matches[i]
+    if not _MENTION_BEFORE.search(stem, 0, m.start()):
+        return False
+    end = matches[i + 1].start() if i + 1 < len(matches) else len(stem)
+    return _JUNK_OPTION.fullmatch(stem[m.end():end].strip(" .;,&")) is not None
+
+
 def _option_run(stem: str, matches: list[re.Match], first: int) -> list[re.Match] | None:
     """The option labels from matches[first] (an A) to the end of the stem.
 
@@ -450,7 +465,7 @@ def split_stem_and_options(stem: str) -> tuple[str, list[str]]:
     best: list[re.Match] | None = None
     for i, m in enumerate(matches):
         # An (A) that is itself a mention ("of (A)", ", (A)") starts no run.
-        if (m.group(1).upper() != "A" or _MENTION_BEFORE.search(stem, 0, m.start())
+        if (m.group(1).upper() != "A" or _is_mention(stem, matches, i)
                 or _follows_label_in_list(stem, matches, i)):
             continue
         run = _option_run(stem, matches, i)

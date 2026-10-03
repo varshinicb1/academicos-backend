@@ -80,6 +80,11 @@ class Section:
     # True where a section that exists only to hold source material -- a passage,
     # a map -- sits above the questions that use it.
     carries_source: bool = False
+    # What the question is, for a section the paper heads by kind rather than by marks: the
+    # language papers' "reading", "grammar", "extract", "writing" and "literature". Written onto
+    # every generated record as `metadata.paperSection`, and what a template section that names
+    # the kind matches on (assessment/paper_templates).
+    kind: str = ""
 
     @property
     def section_marks(self) -> int:
@@ -234,7 +239,11 @@ def _board_social_science() -> Blueprint:
     return Blueprint(
         subject="Social Science", grade_band="board", theory_marks=80,
         sections=(
-            Section("A", "Objective", MCQ, 20, 1),
+            # Four of Section A's twenty marks go on assertion-reason, as in Science: the paper's
+            # objective run carries them, and they are what the competency rule counts at one mark.
+            # Its own key, "AR", so a pass over it never collides with the MCQs' ids.
+            Section("A", "Objective", MCQ, 16, 1),
+            Section("AR", "Assertion-Reason", ASSERTION_REASON, 4, 1),
             Section("B", "Very Short Answer", VSA, 4, 2, answer_words=25,
                     internal_choice=1),
             Section("C", "Short Answer", SA, 5, 3, answer_words=45,
@@ -249,22 +258,53 @@ def _board_social_science() -> Blueprint:
         notes="CBSE class 10 Social Science 2025-26; Section F is the map work.")
 
 
-def _board_language(subject: str) -> Blueprint:
-    """English and Hindi do not run a Section A objective block at all. They read,
-    then they write, then they answer on the text -- so a bank built on MCQ runs
-    would be the wrong bank for these."""
+def _board_english() -> Blueprint:
+    """English Language and Literature, as the presets print it (assessment/template_presets:
+    the 2025 board paper's weights at question level, attempt-any counts taken as the count).
+    Reading and the literature extracts hang off a passage the question carries with it; grammar
+    is built on a sentence of the book; writing is set on the book's theme."""
     return Blueprint(
-        subject=subject, grade_band="board", theory_marks=80,
+        subject="English", grade_band="board", theory_marks=80,
         sections=(
-            Section("A", "Reading", MCQ, 20, 1, carries_source=True),
-            Section("B", "Grammar", MCQ, 10, 1),
-            Section("C", "Creative Writing", SA, 1, 10, answer_words=150),
-            Section("D", "Literature", SA, 4, 10, answer_words=150,
-                    internal_choice=1),
+            Section("A", "Reading", MCQ, 20, 1, carries_source=True, kind="reading"),
+            Section("B", "Grammar", MCQ, 10, 1, kind="grammar"),
+            Section("C", "Writing", SA, 2, 5, answer_words=100, kind="writing"),
+            Section("D", "Literature: extract based", MCQ, 10, 1, carries_source=True,
+                    kind="extract"),
+            Section("E", "Literature: short answer", SA, 6, 3, answer_words=50,
+                    kind="literature"),
+            Section("F", "Literature: long answer", LA, 2, 6, answer_words=120,
+                    kind="literature"),
         ),
         duration_minutes=180,
-        notes="CBSE class 10 language paper: Reading 20, Grammar 10, "
-              "Writing 10, Literature 40. No objective run in Section A.")
+        notes="CBSE class 9-10 English: Reading 20, Grammar 10, Writing 10, Literature 40.")
+
+
+def _board_hindi() -> Blueprint:
+    """Hindi Course A (002), the SQP 2024-25 at question level (assessment/template_presets):
+    Ka reading 14, Kha grammar 16, Ga textbook 30, Gha writing 20."""
+    return Blueprint(
+        subject="Hindi", grade_band="board", theory_marks=80,
+        sections=(
+            Section("A", "Reading: unseen passage, objective", MCQ, 6, 1, carries_source=True,
+                    kind="reading"),
+            Section("B", "Reading: unseen passage, short answer", VSA, 4, 2, answer_words=30,
+                    carries_source=True, kind="reading"),
+            Section("C", "Grammar", MCQ, 16, 1, kind="grammar"),
+            Section("D", "Textbook: extract based MCQ", MCQ, 10, 1, carries_source=True,
+                    kind="extract"),
+            Section("E", "Textbook: short answer", VSA, 6, 2, answer_words=30,
+                    kind="literature"),
+            Section("F", "Supplementary reader: answer", SA, 2, 4, answer_words=60,
+                    kind="literature"),
+            Section("G", "Writing: paragraph", LA, 1, 6, answer_words=120, kind="writing"),
+            Section("H", "Writing: letter, CV / e-mail", SA, 2, 5, answer_words=100,
+                    kind="writing"),
+            Section("I", "Writing: advertisement / message", SA, 1, 4, answer_words=50,
+                    kind="writing"),
+        ),
+        duration_minutes=180,
+        notes="CBSE class 9-10 Hindi Course A: Ka 14, Kha 16, Ga 30, Gha 20.")
 
 
 _BLUEPRINTS: dict[tuple[str, str], Blueprint] = {}
@@ -284,7 +324,7 @@ _register([
     _middle("English"), _middle("Hindi"),
     # Board: 80 marks, per subject, as the 2025-26 pattern prints them.
     _board_maths(), _board_science(), _board_social_science(),
-    _board_language("English"), _board_language("Hindi"),
+    _board_english(), _board_hindi(),
 ])
 
 GRADE_BANDS = {"primary": (1, 5), "middle": (6, 8), "board": (9, 10)}

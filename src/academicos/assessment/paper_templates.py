@@ -44,8 +44,10 @@ will print and a later section cannot reuse them. An OR the bank cannot
 pair is a note and a fix, not a gap: the paper still carries its marks.
 
 A heading that names a kind nothing here can check (grammar, reading,
-extract, writing, literature -- the bank does not label questions that way)
-is reported as "section content not checked" instead of passing silently.
+extract, writing, literature) is reported as "section content not checked"
+instead of passing silently. Classes 9 and 10 are the exception: their English
+and Hindi questions carry `metadata.paperSection`, and those headings take only
+questions of their kind (`_kind_fits`).
 
 A section with a shortfall is filled from outside the scope only when the
 caller asks (`fill_from_outside_scope`), and every borrowed question is
@@ -475,8 +477,45 @@ def _content_fits(q: QuestionSchema, types: list[str]) -> bool:
     return q.type in wanted
 
 
+# Classes whose English and Hindi questions carry `metadata.paperSection` (the generator writes it,
+# corpus/cbse_blueprint.Section.kind). There the language headings are matched on it, so a Grammar
+# section is never filled with a reading question that happens to be worth one mark. The other
+# classes' language banks are not tagged, and keep the marks-only match and its note.
+_TAGGED_GRADES = frozenset({9, 10})
+_TAGGED_KINDS = frozenset({"reading", "grammar", "extract", "writing", "literature"})
+
+
+def section_kinds(section: TemplateSection) -> frozenset[str] | None:
+    """The `paperSection` tags a language section takes, from its heading, or None for a section
+    whose heading names no language kind (an Objective section, a Long answer, a Map skill)."""
+    title = section.title.lower()
+    if "extract" in title:
+        return frozenset({"extract"})
+    if "reading" in title or "comprehension" in title:
+        return frozenset({"reading"})
+    if "grammar" in title:
+        return frozenset({"grammar"})
+    if "writing" in title:
+        return frozenset({"writing"})
+    if "literature" in title or "textbook" in title or "supplementary" in title:
+        # A one-mark literature item is an extract question, as the unit-test presets print it.
+        return frozenset({"extract", "literature"}) if section.marks_each == 1 else frozenset({"literature"})
+    return None
+
+
+def _kind_fits(q: QuestionSchema, section: TemplateSection) -> bool:
+    if q.grade not in _TAGGED_GRADES or not q.subject.lower().startswith(("english", "hindi")):
+        return True
+    kinds = section_kinds(section)
+    if kinds is None:
+        return True
+    return (q.metadata or {}).get("paperSection") in kinds
+
+
 def _fits(q: QuestionSchema, section: TemplateSection) -> bool:
     if q.marks != section.marks_each:
+        return False
+    if not _kind_fits(q, section):
         return False
     return not section.question_types or _content_fits(q, section.question_types)
 
@@ -502,9 +541,11 @@ _HEADING_KINDS: tuple[tuple[str, "re.Pattern[str]", Callable[[TemplateSection], 
 )
 
 
-def _content_notes(section: TemplateSection) -> list[str]:
+def _content_notes(section: TemplateSection, tagged_bank: bool = False) -> list[str]:
+    tagged = tagged_bank and section_kinds(section) is not None
     unchecked = [name for name, pattern, checked in _HEADING_KINDS
-                 if pattern.search(section.title) and not checked(section)]
+                 if pattern.search(section.title) and not checked(section)
+                 and not (tagged and name in _TAGGED_KINDS)]
     if not unchecked:
         return []
     by = "marks and question type" if section.question_types else "marks"
@@ -702,7 +743,8 @@ def plan(template: PaperTemplateDraft, template_id: str, candidates: list[Questi
                                                    eligible_ids={q.id for q in eligible},
                                                    printed_later=printed_later)
         notes.extend(choice_notes)
-        notes.extend(_content_notes(section))
+        notes.extend(_content_notes(section, template.grade in _TAGGED_GRADES
+                                    and template.subject.lower().startswith(("english", "hindi"))))
         used = [*picked, *borrowed, *alternatives.values()]
         reused = [q.id for q in used if q.id in recent]
         off = [q.id for q in used if q.id in scope.last_resort and q.id not in recent]
