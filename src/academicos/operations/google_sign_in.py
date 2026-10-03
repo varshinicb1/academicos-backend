@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
+from fastapi.responses import JSONResponse
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import Field
 
@@ -79,7 +80,11 @@ def sign_in_with_google(req: GoogleSignIn, request: Request):
     from ..assessment import auth_routes
     audience = client_id()
     if audience is None:
-        raise HTTPException(503, "Google sign-in is not set up for this school; use your password")
+        # 501, not 503: retrying never helps until the client id is set
+        # (deploy/gcp/secrets-page.html). The app shows it as "Coming soon", not an error.
+        return JSONResponse(status_code=501, content={
+            "detail": "Google sign-in is not set up for this school; use your password",
+            "code": "not_available"})
     _limiter.check(f"ip:{get_client_ip(request)}")
     try:
         claims = verify(req.credential, audience)

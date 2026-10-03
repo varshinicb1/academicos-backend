@@ -324,6 +324,10 @@ ROUTE_POLICY: dict[tuple[str, str], Policy] = {
     ("GET", "/api/v1/my-homework/{homework_id}/photos/{photo_id}"): _p(ANY_USER, "students only, own photo"),
     ("DELETE", "/api/v1/my-homework/{homework_id}/photos/{photo_id}"): _p(ANY_USER, "students only, own photo"),
     ("GET", "/api/v1/homework/{homework_id}/submissions/{student_id}/photos/{photo_id}"): _p(STAFF, "the teacher of the homework or the principal; logged"),
+    # Saved progress and the setup level (operations/progress_routes.py).
+    ("GET", "/api/v1/me/progress"): _p(ANY_USER, "the callers own saved progress"),
+    ("PUT", "/api/v1/me/progress/{key}"): _p(ANY_USER, "the callers own saved progress"),
+    ("GET", "/api/v1/setup-status"): _p(PRINCIPAL, "the principals own school, computed from its data"),
     # SA-4 self-practice (operations/practice_routes.py).
     ("POST", "/api/v1/my-practice"): _p(ANY_USER, "students only, their own sets"),
     ("GET", "/api/v1/my-practice"): _p(ANY_USER, "students only, their own sets"),

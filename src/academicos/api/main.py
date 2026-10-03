@@ -47,7 +47,7 @@ from ..curriculum import cover_routes
 from ..assessment import api_key_routes
 from ..assessment import marks_routes
 from ..assessment import paper_review_routes
-from ..operations import calendar_feed, class_progress, dashboard_routes, homework_photos, practice_routes, term_report
+from ..operations import calendar_feed, class_progress, dashboard_routes, homework_photos, practice_routes, progress_routes, term_report
 from ..operations import google_sign_in, sign_in_codes
 from ..operations import question_reviews
 from ..operations import exam_routes
@@ -289,6 +289,7 @@ app.include_router(term_report.router)
 app.include_router(calendar_feed.router)
 app.include_router(homework_photos.router)
 app.include_router(practice_routes.router)
+app.include_router(progress_routes.router)
 app.include_router(class_progress.router)
 app.include_router(sign_in_codes.router)
 app.include_router(google_sign_in.router)

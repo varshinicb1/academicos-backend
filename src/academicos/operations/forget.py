@@ -40,6 +40,7 @@ ERASED = {
     "guardian_invites": "parent invites made for the student, or used by the parent",
     "pending_guardian_links": "parent links waiting for the student to join",
     "pending_enrollments": "a class place waiting for the person's invite",
+    "user_progress": "the person's own Guide and setup progress",
 }
 
 KEPT = {
@@ -129,6 +130,7 @@ class ForgetMixin:
             ("contact_numbers", "user_id=?", (user_id,)),
             ("calendar_feeds", "user_id=?", (user_id,)),
             ("sign_in_codes", "lower(email)=?" if email else "0", (email,) if email else ()),
+            ("user_progress", "user_id=?", (user_id,)),
         ]
 
     def _notices_about_student(self, student_id: str, *, school_id: str, name: str,
