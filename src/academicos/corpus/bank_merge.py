@@ -2005,9 +2005,23 @@ def write_withheld(path: Path, records: list[dict]) -> None:
     os.replace(tmp, path)
 
 
+# A model-written question whose key is not labelled as grounded in the chapter, or does
+# not carry the quotes that ground it: never served, whatever its source says.
+AI_NOT_GROUNDED = "ai-not-grounded"
+
+
+def ai_not_grounded(rec: dict) -> bool:
+    """True when a model-written record lacks the label and the quotes that make its
+    key a checked one (QB-5)."""
+    scheme = rec.get("answerScheme") or {}
+    quotes = (scheme.get("metadata") or {}).get("evidence")
+    return not (scheme.get("provenance") == "textbook_grounded"
+                and isinstance(quotes, list) and any(isinstance(q, str) and q.strip() for q in quotes))
+
+
 def compose(served: list[dict], cbe: list[dict], sqp: list[dict],
             held: list[dict] = (), exemplar: list[dict] = (), transcribed: list[dict] = (),
-            textbook: list[dict] = ()) -> ComposeResult:
+            textbook: list[dict] = (), ai: list[dict] = ()) -> ComposeResult:
     """Board records from `served` and then `held` (the withheld ones an
     earlier run kept, where `served` has no record of that id), then the
     transcribed papers (`corpus/transcribed.py`: board papers, sample papers
@@ -2037,6 +2051,14 @@ def compose(served: list[dict], cbe: list[dict], sqp: list[dict],
     file this writes: one question about a record, one answer, three call sites
     (Task 126).
 
+    `ai` are questions a model wrote from a chapter (`corpus/ai-cbse-9-10`). They come
+    last, so a published copy of a question wins, and they go through every gate above
+    after one of their own: a record is served only if its key is labelled
+    `textbook_grounded` and carries the quotes from the chapter that prove it
+    (`AI_NOT_GROUNDED`). The generator sets both only for a question whose quotes it
+    found in the chapter's own text, so a record from another route cannot get in by
+    carrying the source name alone.
+
     Near-duplicates keep the record seen first, and the order is the rule
     "keep the one with a verified scheme": verified board records come first,
     and nothing else here carries the relink's verified stamp.
@@ -2048,7 +2070,7 @@ def compose(served: list[dict], cbe: list[dict], sqp: list[dict],
     seen_ids: set[str] = set()
     seen_stems: set[tuple] = set()
     near = _NearDuplicates()
-    counts = {"board": 0, "transcribed": 0, "cbe": 0, "sqp": 0, "exemplar": 0, "textbook": 0}
+    counts = {"board": 0, "transcribed": 0, "cbe": 0, "sqp": 0, "exemplar": 0, "textbook": 0, "ai": 0}
 
     board = [r for r in served if r.get("source") == BOARD_SOURCE and not _transcription(r)]
     in_served = {r.get("id") for r in board}
@@ -2088,8 +2110,15 @@ def compose(served: list[dict], cbe: list[dict], sqp: list[dict],
         for name in made:
             repairs[name] = repairs.get(name, 0) + 1
 
+    grounded_ai = []
+    for raw in ai:
+        if ai_not_grounded(raw):
+            excluded.append(_excluded(raw, AI_NOT_GROUNDED))
+        else:
+            grounded_ai.append(raw)
+
     for label, rows in (("transcribed", transcribed), ("cbe", cbe), ("sqp", sqp), ("exemplar", exemplar),
-                        ("textbook", textbook)):
+                        ("textbook", textbook), ("ai", grounded_ai)):
         runs_on = _runs_on(rows)
         for raw in rows:
             if raw.get("id") in seen_ids:
@@ -2163,7 +2192,7 @@ def compose(served: list[dict], cbe: list[dict], sqp: list[dict],
 
     # A source not supplied is not counted, so a bank composed without the
     # transcribed papers or the textbooks reads exactly as it did before them.
-    for label, rows in (("transcribed", transcribed), ("textbook", textbook)):
+    for label, rows in (("transcribed", transcribed), ("textbook", textbook), ("ai", ai)):
         if not rows:
             counts.pop(label)
     return ComposeResult(questions=out, excluded=excluded, counts=counts, withheld=withheld,
