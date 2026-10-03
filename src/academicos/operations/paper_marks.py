@@ -18,6 +18,25 @@ CREATE TABLE IF NOT EXISTS paper_absent (
     student_id TEXT NOT NULL,
     PRIMARY KEY (paper_id, student_id)
 );
+-- A question's measured difficulty (EX-3): its facility, the marks scored
+-- over the marks available, from the marks teachers enter. Aggregates only:
+-- no student is named here (API-5). One row per question and paper, so
+-- entering a paper's marks again replaces that paper's part instead of
+-- adding to it; `question_facility` is their sum, with its sample size.
+CREATE TABLE IF NOT EXISTS question_facility_parts (
+    question_id TEXT NOT NULL,
+    paper_id TEXT NOT NULL,
+    responses INTEGER NOT NULL,
+    score REAL NOT NULL,
+    max_score REAL NOT NULL,
+    PRIMARY KEY (question_id, paper_id)
+);
+CREATE TABLE IF NOT EXISTS question_facility (
+    question_id TEXT PRIMARY KEY,
+    responses INTEGER NOT NULL,
+    facility REAL NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -55,3 +74,50 @@ class MarksMixin:
     def absent_for(self, paper_id: str) -> set[str]:
         return {r["student_id"] for r in self._fetchall("SELECT student_id FROM paper_absent WHERE paper_id=?",
                                                         (paper_id,))}
+
+    def record_facility(self, paper_id: str, max_marks: dict[str, int]) -> None:
+        """Recompute this paper's part of each question's facility from the
+        marks now entered on it (`max_marks`: question id -> its marks on the
+        paper), and each affected question's total. A cell is one response;
+        a question with no cell left on the paper drops this paper's part."""
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._conn_lock:
+            rows = self.conn.execute(
+                "SELECT question_id, COUNT(*) AS n, SUM(marks) AS score FROM paper_marks "
+                "WHERE paper_id=? GROUP BY question_id", (paper_id,)).fetchall()
+            parts = [(r["question_id"], paper_id, r["n"], float(r["score"] or 0.0),
+                      float(r["n"] * max_marks[r["question_id"]]))
+                     for r in rows if max_marks.get(r["question_id"])]
+            touched = set(max_marks) | {r["question_id"] for r in self.conn.execute(
+                "SELECT question_id FROM question_facility_parts WHERE paper_id=?", (paper_id,)).fetchall()}
+            self.conn.execute("DELETE FROM question_facility_parts WHERE paper_id=?", (paper_id,))
+            self.conn.executemany(
+                "INSERT INTO question_facility_parts (question_id, paper_id, responses, score, max_score)"
+                " VALUES (?,?,?,?,?)", parts)
+            for qid in touched:
+                total = self.conn.execute(
+                    "SELECT SUM(responses) AS n, SUM(score) AS score, SUM(max_score) AS top "
+                    "FROM question_facility_parts WHERE question_id=?", (qid,)).fetchone()
+                if not total["n"] or not total["top"]:
+                    self.conn.execute("DELETE FROM question_facility WHERE question_id=?", (qid,))
+                    continue
+                self.conn.execute(
+                    "INSERT INTO question_facility (question_id, responses, facility, updated_at)"
+                    " VALUES (?,?,?,?) ON CONFLICT(question_id) DO UPDATE SET"
+                    " responses=excluded.responses, facility=excluded.facility, updated_at=excluded.updated_at",
+                    (qid, total["n"], total["score"] / total["top"], now))
+            self._commit()
+
+    def facility_for(self, question_ids: list[str], *, min_responses: int) -> dict[str, tuple[float, int]]:
+        """Question id -> (facility, responses) for each of `question_ids`
+        answered at least `min_responses` times; the rest are left out."""
+        out: dict[str, tuple[float, int]] = {}
+        ids = list(dict.fromkeys(question_ids))
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            marks = ",".join("?" * len(chunk))
+            for r in self._fetchall(
+                    f"SELECT question_id, facility, responses FROM question_facility "
+                    f"WHERE responses >= ? AND question_id IN ({marks})", (min_responses, *chunk)):
+                out[r["question_id"]] = (r["facility"], r["responses"])
+        return out

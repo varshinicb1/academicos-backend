@@ -41,11 +41,18 @@ from .models import Chapter
 from .store import CurriculumStore
 
 _TEMPLATE_DIR = Path(__file__).resolve().parents[3] / "academicos-data" / "syllabus" / "decomposition"
+_TAXONOMY_DIR = _TEMPLATE_DIR.parent / "taxonomy"
 
 # A run created from a template carries its provenance in prompt_version, which
 # is exactly what a principal reviewing the proposal needs to see: whether this
 # came from another school's approved work or from a textbook's own headings.
 PROVENANCE_PREFIX = "template:"
+# The textbook's own contents (academicos-data/syllabus/taxonomy), for the
+# chapters seeded from the book itself (audit D118).
+CONTENTS_PROVENANCE = PROVENANCE_PREFIX + "ncert-textbook-contents"
+# Classes 1-5 are seeded from the book too, but their topic proposals are a
+# separate decision; this source is used from class 6 up.
+CONTENTS_FROM_GRADE = 6
 
 
 @dataclass(frozen=True)
@@ -112,6 +119,37 @@ def load_template(subject: str, grade: int) -> Optional[DecompositionTemplate]:
                                  chapters=chapters)
 
 
+@lru_cache(maxsize=None)
+def contents_template(subject: str, grade: int) -> Optional[DecompositionTemplate]:
+    """The textbook's contents pages (taxonomy/<Subject>_<grade>.json) as a
+    template, keyed by the taxonomy chapter id -- the key seed_cbse10 writes
+    for a chapter it took from the book (D118). Its sections are the topics
+    and their printed sub-sections the subtopics. A section the book does
+    not divide is proposed as one subtopic of its own name: it is the
+    smallest piece the book prints, and a topic with no subtopic can never
+    be timed or dated, so its chapter would drop out of every plan. A
+    chapter whose contents list no sections gets no proposal. None below
+    class 6 or with no taxonomy file."""
+    if grade < CONTENTS_FROM_GRADE:
+        return None
+    path = _TAXONOMY_DIR / f"{subject.strip().replace(' ', '_')}_{grade}.json"
+    if not path.exists():
+        return None
+    body = json.loads(path.read_text(encoding="utf-8"))
+    chapters = {}
+    for c in body.get("chapters", []):
+        topics = []
+        for t in c.get("topics", []):
+            number = t.get("number")
+            subtopics = tuple(TemplateSubtopic(name=s["name"]) for s in t.get("subtopics") or ())
+            topics.append(TemplateTopic(name=t["name"], heading_number=number,
+                                        subtopics=subtopics or (TemplateSubtopic(name=t["name"],
+                                                                                 heading_number=number),)))
+        chapters[c["id"]] = TemplateChapter(chapter_slug=c["id"], chapter_name=c["name"],
+                                            provenance=CONTENTS_PROVENANCE, topics=tuple(topics))
+    return DecompositionTemplate(subject=body.get("subject", subject), grade=grade, chapters=chapters)
+
+
 @lru_cache(maxsize=1)
 def manifest() -> dict:
     """The export's own report of what each subject/grade got and why it didn't
@@ -164,14 +202,23 @@ def apply_template(store: CurriculumStore, *, school_id: str, book_id: str,
     chapter that already has real (approved) topics is left alone, and so is one
     that already carries a template run -- otherwise a second seed would hand
     the principal a second identical pile of pending proposals to review.
+
+    A chapter no committed template covers falls back to the textbook's own
+    contents (contents_template), which covers the chapters seeded from the
+    book (D118).
     """
     tpl = load_template(subject, grade)
+    contents = contents_template(subject, grade)
     with_topics = topics = subtopics = 0
     provenance: list[str] = []
+    no_source: list[str] = []
 
     for chapter in chapters:
-        entry = tpl.chapters.get(chapter_slug(chapter) or "") if tpl else None
+        slug = chapter_slug(chapter) or ""
+        entry = ((tpl.chapters.get(slug) if tpl else None)
+                 or (contents.chapters.get(slug) if contents else None))
         if entry is None or not entry.topics:
+            no_source.append(chapter.name)
             continue
         if store.topics_for_chapter(chapter.id):
             continue
@@ -205,7 +252,13 @@ def apply_template(store: CurriculumStore, *, school_id: str, book_id: str,
             provenance.append(entry.provenance)
 
     note = None
-    if with_topics < len(chapters):
+    if contents is not None and any((chapter_slug(c) or "") in contents.chapters for c in chapters):
+        # Chapters seeded from the book: the manifest's reasons were written
+        # before its contents were a source, so they no longer describe them.
+        if no_source:
+            note = (f"{len(no_source)} of {len(chapters)} chapters have no sections in the textbook's "
+                    f"contents to propose: {', '.join(no_source)} -- add their topics by hand")
+    elif with_topics < len(chapters):
         note = why_uncovered(subject, grade) or (
             "no decomposition template covers these chapters -- use the LLM "
             "extraction route, or add topics by hand")

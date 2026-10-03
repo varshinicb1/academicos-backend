@@ -292,11 +292,17 @@ def decide(question_id: str, req: DecisionRequest,
     from ..assessment.audit_log import get_audit_log
     from ..curriculum import routes as cr
     from .routes import store
+    from ..assessment import webhooks
     bank = _bank()
     rec = bank.get(question_id)
     if rec is None:
         raise HTTPException(404, "no such question in the bank")
+    before = (store().review_decisions(reviewer.school_id).get(question_id) or {}).get("decision")
     store().decide_question(reviewer.school_id, question_id, req.decision, req.note, reviewer.id)
     get_audit_log(cr._cfg.data_root).append("question_reviewed", actor=reviewer.id, details={
         "schoolId": reviewer.school_id, "questionId": question_id, "decision": req.decision})
+    # API-6: a rejection taken back puts the question back in what this
+    # school's partners are served; their webhooks hear of it.
+    webhooks.review_decided_safely(bank, school_id=reviewer.school_id, question_id=question_id,
+                                   before=before, after=req.decision)
     return _item(bank, rec, store().review_decisions(reviewer.school_id))

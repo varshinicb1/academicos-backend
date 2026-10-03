@@ -27,7 +27,7 @@ from pydantic import Field
 
 from ..operations.question_reviews import bank_usable
 from ..config import Config
-from . import paper_edit
+from . import paper_edit, paper_timing
 from .audit_log import get_audit_log
 from .auth_routes import require_staff
 from .authz import require_may_change_paper, require_own_school, require_school_owns_paper
@@ -128,6 +128,9 @@ class GenerateFromTemplateRequest(Camel):
     # `stale`). Without it the generator is deterministic and the same
     # template and chapters print the same paper.
     avoid_question_ids: list[str] = Field(default_factory=list, max_length=500)
+    # As QuickPaperRequest.teacher_seconds: the builder session, from opening
+    # the builder to pressing Generate, as the web app measured it.
+    teacher_seconds: Optional[float] = Field(None, ge=0, le=86_400)
 
 
 class TemplatePaperResponse(Camel):
@@ -486,12 +489,13 @@ def generate_from_template(
             "fillFromOutsideScope": req.fill_from_outside_scope},
             "paperMarks": printed_marks(paper)},
     ))
-    get_audit_log(cfg.data_root).append(
-        "template_paper_generated", assessment_id=asm_id,
-        details={"paperId": paper.id, "templateId": template.id, "userId": current.id,
-                 "schoolId": current.school_id, "gaps": len(gaps),
-                 "subject": template.subject, "grade": template.grade,
-                 "generationSeconds": round(time.perf_counter() - started, 3)},
+    paper_timing.record_generation(
+        "template_paper_generated", data_root=cfg.data_root, school_id=current.school_id,
+        user_id=current.id, paper_id=paper.id, assessment_id=asm_id,
+        elapsed_seconds=time.perf_counter() - started,
+        question_count=len(selected), subject=template.subject, grade=template.grade,
+        teacher_seconds=req.teacher_seconds,
+        details={"templateId": template.id, "gaps": len(gaps)},
     )
     return TemplatePaperResponse(paper=paper, assessment_id=asm_id, complete=not gaps,
                                  gaps=gaps, notes=notes, availability=report)

@@ -356,6 +356,9 @@ def enter_marks(paper_id: str, req: MarksRequest, section_id: Optional[str] = Qu
     entries = [e for e in req.entries if e.student_id not in set(missing)]
     ops().save_marks(paper.id, [(e.student_id, e.question_id, e.marks) for e in entries],
                      absent=req.absent, present=req.present, entered_by=current.id)
+    # Each question's measured difficulty (EX-3): its facility across every
+    # paper, student and school that sat it, stored as an aggregate only.
+    ops().record_facility(paper.id, maxes)
     get_audit_log(cr._cfg.data_root).append(
         "marks_entered", assessment_id=paper.assessment_id, actor=current.id,
         details={"schoolId": current.school_id, "paperId": paper.id, "cells": len(entries),

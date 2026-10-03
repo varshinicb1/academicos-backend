@@ -38287,6 +38287,14 @@
    "subject": "Mathematics",
    "grade": 10,
    "stem": "1 The area of a circular playground is 9856 m2. 1 (a) Find the radius of the circular field. (Using π= )  1 (b) Find the cost of fencing this ground at the rate of Rs 50 per m."
+  },
+  {
+   "id": "cbe:q:SCIENCE8JS41c",
+   "source": "cbse_question_bank",
+   "reason": "key-covers-one-part",
+   "subject": "Science",
+   "grade": 8,
+   "stem": "1 (a) State two points of difference between the bacterial and the animal cell.  (b) Addition of salt a is a well-known method of food preservation. Explain how it prevents food spoilage.  (c) Justify with the help of two examples that microorganisms can be beneficial for humans."
   }
  ],
  "counts": {
@@ -38304,7 +38312,7 @@
   "parts-detached": 12,
   "figure-referenced": 128,
   "mcq-options-unresolved": 190,
-  "key-covers-one-part": 2,
+  "key-covers-one-part": 3,
   "header-as-stem": 13,
   "private-use-glyph": 5,
   "stem-holds-group": 4,

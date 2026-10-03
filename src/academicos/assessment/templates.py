@@ -90,8 +90,22 @@ def get_sections_for_exam_type(exam_type: str, total_marks: int = 80) -> list[Se
     if not preset:
         return default_sections(total_marks)
 
+    rows = preset["sections"]
+    counts = [count for _, _, _, count, _, _, _ in rows]
+    preset_total = sum(count * mpq for _, _, mpq, count, _, _, _ in rows)
+    if total_marks and total_marks != preset_total:
+        # The preset's pattern scaled to the marks asked, summing to them
+        # exactly: a weekly test asked for 40 marks printed the preset's 25,
+        # and a board pattern asked for 40 printed 60 under a header saying
+        # 40 (D57).
+        counts = _nearest_exact_counts(
+            total_marks, [mpq for _, _, mpq, _, _, _, _ in rows],
+            [count * mpq / preset_total for _, _, mpq, count, _, _, _ in rows])
+
     sections: list[SectionBlueprint] = []
-    for label, name, marks_per_q, count, difficulties, has_choice, choice_count in preset["sections"]:
+    for (label, name, marks_per_q, _, difficulties, has_choice, choice_count), count in zip(rows, counts):
+        if count == 0:
+            continue
         actual_marks = count * marks_per_q
         sections.append(SectionBlueprint(
             id=f"section-{label.lower()}",

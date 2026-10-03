@@ -45,6 +45,7 @@ from .schemas import (
     CalendarResponse,
     ChapterCoverageResponse,
     ChapterResponse,
+    CompressedSubtopicResponse,
     CoverageReportResponse,
     DelayedLessonResponse,
     DelayedTopicsReportResponse,
@@ -1339,26 +1340,93 @@ def add_holiday(academic_year_id: str, req: AddHolidayRequest,
         raise HTTPException(404, "create a calendar for this academic year first")
     try:
         calendar_mod.validate_holiday(date_=req.date, end_date=req.end_date, kind=req.kind,
-                                      year_start=year.start_date, year_end=year.end_date)
+                                      year_start=year.start_date, year_end=year.end_date,
+                                      last_period=req.last_period, grades=req.grades,
+                                      timetable_weekday=req.timetable_weekday, calendar=cal,
+                                      year_grades={g.number for g in store.grades_for_year(academic_year_id)})
     except ValueError as e:
         raise HTTPException(422, str(e))
+    if req.kind == calendar_mod.WORKING_DAY and any(
+            h.kind == calendar_mod.WORKING_DAY and h.date == req.date for h in store.holidays_for_calendar(cal.id)):
+        raise HTTPException(409, f"{req.date} is already a working day on the calendar; remove it to change it")
     h, moved, not_moved = declare_holiday(store, year, cal, date=req.date, label=req.label, kind=req.kind,
-                                          end_date=req.end_date, principal=principal, move_lessons=req.move_lessons)
-    return HolidayResponse(id=h.id, calendar_id=h.calendar_id, date=h.date, label=h.label,
-                           kind=h.kind, end_date=h.end_date, lessons_moved=moved, not_moved=not_moved)
+                                          end_date=req.end_date, principal=principal, move_lessons=req.move_lessons,
+                                          last_period=req.last_period, grades=req.grades,
+                                          timetable_weekday=req.timetable_weekday)
+    return _holiday_response(h, lessons_moved=moved, not_moved=not_moved)
+
+
+def _holiday_response(h, **extra) -> HolidayResponse:
+    return HolidayResponse(id=h.id, calendar_id=h.calendar_id, date=h.date, label=h.label, kind=h.kind,
+                           end_date=h.end_date, last_period=h.last_period, grades=h.grades,
+                           timetable_weekday=h.timetable_weekday, **extra)
 
 
 def declare_holiday(store: CurriculumStore, year, cal, *, date: str, label: str, kind: str,
-                    end_date: Optional[str], principal: User, move_lessons: bool = True):
+                    end_date: Optional[str], principal: User, move_lessons: bool = True,
+                    last_period: Optional[int] = None, grades: Optional[list[int]] = None,
+                    timetable_weekday: Optional[int] = None):
     """Add a holiday and, unless it is an event that still teaches, move the
     lessons on it and tell the people affected. One path for the holiday
     route and the Excel/CSV import (N-8-6: the import used to add the day
     only, leaving lessons dated on it and telling no one). Returns (holiday,
-    lessons moved, plans not moved); the counts are None when nothing moved."""
-    h = store.add_holiday(calendar_id=cal.id, date=date, label=label, kind=kind, end_date=end_date)
-    moved, not_moved = (_move_lessons_off_holiday(store, year, h, principal)
-                        if move_lessons and h.kind != "event" else (None, None))
-    return h, moved, not_moved
+    lessons moved, plans not moved); the counts are None when nothing moved.
+
+    A day that runs differently (a half day, an exam window, a compensatory
+    working day: N-3-19) re-lays the plans it touches instead."""
+    h = store.add_holiday(calendar_id=cal.id, date=date, label=label, kind=kind, end_date=end_date,
+                          last_period=last_period, grades=grades, timetable_weekday=timetable_weekday)
+    if not move_lessons or h.kind == "event":
+        return h, None, None
+    if h.kind in calendar_mod.DAY_KINDS:
+        return (h, *_reflow_for_calendar_day(store, year, h, principal.id))
+    return (h, *_move_lessons_off_holiday(store, year, h, principal))
+
+
+_DAY_KIND_NAMES = {calendar_mod.HALF_DAY: "half day", calendar_mod.EXAM_WINDOW: "exam window",
+                   calendar_mod.WORKING_DAY: "working day"}
+
+
+def _reflow_for_calendar_day(store: CurriculumStore, year, day, actor_id: str, *,
+                             removed: bool = False) -> tuple[int, list[str]]:
+    """A half day, an exam window or a compensatory working day changes which
+    periods teach (N-3-19), so each plan it touches is laid again from the
+    day on, onto the periods that now happen (scheduling.reflow_plan, the
+    move a lost period makes): a lesson in a period a half day cuts, or in
+    an exam window of its class, moves to the plan's next period, and a
+    compensatory day takes the next lessons. Removing the day (`removed`)
+    lays them back. From the school's today on: a passed day is the record.
+    Returns (lessons moved, plans that could not be moved, named)."""
+    from ..assessment.audit_log import get_audit_log
+    first = max(day.date, _school_today().isoformat())
+    last = day.end_date or day.date
+    if first > last:
+        return 0, []
+    if removed or day.kind == calendar_mod.WORKING_DAY:
+        # Every plan with a lesson still ahead: the lessons after the day move.
+        plans = store._fetchall(
+            "SELECT DISTINCT book_id, section_id FROM scheduled_lessons WHERE academic_year_id=? "
+            "AND status='scheduled' AND date>=?", (year.id, first))
+    else:
+        plans = store._fetchall(
+            "SELECT DISTINCT book_id, section_id FROM scheduled_lessons WHERE academic_year_id=? "
+            "AND status='scheduled' AND date>=? AND date<=?", (year.id, first, last))
+    if day.kind == calendar_mod.EXAM_WINDOW and day.grades:
+        plans = [p for p in plans if calendar_mod.grade_number_for_book(store, p["book_id"]) in day.grades]
+    reason = f"{_DAY_KIND_NAMES[day.kind]}{' removed' if removed else ''}: {day.label}"
+    audit = get_audit_log(_cfg.data_root)
+    moved, not_moved = 0, []
+    for plan in plans:
+        try:
+            result = scheduling_mod.reflow_plan(store, audit, academic_year_id=year.id, book_id=plan["book_id"],
+                                                section_id=plan["section_id"], from_date=first, reason=reason,
+                                                changed_by=actor_id)
+        except ValueError as e:
+            book = store.get_book(plan["book_id"])
+            not_moved.append(f"{book.title if book else plan['book_id']}: {e}")
+            continue
+        moved += result.lessons_pushed
+    return moved, not_moved
 
 
 HOLIDAY_NOTICE_DAYS = 14
@@ -1447,6 +1515,9 @@ def delete_holiday(academic_year_id: str, holiday_id: str,
     if cal is None or h is None or h.calendar_id != cal.id:
         raise HTTPException(404, "holiday not found in this academic year's calendar")
     store.remove_holiday(holiday_id)
+    if h.kind in calendar_mod.DAY_KINDS:
+        # The plans were laid around the day (N-3-19): lay them back.
+        _reflow_for_calendar_day(store, store.get_academic_year(academic_year_id), h, principal.id, removed=True)
     return {"ok": True}
 
 
@@ -1458,9 +1529,7 @@ def list_holidays(academic_year_id: str,
     cal = store.get_calendar_for_year(academic_year_id)
     if cal is None:
         return []
-    return [HolidayResponse(id=h.id, calendar_id=h.calendar_id, date=h.date, label=h.label,
-                            kind=h.kind, end_date=h.end_date)
-            for h in store.holidays_for_calendar(cal.id)]
+    return [_holiday_response(h) for h in store.holidays_for_calendar(cal.id)]
 
 
 # ---------------- terms (PRD 12.6, section 0 decision 11) ----------------
@@ -1680,7 +1749,8 @@ def get_working_days(academic_year_id: str,
         academic_year_id=academic_year_id, total_days=result.total_days,
         working_days=result.working_days, weekly_off_count=result.weekly_off_count,
         alternate_saturday_off_count=result.alternate_saturday_off_count,
-        holiday_count=result.holiday_count, dates=list(result.dates))
+        holiday_count=result.holiday_count, dates=list(result.dates),
+        compensatory_count=result.compensatory_count)
 
 
 @router.post("/books/{book_id}/teaching-time-estimates", response_model=ComputeTeachingTimeResponse)
@@ -1695,28 +1765,48 @@ def compute_teaching_time_estimates(book_id: str, academic_year_id: str,
     overwrites an existing estimate (§29 -- an admin who has since
     hand-adjusted an estimate must not have it clobbered by a re-run).
 
+    The budget is sized from a section's own week (N-3-8): `sectionId`'s,
+    or, when none is named, the largest of the class's sections that have
+    the subject in their timetable. Only a class with no section week falls
+    back to the school-wide slots.
+
     `periods_per_week`: an explicit value in the request always wins (a
-    one-off override); when omitted, resolves this book's subject's real,
-    persisted SubjectPeriodAllocation for the year instead of forcing the
-    caller to re-supply it every time -- 400 with a clear message if
-    neither exists, never a guessed default."""
+    one-off override); when omitted, resolves the section's allocation
+    (`sectionId`), else this book's subject's persisted
+    SubjectPeriodAllocation for the year, else the most any section of the
+    class is allocated -- 400 with a clear message if none exists, never a
+    guessed default."""
     store = _require()
     _require_school_owns_book(book_id, principal)
     _require_school_owns_academic_year(academic_year_id, principal)
+    book = store.get_book(book_id)
+    if req.section_id is not None:
+        section = _require_school_owns_section(req.section_id, principal)
+        subject_row = store.get_subject(book.subject_id) if book else None
+        if subject_row is None or subject_row.grade_id != section.grade_id:
+            raise HTTPException(422, "that book is not one of this section's class's books")
     periods_per_week = req.periods_per_week
+    if periods_per_week is None and req.section_id is not None:
+        alloc = store.allocation_for(req.section_id, book.subject_id)
+        periods_per_week = alloc.periods_per_week if alloc else None
     if periods_per_week is None:
         subject = store.subject_name_for_book(book_id)
         allocation = store.subject_period_allocation(academic_year_id, subject) if subject else None
-        if allocation is None:
+        if allocation is not None:
+            periods_per_week = allocation.periods_per_week
+        else:
+            per_section = [a.periods_per_week for a in store.allocations_for_year(academic_year_id)
+                           if book is not None and a.subject_id == book.subject_id]
+            periods_per_week = max(per_section) if per_section else None
+        if periods_per_week is None:
             raise HTTPException(
-                400, "periods_per_week not given and no SubjectPeriodAllocation is set for this "
-                "subject/year -- either pass periodsPerWeek explicitly or "
-                "POST .../subject-period-allocations first")
-        periods_per_week = allocation.periods_per_week
+                400, "periods_per_week not given and no allocation is set for this subject -- "
+                "either pass periodsPerWeek explicitly or allocate the subject to a section first")
     try:
         result = calendar_mod.compute_teaching_time_estimates(
             store, academic_year_id=academic_year_id, book_id=book_id,
-            periods_per_week=periods_per_week, approved_by=principal.id, recompute=req.recompute)
+            periods_per_week=periods_per_week, approved_by=principal.id, recompute=req.recompute,
+            section_id=req.section_id)
     except ValueError as e:
         raise HTTPException(404, str(e))
     return ComputeTeachingTimeResponse(
@@ -1726,7 +1816,7 @@ def compute_teaching_time_estimates(book_id: str, academic_year_id: str,
         total_instructional_minutes=result.total_instructional_minutes,
         units_skipped_no_subtopics=list(result.units_skipped_no_subtopics),
         estimates_created=len(result.estimates), periods_allocated=result.periods_allocated,
-        periods_short=result.periods_short, fits_in_year=result.fits_in_year)
+        periods_short=result.periods_short, fits_in_year=result.fits_in_year, section_id=result.section_id)
 
 
 @router.get("/subtopics/{subtopic_id}/teaching-time-estimate",
@@ -1773,7 +1863,10 @@ def schedule_book(book_id: str, academic_year_id: str, req: ScheduleBookRequest,
     only what is still to be taught. New lessons are placed from
     the school's today (or the year's first day, if later): a day that has
     passed cannot be taught on, and the shortfall warning counts only the
-    periods left."""
+    periods left. With `fitToPeriodsLeft`, a syllabus that needs more periods
+    than are left is fitted to them: each subtopic gets proportionally fewer,
+    at least one, and every one given fewer is listed in
+    `subtopicsCompressed` (D35)."""
     store = _require()
     _require_school_owns_book(book_id, principal)
     _require_school_owns_academic_year(academic_year_id, principal)
@@ -1798,7 +1891,8 @@ def schedule_book(book_id: str, academic_year_id: str, req: ScheduleBookRequest,
         result = scheduling_mod.schedule_book(
             store, school_id=principal.school_id, academic_year_id=academic_year_id,
             book_id=book_id, periods_per_week=periods, force=req.force,
-            from_date=_school_today().isoformat(), section_id=req.section_id)
+            from_date=_school_today().isoformat(), section_id=req.section_id,
+            fit_to_periods_left=req.fit_to_periods_left)
     except ValueError as e:
         raise HTTPException(409, str(e))
     return ScheduleBookResponse(
@@ -1813,7 +1907,13 @@ def schedule_book(book_id: str, academic_year_id: str, req: ScheduleBookRequest,
         teaching_periods_available=result.teaching_periods_available,
         lessons_kept=result.lessons_kept, past_lessons_kept=result.past_lessons_kept,
         all_subtopics_scheduled=result.all_subtopics_scheduled,
-        warning=result.warning, section_id=result.section_id)
+        warning=result.warning, section_id=result.section_id,
+        chapters_without_subtopics=list(result.chapters_without_subtopics),
+        subtopics_compressed=[CompressedSubtopicResponse(subtopic_id=c.subtopic_id,
+                                                         periods_needed=c.periods_needed,
+                                                         periods_planned=c.periods_planned)
+                              for c in result.subtopics_compressed],
+        fit_note=result.fit_note)
 
 
 def _minutes(hhmm: str) -> int:
@@ -1839,7 +1939,9 @@ def build_lesson_plans(academic_year_id: str, req: BuildPlansRequest,
        What was taught, marked or has passed is kept (`force`).
 
     A section and subject that cannot be planned is named in `notPlanned`
-    with the reason, never skipped silently."""
+    with the reason, never skipped silently, and each plan names the
+    chapters it left out for want of subtopics (`chaptersWithoutSubtopics`,
+    D119)."""
     store = _require()
     _require_school_owns_academic_year(academic_year_id, principal)
     out = BuildPlansResponse()
@@ -1901,7 +2003,8 @@ def build_lesson_plans(academic_year_id: str, req: BuildPlansRequest,
         try:
             r = scheduling_mod.schedule_book(store, school_id=principal.school_id, academic_year_id=academic_year_id,
                                              book_id=book.id, periods_per_week=per_week, force=True,
-                                             from_date=today, section_id=a.section_id)
+                                             from_date=today, section_id=a.section_id,
+                                             fit_to_periods_left=req.fit_to_periods_left)
         except ValueError as e:
             out.not_planned.append(f"{label}: {e}")
             continue
@@ -1909,7 +2012,9 @@ def build_lesson_plans(academic_year_id: str, req: BuildPlansRequest,
             section_id=a.section_id, section_name=store._section_label(section),
             subject_name=subject.name if subject else "", lessons_created=r.lessons_created,
             subtopics_without_estimate=len(r.subtopics_without_estimate),
-            last_scheduled_date=r.last_scheduled_date, warning=r.warning))
+            last_scheduled_date=r.last_scheduled_date, warning=r.warning,
+            chapters_without_subtopics=list(r.chapters_without_subtopics),
+            subtopics_compressed=len(r.subtopics_compressed), fit_note=r.fit_note))
     return out
 
 
@@ -1989,7 +2094,10 @@ def get_my_schedule(start_date: str, end_date: str,
     # SCH-4: a section's plan is the allocated teacher's (M1.2), whatever
     # the book assignments say.
     my_cells = {(a.section_id, a.subject_id) for a in store.allocations_for_teacher(current.id)}
-    if not book_ids and not my_cells:
+    # SCH-8: a temporary replacement teaches the classes of the teacher on
+    # long leave for the leave's dates.
+    standing_in = store.replacement_cells(current.id)
+    if not book_ids and not my_cells and not standing_in:
         return []
     subject_of_book: dict[str, Optional[str]] = {}
 
@@ -1999,7 +2107,9 @@ def get_my_schedule(start_date: str, end_date: str,
         if l.book_id not in subject_of_book:
             b = store.get_book(l.book_id)
             subject_of_book[l.book_id] = b.subject_id if b else None
-        return (l.section_id, subject_of_book[l.book_id]) in my_cells
+        cell = (l.section_id, subject_of_book[l.book_id])
+        return cell in my_cells or any(cell == (s, subj) and start <= l.date <= end
+                                       for s, subj, start, end in standing_in)
     lessons = [l for l in store.scheduled_lessons_for_date_range(current.school_id, start_date, end_date)
               if _mine(l)]
     section_names = {s.id: s for s in (store.get_section(sid) for sid in {l.section_id for l in lessons
@@ -2025,6 +2135,21 @@ def get_my_schedule(start_date: str, end_date: str,
     return out
 
 
+def _teaches_lesson(store: CurriculumStore, lesson, user: User) -> bool:
+    """A section's lesson is its allocated teacher's (SCH-4, M1.2) -- after a
+    mid-year change, the new teacher's -- or, for the dates of a long leave,
+    the temporary replacement's (SCH-8). A school-wide plan's lesson is its
+    book's assigned teachers'."""
+    if lesson.section_id is None:
+        return lesson.book_id in {a.book_id for a in store.assignments_for_teacher(user.id)}
+    book = store.get_book(lesson.book_id)
+    if book is None:
+        return False
+    alloc = store.allocation_for(lesson.section_id, book.subject_id)
+    return (alloc is not None and alloc.teacher_id == user.id) or \
+        store.replaces(user.id, lesson.section_id, book.subject_id, lesson.date)
+
+
 @router.patch("/scheduled-lessons/{lesson_id}", response_model=ScheduledLessonResponse)
 def mark_lesson(lesson_id: str, req: MarkLessonRequest,
                 current: User = Depends(get_current_user)) -> ScheduledLessonResponse:
@@ -2040,14 +2165,7 @@ def mark_lesson(lesson_id: str, req: MarkLessonRequest,
         raise HTTPException(404, "scheduled lesson not found")
     if lesson.school_id != current.school_id:
         raise HTTPException(403, "this lesson belongs to a different school")
-    if lesson.section_id is not None:
-        # SCH-4: a section's lesson is its allocated teacher's (M1.2).
-        book = store.get_book(lesson.book_id)
-        alloc = store.allocation_for(lesson.section_id, book.subject_id) if book else None
-        is_assigned = alloc is not None and alloc.teacher_id == current.id
-    else:
-        is_assigned = lesson.book_id in {a.book_id for a in store.assignments_for_teacher(current.id)}
-    if current.role != "principal" and not is_assigned:
+    if current.role != "principal" and not _teaches_lesson(store, lesson, current):
         raise HTTPException(403, "you are not assigned to teach this book")
     # 409: the request is well formed but the lesson holds no day to have
     # been taught on (a PUSH could not fit it before the year ends).
@@ -2055,6 +2173,16 @@ def mark_lesson(lesson_id: str, req: MarkLessonRequest,
         raise HTTPException(
             409, "this lesson has no day in the plan (it no longer fit before the year ends) -- "
                  "ADJUST it onto a working day first")
+    # 409 again: a lesson's day that has not come yet cannot have been taught
+    # (or missed). A future lesson marked completed counted toward the
+    # principal's coverage before its day (audit D67). Undoing a mark
+    # ('scheduled') is always allowed.
+    today = _school_today()
+    if req.status != "scheduled" and date.fromisoformat(lesson.date) > today:
+        raise HTTPException(
+            409, f"this lesson is planned for {lesson.date}, after today ({today.isoformat()}); it can be "
+                 "marked taught, partly taught or not taught from its own day on -- if it was taught "
+                 "early, ask the principal to move it to the day it was taught")
     status, note = req.status, req.note
     if status == "partly":
         status, note = "completed", "Partly taught" + (f": {req.note}" if req.note else "")
@@ -2152,8 +2280,10 @@ def get_lesson_history(lesson_id: str,
         raise HTTPException(404, "scheduled lesson not found")
     if lesson.school_id != current.school_id:
         raise HTTPException(403, "this lesson belongs to a different school")
-    is_assigned = lesson.book_id in {a.book_id for a in store.assignments_for_teacher(current.id)}
-    if current.role != "principal" and not is_assigned:
+    # The same teacher who marks it reads its history: a section's lesson was
+    # checked against book assignments only, so its allocated teacher got a
+    # 403 (SCH-8: after a mid-year change, always).
+    if current.role != "principal" and not _teaches_lesson(store, lesson, current):
         raise HTTPException(403, "you are not assigned to teach this book")
     from ..assessment.audit_log import get_audit_log
     entries = scheduling_mod.reschedule_history_for_lesson(get_audit_log(_cfg.data_root), lesson_id)
@@ -2313,12 +2443,15 @@ def get_my_progress(academic_year_id: str,
 def get_coverage_report(academic_year_id: str, as_of_date: Optional[str] = None,
                         principal: User = Depends(require_admin("reports"))) -> CoverageReportResponse:
     """Planned vs. actually-taught coverage, variance, and completion %
-    aggregated by Subject and Chapter for school management (§17, §32)."""
+    aggregated by Subject and Chapter for school management (§17, §32).
+    `as_of_date` defaults to the school's today (IST), the same day delayed
+    topics read; it was the server's UTC date, so between 00:00 and 05:30
+    IST Coverage & Pace showed yesterday beside today's overdue list (D66)."""
     store = _require()
     _require_school_owns_academic_year(academic_year_id, principal)
     data = store.get_coverage_report(school_id=principal.school_id,
                                      academic_year_id=academic_year_id,
-                                     as_of_date=as_of_date)
+                                     as_of_date=as_of_date or _school_today().isoformat())
     users_store = _require_users()
     for s in data["subjects"]:
         if s.get("teacher_id"):

@@ -9,10 +9,14 @@ and after (ROLE-3). Students read only their own section's day.
 """
 from __future__ import annotations
 
+import logging
+import re
 from datetime import date
+from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 from pydantic import ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
@@ -28,6 +32,7 @@ def _notify(**kw: Any) -> None:
     notify_safely(**kw)
 
 router = APIRouter(prefix="/api/v1/curriculum")
+log = logging.getLogger(__name__)
 
 
 class _Req(Camel):
@@ -50,6 +55,18 @@ class LeaveDecisionRequest(_Req):
     approve: bool
 
 
+class ReplacementRequest(_Req):
+    # The temporary replacement teacher; null takes the replacement off.
+    teacher_id: Optional[str] = None
+
+
+class LeaveDocumentResponse(Camel):
+    content_type: str
+    name: str
+    size: int
+    uploaded_at: str
+
+
 class LeaveResponse(Camel):
     id: str
     academic_year_id: str
@@ -63,6 +80,11 @@ class LeaveResponse(Camel):
     status: str
     created_by: str
     decided_by: Optional[str] = None
+    # The supporting document, when one is attached (N-3-17); its bytes are
+    # at GET .../leave-requests/{id}/document.
+    document: Optional[LeaveDocumentResponse] = None
+    # A temporary replacement teacher for a long leave (SCH-8).
+    replacement_id: Optional[str] = None
 
 
 class SubstitutionResponse(Camel):
@@ -236,10 +258,14 @@ def _current_year(store, school_id: str):
 
 
 def _leave(l) -> LeaveResponse:
+    document = (LeaveDocumentResponse(content_type=l.document_type, name=l.document_name or "document",
+                                      size=l.document_size or 0, uploaded_at=l.document_at or "")
+                if l.document_type else None)
     return LeaveResponse(id=l.id, academic_year_id=l.academic_year_id, teacher_id=l.teacher_id,
                          start_date=l.start_date, end_date=l.end_date, kind=l.kind, periods=l.periods,
                          reason=l.reason, handover_note=l.handover_note, status=l.status,
-                         created_by=l.created_by, decided_by=l.decided_by)
+                         created_by=l.created_by, decided_by=l.decided_by, document=document,
+                         replacement_id=l.replacement_id)
 
 
 def _sub(s) -> SubstitutionResponse:
@@ -363,6 +389,135 @@ def cancel_leave(leave_id: str, current: User = Depends(require_staff)) -> Leave
         raise HTTPException(409, str(e))
     _audit("leave_cancelled", current, {"leaveId": leave_id, "before": leave.status, "after": after.status})
     return _leave(after)
+
+
+@router.put("/leave-requests/{leave_id}/replacement", response_model=LeaveDecisionResponse)
+def set_leave_replacement(leave_id: str, req: ReplacementRequest,
+                          principal: User = Depends(require_admin("leave"))) -> LeaveDecisionResponse:
+    """Long leave (SCH-8): name a temporary replacement teacher, who takes the
+    teacher's periods for the leave's dates -- each one they are free for,
+    accepted at once -- and teaches their classes' lessons of those dates.
+    Null takes the replacement off, and the engine proposes cover again.
+    Returns the leave and its substitutions from today on."""
+    leave = _owned_leave(leave_id, principal)
+    if leave.status != "approved":
+        raise HTTPException(409, f"this leave is {leave.status}; approve it before naming a replacement")
+    if req.teacher_id:
+        _staff_of_school(req.teacher_id, principal)
+    try:
+        after, subs = cr._require().set_leave_replacement(leave_id, req.teacher_id, today=_today())
+    except CoverError as e:
+        raise HTTPException(422, str(e))
+    _audit("leave_replacement_set", principal, {"leaveId": leave_id, "before": leave.replacement_id,
+                                                "after": req.teacher_id,
+                                                "periods": sum(1 for s in subs if s.substitute_id == req.teacher_id)})
+    for s in subs:
+        _notify_proposed(s)
+    return LeaveDecisionResponse(leave=_leave(after), substitutions=[_sub(s) for s in subs])
+
+
+# ---------------- the leave's supporting document (SCH-5, N-3-17) ----------------
+# A small PDF or photo (a medical certificate) kept like a homework photo: on
+# the container's disk and, when one is set up, in the durable blob store
+# ("leave-documents"). Only the teacher on leave and the school's leave admin
+# (the principal, or a teacher granted leave) read it, and each read by the
+# admin is on the audit log.
+
+LEAVE_DOCUMENT_TYPES = {"application/pdf": "pdf", "image/jpeg": "jpg", "image/png": "png"}
+MAX_LEAVE_DOCUMENT_BYTES = 2 * 1024 * 1024
+_MAGIC = {"application/pdf": (b"%PDF-",), "image/png": (b"\x89PNG\r\n\x1a\n",), "image/jpeg": (b"\xff\xd8\xff",)}
+
+
+def _document_path(leave) -> Path:
+    d = Path(cr._cfg.data_root) / "leave-documents" / leave.school_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{leave.id}.{LEAVE_DOCUMENT_TYPES[leave.document_type]}"
+
+
+def _document_blobs():
+    from ..storage.blobs import durable_blob_store
+    return durable_blob_store("leave-documents")
+
+
+def _may_see_document(leave, user: User) -> bool:
+    return user.id in (leave.teacher_id, leave.created_by) or holds(user, "leave")
+
+
+def _clean_name(name: Optional[str], ext: str) -> str:
+    """The file's own name, for display only: no folders, plain characters."""
+    base = re.sub(r"[^A-Za-z0-9._ -]", "_", (name or "").replace("\\", "/").rsplit("/", 1)[-1]).strip(" .")
+    return (base or f"document.{ext}")[:100]
+
+
+@router.post("/leave-requests/{leave_id}/document", response_model=LeaveResponse)
+async def upload_leave_document(leave_id: str, file: UploadFile = File(...),
+                                current: User = Depends(require_staff)) -> LeaveResponse:
+    """Attach a supporting document to a leave request: a PDF, JPEG or PNG of
+    at most 2 MB. The teacher on leave, or whoever applied for them (the
+    principal), may; a second upload replaces the first. Only while the
+    request stands (pending or approved)."""
+    leave = _owned_leave(leave_id, current)
+    if current.id not in (leave.teacher_id, leave.created_by) and not holds(current, "leave"):
+        raise HTTPException(403, "only the teacher on leave or the principal attaches a document")
+    if leave.status not in ("pending", "approved"):
+        raise HTTPException(409, f"this leave is {leave.status}; a document can no longer be attached")
+    if file.content_type not in LEAVE_DOCUMENT_TYPES:
+        raise HTTPException(415, "attach a PDF, or a JPEG or PNG photo")
+    data = await file.read(MAX_LEAVE_DOCUMENT_BYTES + 1)
+    if len(data) > MAX_LEAVE_DOCUMENT_BYTES:
+        raise HTTPException(413, "a document may be at most 2 MB")
+    if not data:
+        raise HTTPException(422, "the file is empty")
+    if not data.startswith(_MAGIC[file.content_type]):
+        raise HTTPException(415, "that file is not the PDF or image it says it is")
+    store = cr._require()
+    ext = LEAVE_DOCUMENT_TYPES[file.content_type]
+    if leave.document_type:
+        _document_path(leave).unlink(missing_ok=True)
+    blob_key = None
+    blobs = _document_blobs()
+    if blobs.enabled:
+        key = f"{leave.school_id}/{leave.id}.{ext}"
+        try:
+            blobs.upload(key, data, file.content_type)
+            blob_key = key
+        except Exception:  # noqa: BLE001
+            from ..storage.blobs import record_upload_failure
+            record_upload_failure("leave-documents")
+            log.warning("leave document %s kept on container disk only", leave.id, exc_info=True)
+    after = store.set_leave_document(leave.id, content_type=file.content_type, name=_clean_name(file.filename, ext),
+                                     size=len(data), blob_key=blob_key)
+    _document_path(after).write_bytes(data)
+    _audit("leave_document_attached", current, {"leaveId": leave.id, "contentType": file.content_type,
+                                                "bytes": len(data), "durable": blob_key is not None})
+    return _leave(after)
+
+
+@router.get("/leave-requests/{leave_id}/document")
+def leave_document(leave_id: str, current: User = Depends(require_staff)) -> Response:
+    """The request's supporting document, for the teacher on leave and the
+    school's leave admin. A read by anyone but the teacher is logged."""
+    leave = _owned_leave(leave_id, current)
+    if not _may_see_document(leave, current):
+        raise HTTPException(403, "only the teacher on leave or the principal sees this document")
+    if not leave.document_type:
+        raise HTTPException(404, "no document is attached to this leave request")
+    path = _document_path(leave)
+    if path.exists():
+        data = path.read_bytes()
+    elif leave.document_blob_key:
+        try:
+            data = _document_blobs().download(leave.document_blob_key)
+        except Exception:  # noqa: BLE001
+            log.warning("leave document %s is not in the blob store", leave.id, exc_info=True)
+            raise HTTPException(404, "this document is no longer available")
+    else:
+        raise HTTPException(404, "this document is no longer available")
+    if current.id != leave.teacher_id:
+        _audit("leave_document_read", current, {"leaveId": leave.id, "teacherId": leave.teacher_id})
+    return Response(content=data, media_type=leave.document_type,
+                    headers={"Cache-Control": "private, no-store",
+                             "Content-Disposition": f'inline; filename="{leave.document_name or "document"}"'})
 
 
 # ---------------- substitution (SCH-6) ----------------
@@ -512,7 +667,10 @@ def declare_closure(academic_year_id: str, req: ClosureRequest,
     holiday_added = False
     if req.add_holiday and only is None:
         cal = store.get_calendar_for_year(academic_year_id)
-        if cal is not None and not any(h.date == req.date for h in store.holidays_for_calendar(cal.id)):
+        from .calendar import CLOSURE_KINDS
+        # A half day or an exam window on the date does not close it (N-3-19).
+        if cal is not None and not any(h.date == req.date and h.kind in CLOSURE_KINDS
+                                       for h in store.holidays_for_calendar(cal.id)):
             store.add_holiday(calendar_id=cal.id, date=req.date, label=req.reason, kind="school")
             holiday_added = True
     reflowed = 0
@@ -658,6 +816,15 @@ def _attendance(on: str, current: User, opened: Optional[list] = None) -> Attend
     return AttendanceResponse(date=on, rows=rows, substitutions=[_sub(s) for s in (opened or [])])
 
 
+def _own_row(day: str, current: User) -> AttendanceRow:
+    """The caller's row of the day's register. Someone who is not on it -- an owner
+    acting as a school's principal is not one of its staff -- has none; that is
+    'not marked', not a crash."""
+    rows = _attendance(day, current).rows
+    return next((r for r in rows if r.teacher_id == current.id),
+                AttendanceRow(teacher_id=current.id, name=current.name, status="unmarked"))
+
+
 @router.get("/teacher-attendance", response_model=AttendanceResponse)
 def teacher_attendance(on: Optional[str] = Query(default=None, alias="date"),
                        principal: User = Depends(require_admin("leave"))) -> AttendanceResponse:
@@ -701,7 +868,7 @@ def my_attendance(current: User = Depends(require_staff)) -> AttendanceRow:
     The register is the principal's, so My day could not tell a teacher who
     had checked in that they had: "I'm here" was offered again every time it
     opened (QA S-12)."""
-    return next(r for r in _attendance(_today(), current).rows if r.teacher_id == current.id)
+    return _own_row(_today(), current)
 
 
 @router.post("/my-attendance", response_model=AttendanceRow)
@@ -715,7 +882,7 @@ def check_in(current: User = Depends(require_staff)) -> AttendanceRow:
         year = _year_for(store, current.school_id, day)
         store.mark_attendance(school_id=current.school_id, academic_year_id=year.id, on=day, teacher_id=current.id,
                               status="present", marked_by=current.id)
-    return next(r for r in _attendance(day, current).rows if r.teacher_id == current.id)
+    return _own_row(day, current)
 
 
 @router.get("/academic-years/{academic_year_id}/cover-summary", response_model=CoverSummaryResponse)

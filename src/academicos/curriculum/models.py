@@ -313,6 +313,15 @@ class Holiday:
     # break -- so it doesn't require one row per date; inclusive of both
     # ends, same convention as `date`.
     end_date: Optional[str] = None
+    # The days that change how a working day runs (calendar.DAY_KINDS, v3
+    # audit N-3-19), each with its own field:
+    # half_day: the last period kept (periods after it are not held);
+    last_period: Optional[int] = None
+    # exam_window: the classes (grade numbers) whose teaching stops; None is
+    # every class;
+    grades: Optional[list[int]] = None
+    # working_day: the weekday (0=Monday) whose timetable the day runs.
+    timetable_weekday: Optional[int] = None
 
 
 @dataclass

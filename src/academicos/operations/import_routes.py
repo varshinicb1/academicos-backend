@@ -379,10 +379,15 @@ def _plan_allocations(ctx: _Ctx, line: int, r: dict) -> _Row:
     if current and current.teacher_id == (teacher.id if teacher else None) and current.periods_per_week == periods:
         return _Row(line, "skip", f"{subject.name} in {label} is already set that way")
     who = teacher.name if teacher else "no teacher yet"
-    return _Row(line, "ok", f"{subject.name} in {label}: {who}, {periods} periods a week",
-                lambda: ctx.cs.set_allocation(section_id=section.id, subject_id=subject.id,
-                                              teacher_id=teacher.id if teacher else None,
-                                              periods_per_week=periods) and None)
+
+    def apply() -> None:
+        before, after = ctx.cs.set_allocation(section_id=section.id, subject_id=subject.id,
+                                              teacher_id=teacher.id if teacher else None, periods_per_week=periods)
+        if before is not None and before.teacher_id != after.teacher_id:
+            # SCH-8: the cover and the books follow a mid-year change, as on the Timetable page.
+            ctx.cs.follow_teacher_change(section.id, subject.id, before.teacher_id, after.teacher_id,
+                                         today=cr._school_today().isoformat())
+    return _Row(line, "ok", f"{subject.name} in {label}: {who}, {periods} periods a week", apply)
 
 
 def _plan_holidays(ctx: _Ctx, line: int, r: dict) -> _Row:

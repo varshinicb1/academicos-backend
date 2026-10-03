@@ -120,7 +120,7 @@ class _Cal:
 
     def event(self, uid: str, summary: str, *, day: date, start: Optional[str] = None, end: Optional[str] = None,
               until: Optional[date] = None, end_day: Optional[date] = None, description: str = "",
-              skip: tuple[date, ...] = ()) -> None:
+              except_days: tuple[date, ...] = ()) -> None:
         ev = ["BEGIN:VEVENT", f"UID:{uid}@academicos", f"DTSTAMP:{self.now}", f"SUMMARY:{_esc(summary)}"]
         if start and end:
             ev += [f"DTSTART;TZID=Asia/Kolkata:{_stamp(day, start)}", f"DTEND;TZID=Asia/Kolkata:{_stamp(day, end)}"]
@@ -129,8 +129,8 @@ class _Cal:
                    f"DTEND;VALUE=DATE:{((end_day or day) + timedelta(days=1)).strftime('%Y%m%d')}"]
         if until is not None:
             ev.append(f"RRULE:FREQ=WEEKLY;UNTIL={until.strftime('%Y%m%d')}T235959Z")
-            if skip and start:
-                ev.append("EXDATE;TZID=Asia/Kolkata:" + ",".join(_stamp(d, start) for d in skip))
+        if except_days and start:
+            ev.append("EXDATE;TZID=Asia/Kolkata:" + ",".join(_stamp(d, start) for d in except_days))
         if description:
             ev.append(f"DESCRIPTION:{_esc(description)}")
         ev.append("END:VEVENT")
@@ -152,31 +152,35 @@ def _year(cs, school_id: str, today: date):
 @dataclass
 class CalEvent:
     """One entry of a user's school calendar. `until` makes it weekly to that
-    day (a timetabled period); `end_day` spans whole days (a long holiday)."""
+    day (a timetabled period), except on `except_days` (a holiday, a half
+    day's cut periods, an exam window: the period is not held then);
+    `end_day` spans whole days (a long holiday)."""
     uid: str
-    kind: str  # period | holiday | cover | exam | invigilation | homework
+    # period | holiday | half_day | exam_window | working_day | cover | exam | invigilation | homework
+    kind: str
     title: str
     day: date
     start: Optional[str] = None
     end: Optional[str] = None
     until: Optional[date] = None
     end_day: Optional[date] = None
-    # The weeks a weekly period does not happen: holidays, weekly offs and
-    # the Saturdays the school is closed.
-    skip: tuple[date, ...] = ()
+    except_days: tuple[date, ...] = ()
 
 
-def _closed_days(cs, year) -> Optional[set[date]]:
-    """Every day of the year the school does not teach, or None when it has
-    no calendar yet. The feed's weekly periods recurred through holidays
-    and the 2nd/4th Saturdays off (QA S-13)."""
-    from ..curriculum.calendar import working_days_for_year
-    try:
-        open_days = {date.fromisoformat(d) for d in working_days_for_year(cs, year.id).dates}
-    except ValueError:
-        return None
-    start, end = date.fromisoformat(year.start_date), date.fromisoformat(year.end_date)
-    return {start + timedelta(days=i) for i in range((end - start).days + 1)} - open_days
+_WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def _calendar_day_title(h) -> str:
+    """What a calendar row says in a list (N-3-19: the apps showed none)."""
+    from ..curriculum.calendar import EXAM_WINDOW, HALF_DAY, WORKING_DAY
+    if h.kind == HALF_DAY:
+        return f"Half day: {h.label} (periods 1-{h.last_period})"
+    if h.kind == EXAM_WINDOW:
+        classes = f" (class {', '.join(map(str, h.grades))})" if h.grades else ""
+        return f"Exam window: {h.label}{classes}"
+    if h.kind == WORKING_DAY and h.timetable_weekday is not None:
+        return f"Working day: {h.label} ({_WEEKDAYS[h.timetable_weekday]}'s timetable)"
+    return h.label
 
 
 def calendar_events(user: User, today: date) -> list[CalEvent]:
@@ -202,8 +206,18 @@ def calendar_events(user: User, today: date) -> list[CalEvent]:
         s = cs.get_section(section_id)
         return cs._section_label(s) if s else ""
 
-    # the week, as weekly recurring periods at the bell's times
-    closed = _closed_days(cs, year)
+    # the week, as weekly recurring periods at the bell's times, except on the
+    # days a period is not held; a compensatory working day holds its
+    # weekday's periods once (N-3-19)
+    days = cs._school_days(year.id)
+    grades: dict[str, Optional[int]] = {}
+
+    def grade_of(sec) -> Optional[int]:
+        if sec.id not in grades:
+            g = cs.get_grade(sec.grade_id)
+            grades[sec.id] = g.number if g else None
+        return grades[sec.id]
+
     section = None
     if user.role == "student":
         e = cs.enrollment_for_student(user.id)
@@ -221,16 +235,32 @@ def calendar_events(user: User, today: date) -> list[CalEvent]:
         start, end = slot.start, slot.end
         first = first_day + timedelta(days=(t.day_of_week - first_day.weekday()) % 7)
         what = subject(t.subject_id) if user.role == "student" else f"{subject(t.subject_id)} {label(t.section_id)}"
-        skip = tuple(sorted(d for d in (closed or ()) if d >= first and d <= yend and d.weekday() == first.weekday()))
-        out.append(CalEvent(f"tt-{t.id}", "period", what, first, start, end, until=yend, skip=skip))
+        g = grade_of(sec)
+        weeks = [first + timedelta(days=7 * i) for i in range((yend - first).days // 7 + 1)]
+        out.append(CalEvent(f"tt-{t.id}", "period", what, first, start, end, until=yend,
+                            except_days=tuple(d for d in weeks if not days.holds(d.isoformat(), t.day_of_week,
+                                                                                    t.period, g))))
+        for on, weekday in sorted(days.runs_as.items()):
+            if weekday == t.day_of_week and first_day.isoformat() <= on <= year.end_date \
+                    and days.holds(on, weekday, t.period, g):
+                out.append(CalEvent(f"tt-{t.id}-{on}", "period", what, date.fromisoformat(on), start, end))
 
-    # holidays
+    # holidays, and the days that run differently (N-3-19); an exam window
+    # only for the classes it stops (all of them for the principal)
+    from ..curriculum.calendar import DAY_KINDS, EXAM_WINDOW
+    if user.role == "student":
+        my_grades = {grade_of(section)} if section else set()
+    else:
+        my_grades = {grade_of(s) for s in (cs.get_section(sid) for sid in {t.section_id for t in entries}) if s}
     cal_row = cs.get_calendar_for_year(year.id)
     for h in (cs.holidays_for_calendar(cal_row.id) if cal_row else []):
         d = date.fromisoformat(h.date)
-        if d >= today - timedelta(days=7):
-            out.append(CalEvent(f"hol-{h.id}", "holiday", h.label, d,
-                                end_day=date.fromisoformat(h.end_date) if h.end_date else None))
+        if (date.fromisoformat(h.end_date) if h.end_date else d) < today - timedelta(days=7):
+            continue
+        if h.kind == EXAM_WINDOW and h.grades and user.role != "principal" and not my_grades & set(h.grades):
+            continue
+        out.append(CalEvent(f"hol-{h.id}", h.kind if h.kind in DAY_KINDS else "holiday", _calendar_day_title(h), d,
+                            end_day=date.fromisoformat(h.end_date) if h.end_date else None))
 
     # substitution duties (staff)
     if user.role != "student":
@@ -272,7 +302,7 @@ def build_calendar(user: User, today: date) -> str:
     cal = _Cal(f"School - {user.name}")
     for e in calendar_events(user, today):
         cal.event(e.uid, e.title, day=e.day, start=e.start, end=e.end, until=e.until, end_day=e.end_day,
-                  skip=e.skip)
+                  except_days=e.except_days)
     return cal.text()
 
 
@@ -290,7 +320,8 @@ class CalendarItem(Camel):
 @router.get("/my-calendar", response_model=list[CalendarItem])
 def my_calendar(days: int = Query(42, ge=1, le=60),
                 current: User = Depends(get_current_user)) -> list[CalendarItem]:
-    """The caller's dated school events from today: holidays, cover and
+    """The caller's dated school events from today: holidays, half days,
+    exam windows and compensatory working days (N-3-19), cover and
     invigilation duties, exam papers and homework due. The ICS feed carries
     the same; the weekly periods are the timetable's, so they are left out."""
     if current.role not in ("teacher", "principal", "student"):

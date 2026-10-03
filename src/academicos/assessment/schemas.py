@@ -559,6 +559,21 @@ class PaperMetadataSchema(Camel):
     instructions_generated: Optional[bool] = None
 
 
+class SectionShortfall(Camel):
+    """One section a quick paper prints short because the bank cannot fill
+    it: what it asked for, what it prints, and how many questions the bank
+    holds for it where the paper draws from."""
+    section_id: str
+    label: str
+    name: str
+    marks_each: int
+    asked: int
+    printed: int
+    missing_marks: int
+    available: int
+    reason: str
+
+
 class GeneratedPaper(Camel):
     id: str
     assessment_id: str
@@ -588,6 +603,18 @@ class GeneratedPaper(Camel):
     # False when the subject's questions carry no difficulty or Bloom signal a
     # tier could act on (selection.tier_signals). None where no optimizer ran.
     tiers_available: Optional[bool] = None
+    # Quick paper (D57): the marks the request asked for, and -- only when
+    # the bank cannot make them -- each section that prints short and why.
+    # Empty when the paper holds what was asked. About the request, like
+    # `warnings`.
+    marks_asked: Optional[int] = None
+    shortfall: list[SectionShortfall] = Field(default_factory=list)
+    # True: a preview -- nothing was saved, and `id` names no stored paper.
+    preview: bool = False
+    # Quick paper (EX-3): how many of the questions this version prints have
+    # a difficulty measured from the marks teachers entered (facility.py),
+    # which its tier ranked on; the rest are inferred. None where not counted.
+    difficulty_measured: Optional[int] = None
 
 
 class QuickPaperRequest(Camel):
@@ -611,6 +638,15 @@ class QuickPaperRequest(Camel):
     exam_type: Optional[str] = None  # "class_test", "weekly_test", "board"
     set_count: int = 1
     template_id: Optional[str] = None
+    # How long the teacher spent making this paper, in seconds: from opening
+    # the builder (or the quick dialog) to asking for the paper, measured by
+    # the web app. Time saved on the paper is the baseline less this
+    # (paper_timing); None from a caller that does not measure it.
+    teacher_seconds: Optional[float] = Field(None, ge=0, le=86_400)
+    # True: make the paper and say what it holds -- the marks, and any
+    # section the bank cannot fill -- without saving anything, so the web
+    # shows a shortfall BEFORE the paper is saved (D57).
+    preview: bool = False
 
 
 class GenerateFromIdsRequest(Camel):
@@ -623,6 +659,8 @@ class GenerateFromIdsRequest(Camel):
     template_id: Optional[str] = None
     # As PaperGenerationRequest.reject_similar.
     reject_similar: bool = False
+    # As QuickPaperRequest.teacher_seconds.
+    teacher_seconds: Optional[float] = Field(None, ge=0, le=86_400)
 
 
 # ---- Assessment ----

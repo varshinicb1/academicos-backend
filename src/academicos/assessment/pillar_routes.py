@@ -348,6 +348,16 @@ def _pool_summary(pool) -> tuple[int, int, list[int]]:
     return cached
 
 
+def catalog_count(cfg, subject: str, grade: int) -> int:
+    """The question count GET /catalog gives one class and subject, 0 where it
+    lists none. A school's subject name is read the way homework reads it
+    ("Maths" is the bank's Mathematics). Exam coverage asks this so that "no
+    paper yet" is never said of a pair the bank cannot serve (D117)."""
+    from ..operations.homework_routes import bank_subject
+    pool = get_pool(cfg, subject=bank_subject(subject), grade=_int_grade_to_roman(grade))
+    return _pool_summary(pool)[0] if pool.questions else 0
+
+
 @router.get("/catalog", response_model=CatalogResponse)
 def catalog(response: Response) -> CatalogResponse:
     """Subjects/grades that actually have questions, with counts.

@@ -98,6 +98,17 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
+
+def _school_today_iso() -> str:
+    """Today on the schools' own calendar (IST, a fixed +05:30 with no
+    daylight saving), as routes._school_today: the server clock is UTC, and
+    between 00:00 and 05:30 IST the UTC date is still yesterday (audit D66).
+    The routes pass their own today; this is the default for a caller that
+    does not."""
+    from datetime import datetime, timedelta, timezone
+    return datetime.now(timezone(timedelta(hours=5, minutes=30))).date().isoformat()
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS boards (
   id           TEXT PRIMARY KEY,
@@ -400,6 +411,7 @@ def new_id(prefix: str) -> str:
 from .cover import COVER_SCHEMA, CoverMixin
 from .school_model import SCHOOL_MODEL_SCHEMA, SchoolModelMixin
 from .school_profile import SCHOOL_PROFILE_SCHEMA, SchoolProfileMixin
+from .teaching_groups import TEACHING_GROUPS_SCHEMA, TeachingGroupsMixin
 
 
 class SectionInUse(Exception):
@@ -407,7 +419,7 @@ class SectionInUse(Exception):
     its grade's last. The route's 409."""
 
 
-class CurriculumStore(SchoolModelMixin, CoverMixin, SchoolProfileMixin):
+class CurriculumStore(SchoolModelMixin, TeachingGroupsMixin, CoverMixin, SchoolProfileMixin):
     _SNAPSHOT_KEY = "curriculum.sqlite"
     _SNAPSHOT_DEBOUNCE_SECONDS = 30.0
 
@@ -442,7 +454,8 @@ class CurriculumStore(SchoolModelMixin, CoverMixin, SchoolProfileMixin):
         on start, and after a snapshot conflict reloads one an older release
         wrote. Executes only; the caller commits."""
         with self._conn_lock:
-            self.conn.executescript(SCHEMA + SCHOOL_MODEL_SCHEMA + COVER_SCHEMA + SCHOOL_PROFILE_SCHEMA)
+            self.conn.executescript(SCHEMA + SCHOOL_MODEL_SCHEMA + TEACHING_GROUPS_SCHEMA + COVER_SCHEMA
+                                    + SCHOOL_PROFILE_SCHEMA)
             self._migrate()
 
     def _migrate(self) -> None:
@@ -454,6 +467,11 @@ class CurriculumStore(SchoolModelMixin, CoverMixin, SchoolProfileMixin):
         cols = {r["name"] for r in self._fetchall("PRAGMA table_info(holidays)")}
         if "end_date" not in cols:
             self._exec("ALTER TABLE holidays ADD COLUMN end_date TEXT")
+        # N-3-19: half days, exam windows and compensatory working days are
+        # calendar rows too, each with its own field (models.Holiday).
+        for col, ddl in (("last_period", "INTEGER"), ("grades_json", "TEXT"), ("timetable_weekday", "INTEGER")):
+            if col not in cols:
+                self._exec(f"ALTER TABLE holidays ADD COLUMN {col} {ddl}")
         # Terms went live before a term carried its own paper baseline, so a
         # school's existing terms table needs the column added, not assumed.
         term_cols = {r["name"] for r in self._fetchall("PRAGMA table_info(terms)")}
@@ -478,6 +496,14 @@ class CurriculumStore(SchoolModelMixin, CoverMixin, SchoolProfileMixin):
             self._exec("ALTER TABLE scheduled_lessons ADD COLUMN section_id TEXT")
         self._exec("CREATE INDEX IF NOT EXISTS idx_sl_plan "
                    "ON scheduled_lessons(academic_year_id, book_id, section_id)")
+        # N-3-17: a leave request's supporting document.
+        leave_cols = {r["name"] for r in self._fetchall("PRAGMA table_info(leave_requests)")}
+        for col, ddl in (("document_type", "TEXT"), ("document_name", "TEXT"), ("document_size", "INTEGER"),
+                         ("document_blob_key", "TEXT"), ("document_at", "TEXT"),
+                         # SCH-8: a temporary replacement teacher for a long leave.
+                         ("replacement_id", "TEXT")):
+            if col not in leave_cols:
+                self._exec(f"ALTER TABLE leave_requests ADD COLUMN {col} {ddl}")
         # SCH-3: a locked period is kept by the timetable solver.
         entry_cols = {r["name"] for r in self._fetchall("PRAGMA table_info(timetable_entries)")}
         if "locked" not in entry_cols:
@@ -901,6 +927,10 @@ class CurriculumStore(SchoolModelMixin, CoverMixin, SchoolProfileMixin):
                 raise SectionInUse(
                     f"{len(enrolled)} student(s) are enrolled in this section; "
                     "enroll them in another section first")
+            # Its groups (N-3-20) go on with their other sections.
+            for g in self.groups_for_section(section_id):
+                g.section_ids = [s for s in g.section_ids if s != section_id]
+                self._write_group(g)
             self._exec("DELETE FROM sections WHERE id=?", (section_id,))
         self._commit()
         return sec
@@ -1791,9 +1821,16 @@ class CurriculumStore(SchoolModelMixin, CoverMixin, SchoolProfileMixin):
         self._commit()
         return self.get_calendar_for_year(academic_year_id)
 
+    @staticmethod
+    def _holiday_from_row(r: dict) -> Holiday:
+        d = dict(r)
+        grades = d.pop("grades_json", None)
+        d["grades"] = json.loads(grades) if grades else None
+        return Holiday(**d)
+
     def get_holiday(self, holiday_id: str) -> Optional[Holiday]:
         r = self._fetchone("SELECT * FROM holidays WHERE id=?", (holiday_id,))
-        return Holiday(**dict(r)) if r else None
+        return self._holiday_from_row(r) if r else None
 
     def remove_holiday(self, holiday_id: str) -> None:
         with self._conn_lock:
@@ -1804,21 +1841,29 @@ class CurriculumStore(SchoolModelMixin, CoverMixin, SchoolProfileMixin):
         self._commit()
 
     def add_holiday(self, *, calendar_id: str, date: str, label: str, kind: str = "holiday",
-                    end_date: Optional[str] = None) -> Holiday:
+                    end_date: Optional[str] = None, last_period: Optional[int] = None,
+                    grades: Optional[list[int]] = None,
+                    timetable_weekday: Optional[int] = None) -> Holiday:
+        """A closure, an event, or a day that runs differently (a half day,
+        an exam window, a compensatory working day: calendar.DAY_KINDS).
+        calendar.validate_holiday checks the fields belong to the kind."""
         if end_date is not None and end_date < date:
             raise ValueError(f"holiday end_date {end_date} is before its date {date}")
         h = Holiday(id=new_id("holiday"), calendar_id=calendar_id, date=date, label=label,
-                   kind=kind, end_date=end_date)
+                    kind=kind, end_date=end_date, last_period=last_period,
+                    grades=sorted(set(grades)) if grades else None, timetable_weekday=timetable_weekday)
         self._exec(
-            "INSERT INTO holidays (id, calendar_id, date, label, kind, end_date) VALUES (?,?,?,?,?,?)",
-            (h.id, h.calendar_id, h.date, h.label, h.kind, h.end_date))
+            "INSERT INTO holidays (id, calendar_id, date, label, kind, end_date, last_period, grades_json, "
+            "timetable_weekday) VALUES (?,?,?,?,?,?,?,?,?)",
+            (h.id, h.calendar_id, h.date, h.label, h.kind, h.end_date, h.last_period,
+             json.dumps(h.grades) if h.grades else None, h.timetable_weekday))
         self._commit()
         return h
 
     def holidays_for_calendar(self, calendar_id: str) -> list[Holiday]:
         rows = self._fetchall(
             "SELECT * FROM holidays WHERE calendar_id=? ORDER BY date", (calendar_id,))
-        return [Holiday(**dict(r)) for r in rows]
+        return [self._holiday_from_row(r) for r in rows]
 
     # ---------------- teaching time estimates ----------------
 
@@ -2153,10 +2198,12 @@ class CurriculumStore(SchoolModelMixin, CoverMixin, SchoolProfileMixin):
         work attributed to the chosen book on the principal's own Coverage &
         Pace screen. A subject with no recorded choice keeps every book
         (that is the seeded single-book case), and the per-subject key below
-        carries the book so two editions can never merge into one row."""
-        from datetime import datetime, timezone
+        carries the book so two editions can never merge into one row.
+
+        `as_of_date` defaults to the school's today (IST), the date delayed
+        topics use; it was the UTC date until audit D66."""
         if not as_of_date:
-            as_of_date = datetime.now(timezone.utc).date().isoformat()
+            as_of_date = _school_today_iso()
 
         rows = self._fetchall(
             """
@@ -2313,10 +2360,11 @@ class CurriculumStore(SchoolModelMixin, CoverMixin, SchoolProfileMixin):
         lesson (a PUSH found it no period before the year ends), whatever
         its stale date: a lesson that lost its day is the worst delay, and
         until the review of 2026-09-22 the `status = 'scheduled'` filter
-        kept it off this report entirely."""
-        from datetime import date, datetime, timezone
+        kept it off this report entirely. `as_of_date` defaults to the
+        school's today (IST), as coverage does (audit D66)."""
+        from datetime import date
         if not as_of_date:
-            as_of_date = datetime.now(timezone.utc).date().isoformat()
+            as_of_date = _school_today_iso()
         as_of = date.fromisoformat(as_of_date)
 
         select = """

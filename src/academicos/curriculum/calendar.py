@@ -21,7 +21,7 @@ representations stay separate; only the marks-weightage idea is shared.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Optional
 
@@ -39,6 +39,22 @@ _WEEKDAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "satur
 CLOSURE_KINDS = ("holiday", "public", "school", "emergency", "unexpected_closure")
 NON_CLOSURE_KINDS = ("event",)
 HOLIDAY_KINDS = CLOSURE_KINDS + NON_CLOSURE_KINDS
+
+# Days that change how a working day runs (v3 audit N-3-19: the calendar knew
+# only weekly offs, alternate Saturdays and closures). Each has a field of its
+# own (models.Holiday):
+# - half_day: only periods 1..last_period are held; the periods after it are
+#   not lessons, need no cover and hold no part of a plan.
+# - exam_window: teaching stops for the chosen classes (`grades`; none is
+#   every class) from date to end_date. The days stay working days -- the
+#   school is open and the classes sit exams -- so the cover engine treats a
+#   window as it treats a published exam paper (cover.ExamDay), with or
+#   without a datesheet.
+# - working_day: a weekly off or an alternate Saturday off made a working day
+#   (a compensatory Saturday), running the timetable of `timetable_weekday`.
+HALF_DAY, EXAM_WINDOW, WORKING_DAY = "half_day", "exam_window", "working_day"
+DAY_KINDS = (HALF_DAY, EXAM_WINDOW, WORKING_DAY)
+MAX_PERIOD = 20
 
 # Named alternate-Saturday rules, beside the digit form ("2nd,4th", "1,3").
 # 'second_fourth' is what the web admin's dropdown sends; the digit-only
@@ -123,17 +139,32 @@ def normalize_alternate_saturday_rule(rule: Optional[str]) -> str:
     return (rule or "none").strip().lower() or "none"
 
 
+def is_off_day(d: date, weekly_off_days: list[str], alternate_saturday_rule: str) -> bool:
+    """A weekly off, or an alternate Saturday off, by the calendar's rules."""
+    if _WEEKDAY_NAMES[d.weekday()] in normalize_weekly_off_days(weekly_off_days):
+        return True
+    return d.weekday() == 5 and _nth_weekday_of_month(d) in parse_alternate_saturday_rule(alternate_saturday_rule)
+
+
 def validate_holiday(*, date_: str, end_date: Optional[str], kind: str,
-                     year_start: str, year_end: str) -> None:
+                     year_start: str, year_end: str, last_period: Optional[int] = None,
+                     grades: Optional[list[int]] = None, timetable_weekday: Optional[int] = None,
+                     calendar=None, year_grades: Optional[set[int]] = None) -> None:
     """ValueError for anything a holiday row must never hold: an unknown
     kind (it would be listed but never counted), an unparseable date
     ('next monday' was accepted), an end before the start (a 500 from the
     store before 2026-09-22), or a day outside the academic year
-    (2030-01-01 was accepted for a 2026-27 year)."""
-    if kind not in HOLIDAY_KINDS:
+    (2030-01-01 was accepted for a 2026-27 year).
+
+    A day kind (DAY_KINDS) needs its own field and no other's: a half day
+    its last period, an exam window classes of this year (`year_grades`)
+    or none for every class, and a working day the weekday whose timetable
+    it runs -- on a day `calendar`'s rules make an off day."""
+    if kind not in HOLIDAY_KINDS + DAY_KINDS:
         raise ValueError(
             f"unknown holiday kind {kind!r} -- closures: {', '.join(CLOSURE_KINDS)}; "
-            f"a marked day that still teaches: {', '.join(NON_CLOSURE_KINDS)}")
+            f"a marked day that still teaches: {', '.join(NON_CLOSURE_KINDS)}; "
+            f"a day that runs differently: {', '.join(DAY_KINDS)}")
     parsed = {}
     for field_name, value in (("date", date_), ("end_date", end_date)):
         if value is None:
@@ -157,6 +188,33 @@ def validate_holiday(*, date_: str, end_date: Optional[str], kind: str,
         raise ValueError(
             f"holiday {date_}{f' .. {end_date}' if end_date else ''} falls outside the "
             f"academic year ({year_start} .. {year_end})")
+    if kind == HALF_DAY:
+        if last_period is None or not 1 <= last_period <= MAX_PERIOD:
+            raise ValueError(f"a half day keeps periods 1 to its last period (lastPeriod, 1 to {MAX_PERIOD}); "
+                             "the periods after it are not held")
+    elif last_period is not None:
+        raise ValueError("only a half day has a last period")
+    if kind == EXAM_WINDOW:
+        unknown = sorted(set(grades or ()) - year_grades) if year_grades is not None else []
+        if unknown:
+            raise ValueError(f"no class {', '.join(map(str, unknown))} this year")
+    elif grades:
+        raise ValueError("only an exam window names the classes it stops")
+    if kind == WORKING_DAY:
+        if timetable_weekday is None or not 0 <= timetable_weekday <= 6:
+            raise ValueError("a working day runs one weekday's timetable: give timetableWeekday (0 = Monday)")
+        if end != start:
+            raise ValueError("declare a compensatory working day one day at a time")
+        if calendar is not None:
+            if not is_off_day(start, calendar.weekly_off_days, calendar.alternate_saturday_rule):
+                raise ValueError(f"{date_} is already a working day: a compensatory working day is a weekly "
+                                 "off or an alternate Saturday off made a working day")
+            name = _WEEKDAY_NAMES[timetable_weekday]
+            if name in normalize_weekly_off_days(calendar.weekly_off_days):
+                raise ValueError(f"{name.title()} is a weekly off and has no timetable: choose the weekday "
+                                 "whose timetable the day runs")
+    elif timetable_weekday is not None:
+        raise ValueError("only a working day runs another weekday's timetable")
 
 
 @dataclass(frozen=True)
@@ -167,14 +225,19 @@ class WorkingDaysResult:
     alternate_saturday_off_count: int
     holiday_count: int
     dates: tuple[str, ...]   # ISO dates, real working days only
+    compensatory_count: int = 0   # off days made working days (counted in working_days)
 
 
 def compute_working_days(*, start_date: str, end_date: str, weekly_off_days: list[str],
-                         alternate_saturday_rule: str, holiday_dates: set[str]) -> WorkingDaysResult:
+                         alternate_saturday_rule: str, holiday_dates: set[str],
+                         extra_working_dates: frozenset[str] = frozenset()) -> WorkingDaysResult:
     """Pure function, no store dependency -- the actual §10 arithmetic.
     Precedence per day: weekly-off > alternate-Saturday-off > holiday >
     working. A date can only be one of those, so double counting is
-    impossible by construction."""
+    impossible by construction.
+
+    `extra_working_dates` are off days made working days (a compensatory
+    Saturday, N-3-19): neither off rule takes them, a closure still does."""
     start = _parse_date(start_date)
     end = _parse_date(end_date)
     if end < start:
@@ -188,30 +251,31 @@ def compute_working_days(*, start_date: str, end_date: str, weekly_off_days: lis
     weekly_off_count = 0
     alt_sat_count = 0
     holiday_count = 0
+    compensatory = 0
 
     d = start
     while d <= end:
         total_days += 1
-        if d.weekday() in off_weekdays:
+        made_working = d.isoformat() in extra_working_dates
+        if d.weekday() in off_weekdays and not made_working:
             weekly_off_count += 1
-        elif d.weekday() == 5 and _nth_weekday_of_month(d) in saturdays_off:
+        elif d.weekday() == 5 and _nth_weekday_of_month(d) in saturdays_off and not made_working:
             alt_sat_count += 1
         elif d.isoformat() in holiday_dates:
             holiday_count += 1
         else:
             working.append(d.isoformat())
+            compensatory += made_working
         d += timedelta(days=1)
 
     return WorkingDaysResult(
         total_days=total_days, working_days=len(working), weekly_off_count=weekly_off_count,
         alternate_saturday_off_count=alt_sat_count, holiday_count=holiday_count,
-        dates=tuple(working),
+        dates=tuple(working), compensatory_count=compensatory,
     )
 
 
-def working_days_for_year(store: CurriculumStore, academic_year_id: str) -> WorkingDaysResult:
-    """Store-backed convenience: reads the real, persisted AcademicYear +
-    Calendar + Holiday rows for a school and computes the real result."""
+def _calendar_rows(store: CurriculumStore, academic_year_id: str):
     year = store.get_academic_year(academic_year_id)
     if year is None:
         raise ValueError(f"no such academic year: {academic_year_id}")
@@ -220,24 +284,98 @@ def working_days_for_year(store: CurriculumStore, academic_year_id: str) -> Work
         raise ValueError(
             f"academic year {academic_year_id} has no calendar configured yet -- "
             "create one first (POST .../calendar)")
-    holidays = store.holidays_for_calendar(cal.id)
+    return year, cal, store.holidays_for_calendar(cal.id)
+
+
+def _days_of(h) -> list[str]:
+    return [h.date] if h.end_date is None else _date_range(h.date, h.end_date)
+
+
+def _working_days(year, cal, holidays) -> WorkingDaysResult:
     # "event" markers (e.g. Annual Day) don't remove a teaching day; every
     # closure kind does (CLOSURE_KINDS above). A holiday with end_date set (a real multi-day block --
     # a 30-45 day summer break) expands to every date in the inclusive range,
-    # not just its start date.
+    # not just its start date. A compensatory working day adds its day.
     holiday_dates: set[str] = set()
     for h in holidays:
-        if h.kind not in CLOSURE_KINDS:
-            continue
-        if h.end_date is None:
-            holiday_dates.add(h.date)
-        else:
-            holiday_dates.update(_date_range(h.date, h.end_date))
+        if h.kind in CLOSURE_KINDS:
+            holiday_dates.update(_days_of(h))
     return compute_working_days(
         start_date=year.start_date, end_date=year.end_date,
         weekly_off_days=cal.weekly_off_days, alternate_saturday_rule=cal.alternate_saturday_rule,
         holiday_dates=holiday_dates,
+        extra_working_dates=frozenset(h.date for h in holidays if h.kind == WORKING_DAY),
     )
+
+
+def working_days_for_year(store: CurriculumStore, academic_year_id: str) -> WorkingDaysResult:
+    """Store-backed convenience: reads the real, persisted AcademicYear +
+    Calendar + Holiday rows for a school and computes the real result."""
+    return _working_days(*_calendar_rows(store, academic_year_id))
+
+
+@dataclass
+class SchoolDays:
+    """How each working day of the year runs (v3 audit N-3-19): which
+    weekday's timetable, up to which period, and for which classes teaching
+    stops. The one reading of the calendar that the day view, cover, the
+    plans and the calendar feed share, so they cannot disagree."""
+    dates: tuple[str, ...] = ()
+    runs_as: dict[str, int] = field(default_factory=dict)        # a compensatory day -> its timetable's weekday
+    last_period: dict[str, int] = field(default_factory=dict)    # a half day -> the last period held
+    # date -> ((the classes whose teaching stops, None for every class), the window's label), ...
+    exam_windows: dict[str, tuple[tuple[Optional[frozenset[int]], str], ...]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.working = frozenset(self.dates)
+
+    def weekday(self, on: str) -> int:
+        """The weekday whose timetable runs on `on`."""
+        return self.runs_as.get(on, date.fromisoformat(on).weekday())
+
+    def keeps(self, on: str, period: int) -> bool:
+        """False for a period a half day cuts."""
+        cut = self.last_period.get(on)
+        return cut is None or period <= cut
+
+    def exam_window(self, on: str, grade: Optional[int]) -> Optional[str]:
+        """The label of the exam window stopping `grade`'s teaching on `on`."""
+        for grades, label in self.exam_windows.get(on, ()):
+            if grades is None or grade in grades:
+                return label
+        return None
+
+    def holds(self, on: str, weekday: int, period: int, grade: Optional[int] = None) -> bool:
+        """A timetabled period (weekday, period) of a class of `grade` is
+        taught on `on`."""
+        return (on in self.working and self.weekday(on) == weekday and self.keeps(on, period)
+                and self.exam_window(on, grade) is None)
+
+
+def school_days(store: CurriculumStore, academic_year_id: str) -> SchoolDays:
+    """SchoolDays from the year's calendar. ValueError as working_days_for_year."""
+    year, cal, holidays = _calendar_rows(store, academic_year_id)
+    wd = _working_days(year, cal, holidays)
+    working = set(wd.dates)
+    out = SchoolDays(dates=wd.dates)
+    windows: dict[str, list] = defaultdict(list)
+    for h in holidays:
+        if h.kind == WORKING_DAY and h.date in working and h.timetable_weekday is not None:
+            out.runs_as[h.date] = h.timetable_weekday
+        elif h.kind == HALF_DAY and h.last_period:
+            for d in _days_of(h):
+                out.last_period[d] = min(h.last_period, out.last_period.get(d, h.last_period))
+        elif h.kind == EXAM_WINDOW:
+            for d in _days_of(h):
+                windows[d].append((frozenset(h.grades) if h.grades else None, h.label))
+    out.exam_windows = {d: tuple(v) for d, v in windows.items()}
+    return out
+
+
+def grade_number_for_book(store: CurriculumStore, book_id: str) -> Optional[int]:
+    grade_id = store.grade_id_for_book(book_id)
+    grade = store.get_grade(grade_id) if grade_id else None
+    return grade.number if grade else None
 
 
 # --------------------------------------------------------------------- #
@@ -300,19 +438,46 @@ def timetable_periods_by_weekday(store: CurriculumStore, academic_year_id: str,
     return dict(Counter(s.day_of_week for s in store.timetable_slots_for_subject(academic_year_id, subject)))
 
 
+def _subject_week(store: CurriculumStore, academic_year_id: str, book_id: str,
+                  section_id: Optional[str]) -> list[tuple[int, int]]:
+    """(weekday, period) of each period of this book's subject in the week:
+    the section's own (TimetableEntry) or the school-wide per-name slots,
+    as timetable_periods_by_weekday() counts them."""
+    if section_id is not None:
+        book = store.get_book(book_id)
+        if book is None:
+            return []
+        return [(e.day_of_week, e.period) for e in store.timetable_for_section(section_id)
+                if e.subject_id == book.subject_id]
+    subject = store.subject_name_for_book(book_id)
+    if subject is None:
+        return []
+    return [(s.day_of_week, s.period_number) for s in store.timetable_slots_for_subject(academic_year_id, subject)]
+
+
 def teaching_slots_for_book(store: CurriculumStore, academic_year_id: str, book_id: str,
                             periods_per_week: int, section_id: Optional[str] = None) -> list[date]:
     """subject_teaching_slots() over the year's real working days and this
     book's subject's timetable (the section's own week when given).
 
+    The calendar's days that run differently count as they run (N-3-19): a
+    compensatory working day holds the periods of the weekday whose
+    timetable it runs, a half day only the periods up to its last, and an
+    exam window of the book's class none.
+
     A section's plan is laid only on periods that happen: the periods
     store.periods_held() says will not teach the subject (a lost period, or
     the class sitting an exam paper) come off, and the extra ones it names
     (make-up periods) are added."""
-    wd = working_days_for_year(store, academic_year_id)
-    slots = subject_teaching_slots(
-        [date.fromisoformat(s) for s in wd.dates], periods_per_week,
-        timetable_periods_by_weekday(store, academic_year_id, book_id, section_id) or None)
+    days = school_days(store, academic_year_id)
+    grade = grade_number_for_book(store, book_id)
+    working = [s for s in days.dates if days.exam_window(s, grade) is None]
+    week = _subject_week(store, academic_year_id, book_id, section_id)
+    if week:
+        slots = [date.fromisoformat(s) for s in working for w, p in week
+                 if days.weekday(s) == w and days.keeps(s, p)]
+    else:
+        slots = subject_teaching_slots([date.fromisoformat(s) for s in working], periods_per_week)
     book = store.get_book(book_id) if section_id is not None else None
     if book is None:
         return slots
@@ -325,9 +490,45 @@ def teaching_slots_for_book(store: CurriculumStore, academic_year_id: str, book_
             away[d.isoformat()] -= 1
             continue
         out.append(d)
-    working = set(wd.dates)
-    out += [date.fromisoformat(d) for d, n in extra.items() if d in working for _ in range(n)]
+    teaching = set(working)
+    out += [date.fromisoformat(d) for d, n in extra.items() if d in teaching for _ in range(n)]
     return sorted(out)
+
+
+def sections_with_a_week_for_book(store: CurriculumStore, book_id: str) -> list[str]:
+    """The sections of the book's class whose own timetable (TimetableEntry)
+    holds the book's subject -- the weeks a section plan of this book is
+    laid on."""
+    book = store.get_book(book_id)
+    subject = store.get_subject(book.subject_id) if book else None
+    if subject is None:
+        return []
+    return [s.id for s in store.sections_for_grade(subject.grade_id)
+            if any(e.subject_id == book.subject_id for e in store.timetable_for_section(s.id))]
+
+
+def teaching_budget_for_book(store: CurriculumStore, academic_year_id: str, book_id: str,
+                             periods_per_week: int, section_id: Optional[str] = None
+                             ) -> tuple[int, Optional[str]]:
+    """(the periods a book's estimates are sized to, the section whose week
+    sized them).
+
+    With a section, that section's periods of the subject on the year's
+    working days. Without one, the book's class's sections that have their
+    own week for the subject decide: the largest of their budgets, the same
+    "most periods any section has" rule Plan every section times a book at.
+    Only a class with no section week for the subject falls back to the
+    school-wide per-subject-name slots. Until v3 audit N-3-8 the estimates
+    always took that fallback, which with no named slots is one period per
+    working day: every book's budget was 235, the year's working days, for
+    a subject its sections teach 8-9 periods a week."""
+    if section_id is None:
+        weeks = {sid: len(teaching_slots_for_book(store, academic_year_id, book_id, periods_per_week, sid))
+                 for sid in sections_with_a_week_for_book(store, book_id)}
+        if weeks:
+            section_id = max(weeks, key=lambda sid: (weeks[sid], sid))
+            return weeks[section_id], section_id
+    return len(teaching_slots_for_book(store, academic_year_id, book_id, periods_per_week, section_id)), section_id
 
 
 def _largest_remainder(total: int, weights: list[float]) -> list[int]:
@@ -362,6 +563,7 @@ class TeachingTimeComputationResult:
     estimates: tuple[TeachingTimeEstimate, ...]   # created (or recomputed) by this run
     periods_allocated: int = 0          # every estimate this book's subtopics now hold
     periods_short: int = 0              # allocated beyond the budget: the syllabus is bigger than the year
+    section_id: Optional[str] = None    # the section whose own week sized the budget; None: school-wide
 
     @property
     def fits_in_year(self) -> bool:
@@ -370,20 +572,21 @@ class TeachingTimeComputationResult:
 
 def compute_teaching_time_estimates(
     store: CurriculumStore, *, academic_year_id: str, book_id: str, periods_per_week: int,
-    approved_by: Optional[str] = None, recompute: bool = False,
+    approved_by: Optional[str] = None, recompute: bool = False, section_id: Optional[str] = None,
 ) -> TeachingTimeComputationResult:
     """Distributes a subject's real teaching periods for the year across its
     real Subtopics, weighted by each Unit's real CBSE marks (same signal a
     human HOD uses, and the one syllabus/timetable.py applies at Unit level).
 
     The budget is the number of real teaching periods the subject has this
-    year -- teaching_slots_for_book(): the calendar's working days (after
+    year -- teaching_budget_for_book(): the calendar's working days (after
     weekly offs, alternate Saturdays and every closure) x the subject's
-    periods on those days. It used to be periods_per_week x calendar weeks,
-    which ignored holidays: 264 periods for a 6-period subject whose year
-    really holds 220. `periods_per_week` still decides the no-timetable
-    fallback; with a timetable the timetable decides, exactly as it does in
-    scheduling.
+    periods on those days in the section's own week (`section_id`, or the
+    class's sections' weeks when none is named). It used to be
+    periods_per_week x calendar weeks, which ignored holidays: 264 periods
+    for a 6-period subject whose year really holds 220. `periods_per_week`
+    still decides the no-timetable fallback; with a timetable the timetable
+    decides, exactly as it does in scheduling.
 
     The split is exact. Every subtopic gets one period (it cannot be taught
     in none), and the rest of the budget goes to units by marks and evenly
@@ -427,7 +630,8 @@ def compute_teaching_time_estimates(
     start = _parse_date(year.start_date)
     end = _parse_date(year.end_date)
     calendar_weeks = max(1, -(-(end - start).days // 7))  # ceil division; reported, not the budget
-    budget = len(teaching_slots_for_book(store, academic_year_id, book_id, periods_per_week))
+    budget, sized_by = teaching_budget_for_book(store, academic_year_id, book_id, periods_per_week,
+                                                section_id)
 
     skipped: list[str] = []
     to_allocate: list[tuple[object, list[str]]] = []   # (unit, subtopic ids without a kept estimate)
@@ -481,5 +685,5 @@ def compute_teaching_time_estimates(
         total_subject_periods=budget,
         total_instructional_minutes=budget * period_cfg.period_minutes,
         units_skipped_no_subtopics=tuple(skipped), estimates=tuple(estimates),
-        periods_allocated=allocated, periods_short=max(0, allocated - budget),
+        periods_allocated=allocated, periods_short=max(0, allocated - budget), section_id=sized_by,
     )

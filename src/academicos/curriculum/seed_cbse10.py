@@ -31,7 +31,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field as dataclass_field
 from typing import Optional
 
-from ..syllabus.cbse_syllabus import _FILENAME_BY_SUBJECT, SyllabusUnit, _slug, load_syllabus
+from ..syllabus.cbse_syllabus import (_FILENAME_BY_SUBJECT, SyllabusChapter, SyllabusDocument, SyllabusUnit,
+                                      _slug, load_syllabus, taxonomy_chapters)
 from . import decomposition_templates as templates
 from .store import CurriculumStore
 
@@ -42,6 +43,76 @@ GRADE_10 = 10
 # 1-12 the route answers 422 rather than creating an empty grade row.
 MIN_GRADE = 1
 MAX_GRADE = 12
+
+# Audit D118. Mathematics 6-10 and Science 7-9 list their CBSE units (with
+# the marks) and, separately, the book's own chapters -- not which chapter
+# is in which unit. Each unit used to be seeded as its own only chapter, so
+# those classes had chapters no textbook prints and no topic source could
+# key onto. The book's chapters are seeded now, under the unit the CBSE
+# course structure puts them in where it says so: an explicit map below, or
+# a chapter named exactly as a unit. Where the course structure does not
+# place every chapter (the NCF-SE books of classes 6-9, whose units are not
+# a CBSE chapter list), the whole book goes under one unit carrying the
+# subject's marks.
+#
+# Class X Mathematics: the CBSE 2025-26 course structure
+# (Maths_Sec_2025-26.pdf), Units I-VII.
+_CHAPTER_UNITS: dict[tuple[str, int], dict[str, str]] = {
+    ("Mathematics", 10): {
+        "mathematics-10/real-numbers": "I",
+        "mathematics-10/polynomials": "II",
+        "mathematics-10/pair-of-linear-equations-in-two-variables": "II",
+        "mathematics-10/quadratic-equations": "II",
+        "mathematics-10/arithmetic-progressions": "II",
+        "mathematics-10/coordinate-geometry": "III",
+        "mathematics-10/triangles": "IV",
+        "mathematics-10/circles": "IV",
+        "mathematics-10/introduction-to-trigonometry": "V",
+        "mathematics-10/some-applications-of-trigonometry": "V",
+        "mathematics-10/areas-related-to-circles": "VI",
+        "mathematics-10/surface-areas-and-volumes": "VI",
+        "mathematics-10/statistics": "VII",
+        "mathematics-10/probability": "VII",
+    },
+}
+# The one unit a book's chapters go under when the units cannot hold them
+# (the same number and naming as the classes 1-5 holder unit).
+BOOK_UNIT_NO = "1"
+
+
+def _name_key(text: str) -> str:
+    return " ".join("".join(ch if ch.isalnum() else " " for ch in text.lower()).split())
+
+
+def book_chapters_for(subject: str, grade: int, doc: SyllabusDocument) -> list[SyllabusChapter]:
+    """The book's own chapters in book order: the taxonomy file (the
+    textbook's contents pages), else the syllabus file's top-level list."""
+    contents = taxonomy_chapters(subject, grade)
+    if contents:
+        return [SyllabusChapter(id=cid, name=name) for cid, name in contents.items()]
+    return list(doc.chapters)
+
+
+def units_holding_book_chapters(subject: str, grade: int, doc: SyllabusDocument,
+                                chapters: list[SyllabusChapter]) -> list[SyllabusUnit]:
+    """The units to seed for a syllabus whose units list no chapters, with
+    the book's chapters placed in them (D118). Every chapter goes under its
+    CBSE unit when the explicit map or an exact unit name places it; if any
+    chapter is left over, the whole book goes under one unit instead, so
+    no chapter is put in a unit by a guess."""
+    explicit = _CHAPTER_UNITS.get((subject, grade), {})
+    by_no = {u.unit_no: u for u in doc.units}
+    by_name = {_name_key(u.name): u for u in doc.units}
+    placed: dict[str, list[SyllabusChapter]] = {u.unit_no: [] for u in doc.units}
+    for c in chapters:
+        unit = by_no.get(explicit.get(c.id, "")) or by_name.get(_name_key(c.name))
+        if unit is None:
+            marks = sum(u.marks for u in doc.units) or doc.total_marks
+            return [SyllabusUnit(unit_no=BOOK_UNIT_NO, name=f"{subject} chapters", marks=marks,
+                                 chapters=tuple(chapters))]
+        placed[unit.unit_no].append(c)
+    return [SyllabusUnit(unit_no=u.unit_no, name=u.name, marks=u.marks, chapters=tuple(placed[u.unit_no]))
+            for u in doc.units]
 
 
 @dataclass
@@ -160,24 +231,39 @@ def seed_cbse_grade(store: CurriculumStore, *, school_id: str,
             # No CBSE marks table (classes 1-5): the book's chapters, in book
             # order, under one unit that claims no marks.
             units = [SyllabusUnit(unit_no="1", name=f"{subject_name} chapters", marks=0, chapters=doc.chapters)]
+        elif doc.chapters and not any(u.chapters for u in units):
+            # D118: the book's own chapters, under their CBSE units where the
+            # course structure places them (units_holding_book_chapters).
+            units = units_holding_book_chapters(subject_name, grade_number, doc,
+                                                book_chapters_for(subject_name, grade_number, doc))
         for unit_seq, u in enumerate(units):
             unit_canonical_id = f"{prefix}:unit:{u.unit_no}"
             unit = store.get_unit_by_canonical_id(unit_canonical_id)
             if unit is None:
+                # After every unit the book already has: a re-seed that adds
+                # the book's holder unit (D118) puts it after the old ones.
                 unit = store.create_unit(canonical_id=unit_canonical_id, book_id=book.id,
                                          unit_no=u.unit_no, name=u.name,
-                                         marks=u.marks if doc.units else None, seq=unit_seq)
+                                         marks=u.marks if doc.units else None,
+                                         seq=max(unit_seq, len(store.units_for_book(book.id))))
                 units_seeded += 1
 
             chapter_specs = (
                 [(c.id, c.name) for c in u.chapters] if u.chapters
+                else [] if doc.chapters
                 else [(_slug(u.name), u.name)]
             )
+            # A re-seed of a school seeded before D118 adds the book's
+            # chapters after the unit-named chapter it already has, never
+            # deleting or renaming it (it may carry approved topics and taught
+            # lessons).
+            wanted = {f"{prefix}:chapter:{key}" for key, _ in chapter_specs}
+            earlier = sum(1 for c in store.chapters_for_unit(unit.id) if c.canonical_id not in wanted)
             for chapter_seq, (chapter_key, chapter_name) in enumerate(chapter_specs):
                 chapter_canonical_id = f"{prefix}:chapter:{chapter_key}"
                 if store.get_chapter_by_canonical_id(chapter_canonical_id) is None:
                     store.create_chapter(canonical_id=chapter_canonical_id, unit_id=unit.id,
-                                         name=chapter_name, seq=chapter_seq)
+                                         name=chapter_name, seq=earlier + chapter_seq)
                     chapters_seeded += 1
 
         if apply_templates:

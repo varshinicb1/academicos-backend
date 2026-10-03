@@ -53,6 +53,10 @@ KEPT = {
     "question_reviews": "staff review of a bank question",
     "automation_runs": "when a scheduled job last ran",
     "automation_school_runs": "when a scheduled job last ran for a school",
+    "owner_links": "an owner account's link to a school (ROLE-4); holds account and school ids, no student or parent",
+    "owner_sessions": "which linked school an owner has chosen (ROLE-4); no student or parent",
+    "question_facility": "a question's measured difficulty, summed over papers; aggregates, no student named (EX-3)",
+    "question_facility_parts": "the same, one row per question and paper; aggregates, no student named (EX-3)",
 }
 
 

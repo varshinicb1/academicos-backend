@@ -33,6 +33,7 @@ mid-abuse.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
@@ -228,6 +229,18 @@ def validate_scopes(scopes: Iterable[str]) -> frozenset[str]:
     return wanted
 
 
+def _locked(method):
+    """Every use of the store's one connection holds its lock. Request threads
+    share the connection, and so does the webhook delivery thread
+    (webhooks.py), which reads keys off any request; one sqlite3 connection
+    is not safe for two threads at once (CLAUDE.md, the storage invariant)."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class ApiKeyStore:
     def __init__(self, db_path: Path | str, *, durable: bool = False):
         """`durable=True` (the API server) snapshots the file to the blob
@@ -266,6 +279,7 @@ class ApiKeyStore:
 
     # -- issuing ----------------------------------------------------------- #
 
+    @_locked
     def create(
         self,
         *,
@@ -308,17 +322,20 @@ class ApiKeyStore:
 
     # -- reading ----------------------------------------------------------- #
 
+    @_locked
     def get(self, key_id: str) -> ApiKey | None:
         row = self.conn.execute(
             "SELECT * FROM api_keys WHERE id=?", (key_id,)).fetchone()
         return _to_key(row) if row else None
 
+    @_locked
     def list_for_school(self, school_id: str) -> list[ApiKey]:
         rows = self.conn.execute(
             "SELECT * FROM api_keys WHERE school_id=? ORDER BY created_at DESC",
             (school_id,)).fetchall()
         return [_to_key(r) for r in rows]
 
+    @_locked
     def authenticate(self, plaintext: str) -> ApiKey | None:
         """Resolve a presented key. Returns None for unknown, revoked or blank.
 
@@ -348,6 +365,7 @@ class ApiKeyStore:
 
     # -- revoking ---------------------------------------------------------- #
 
+    @_locked
     def revoke(self, key_id: str) -> ApiKey | None:
         """Revoke without deleting: an incident review needs the record."""
         key = self.get(key_id)
@@ -362,6 +380,7 @@ class ApiKeyStore:
 
     # -- quota ------------------------------------------------------------- #
 
+    @_locked
     def check_quota(self, key: ApiKey) -> None:
         """Count one request against the key's per-minute allowance.
 
@@ -397,6 +416,7 @@ class ApiKeyStore:
         )
         self.conn.commit()
 
+    @_locked
     def usage(self, key_id: str) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             "SELECT * FROM api_key_usage WHERE key_id=? ORDER BY window_start DESC LIMIT 60",

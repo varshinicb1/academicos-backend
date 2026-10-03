@@ -39,6 +39,7 @@ from .competency import (  # noqa: F401
     is_competency_question,
     share_summary,
 )
+from .facility import measured_difficulty
 from .pool import near_duplicate
 from .schemas import Blueprint, QuestionOptimizationResult, QuestionSchema, SectionBlueprint
 from .templates import default_sections
@@ -69,7 +70,12 @@ _PLACEHOLDER_DIFFICULTY_SOURCES = frozenset({"cbse_sample_paper"})
 
 def difficulty_signal(q: QuestionSchema) -> str | None:
     """The question's difficulty, or None where the record's value was supplied
-    rather than judged (so a tier must not act on it)."""
+    rather than judged (so a tier must not act on it). A difficulty measured
+    from the marks teachers entered (`facility.annotate`) comes first: it is
+    the one judgement every source can have (EX-3)."""
+    measured = measured_difficulty(q)
+    if measured:
+        return measured
     if (q.metadata.get("difficultyInferred") or q.source in _PLACEHOLDER_DIFFICULTY_SOURCES
             or from_cbe_item_bank(q)):
         return None
@@ -475,6 +481,223 @@ def optimize(candidates: list[QuestionSchema], blueprint: Blueprint,
         warnings=warnings,
         gaps=gaps,
     )
+
+
+# ---- reaching the marks asked (quick paper) -------------------------------------
+#
+# D57 (audit 2026-10-01): a quick Science 10 paper asked for 40 marks printed
+# 28. The CBSE layout asked for five 2-mark questions and one 4-mark one; the
+# bank holds one 2-mark question and no 4-mark one, while it holds hundreds of
+# 1-, 3- and 5-mark questions. A section is "N questions of M marks", so it is
+# never filled with other marks; the marks a section cannot hold move to the
+# sections that can (or, failing those, to a section of a marks value the bank
+# does hold), so the paper totals what was asked whenever the bank can.
+
+def _marked(questions: list[QuestionSchema]) -> list[QuestionSchema]:
+    """Copies: `optimize` writes OR pairings into the questions it selects."""
+    return [q.model_copy(deep=True) for q in questions]
+
+
+def _held(result: QuestionOptimizationResult) -> int:
+    return sum(q.marks for q in result.selected_questions)
+
+
+def _printed_counts(result: QuestionOptimizationResult, sections: list[SectionBlueprint]) -> list[int]:
+    """How many questions `optimize` placed in each section: it fills them in
+    order, each from questions of its own marks, so the selection splits by
+    section in order of marks value."""
+    left = Counter(q.marks for q in result.selected_questions)
+    out = []
+    for s in sections:
+        n = min(s.question_count, left[s.marks_per_question])
+        left[s.marks_per_question] -= n
+        out.append(n)
+    return out
+
+
+def _relaxed(section: SectionBlueprint) -> SectionBlueprint:
+    """The section with its difficulty and Bloom limits lifted: questions of
+    its marks of any type. A quick layout's limits are presets, not a
+    teacher's choice, and on the served bank a difficulty only restates the
+    marks (`difficulty_signal`)."""
+    return section.model_copy(update={"allowed_difficulties": [], "allowed_bloom_levels": []})
+
+
+def _caps(sections: list[SectionBlueprint], pool: list[QuestionSchema]) -> list[int]:
+    """The questions each section could take from `pool`. Sections of one
+    marks value share their questions, so each gets what the earlier ones of
+    its marks leave."""
+    used: Counter = Counter()
+    out = []
+    for s in sections:
+        fits = len({q.id for q in pool if _fits_section(q, s)})
+        out.append(max(0, fits - used[s.marks_per_question]))
+        used[s.marks_per_question] += s.question_count
+    return out
+
+
+def _counts_for(total: int, items: list[tuple[int, int, int]], *,
+                exact: bool = True) -> list[int] | None:
+    """Counts per (marks each, count asked, most it can hold) whose marks add
+    up to `total` and stay nearest the counts asked. Not `exact`: the most
+    marks up to `total` any counts reach. None when no counts reach it (or,
+    not exact, nothing at all). A marks value nobody asked for (count 0)
+    costs more per question, so it is used only where the asked ones cannot
+    make the total. Exhaustive over reachable totals: sections x marks x
+    count is a few thousand steps."""
+    best: dict[int, tuple[float, list[int]]] = {0: (0.0, [])}
+    for marks, asked, cap in items:
+        step: dict[int, tuple[float, list[int]]] = {}
+        for so_far, (cost, counts) in best.items():
+            for n in range(0, min(cap, (total - so_far) // marks) + 1):
+                reached = so_far + n * marks
+                weight = (n - asked) ** 2 / asked if asked else 4.0 * n * n
+                cand = (cost + weight, counts + [n])
+                if reached not in step or cand[0] < step[reached][0]:
+                    step[reached] = cand
+        best = step
+    if exact:
+        found = best.get(total)
+        return found[1] if found else None
+    reach = max(best)
+    return best[reach][1] if reach > 0 else None
+
+
+def _layout(sections: list[SectionBlueprint], counts: list[int],
+            extra_marks: list[int]) -> list[SectionBlueprint]:
+    """The sections with the new counts, a section of each extra marks value
+    that got questions after them, empty ones left out, lettered A, B, C... in
+    order. An OR is never offered on more questions than a section prints."""
+    out: list[SectionBlueprint] = []
+    for s, n in zip(sections, counts):
+        if n:
+            k = min(s.internal_choice_count, n) if s.has_internal_choice else 0
+            out.append(s.model_copy(update={"question_count": n, "total_marks": n * s.marks_per_question,
+                                             "internal_choice_count": k, "has_internal_choice": k > 0}))
+    for m, n in zip(extra_marks, counts[len(sections):]):
+        if n:
+            out.append(SectionBlueprint(id="", label="", name=f"{m}-Mark Questions", marks_per_question=m,
+                                        question_count=n, total_marks=n * m))
+    return [s.model_copy(update={"label": chr(ord("A") + i), "id": f"section-{chr(ord('a') + i)}"})
+            for i, s in enumerate(out)]
+
+
+def _summary(sections: list[SectionBlueprint]) -> str:
+    return ", ".join(f"{s.label} {s.question_count} × {s.marks_per_question}" for s in sections)
+
+
+def _rebalance(candidates: list[QuestionSchema], blueprint: Blueprint, sections: list[SectionBlueprint],
+               fallback: list[QuestionSchema] | None, *, exact: bool = True,
+               ) -> tuple[Blueprint, QuestionOptimizationResult] | None:
+    """The layout nearest `sections` that totals the blueprint's marks from
+    the questions `candidates` (and `fallback`) hold, with its selection; not
+    `exact`, the layout holding the most marks up to the total. None when no
+    layout does. Re-planned on what was actually printed until it holds
+    (near-duplicates and OR partners can leave a section short)."""
+    total = blueprint.total_marks
+    pool = list(candidates) + list(fallback or [])
+    asked_marks = {s.marks_per_question for s in sections}
+    extra = sorted({q.marks for q in pool if q.marks > 0 and q.marks not in asked_marks})
+    caps = _caps(sections, pool)
+    extra_caps = [len({q.id for q in pool if q.marks == m}) for m in extra]
+    for _ in range(5):
+        items = [(s.marks_per_question, s.question_count, c) for s, c in zip(sections, caps)]
+        counts = _counts_for(total, items)
+        if counts is None:
+            counts = _counts_for(total, items + [(m, 0, c) for m, c in zip(extra, extra_caps)])
+        if counts is None and not exact:
+            counts = _counts_for(total, items, exact=False)
+        if counts is None:
+            return None
+        layout = _layout(sections, counts, extra)
+        planned = sum(s.total_marks for s in layout)
+        bp = blueprint.model_copy(update={"sections": layout})
+        result = optimize(_marked(candidates), bp,
+                          fallback_candidates=_marked(fallback) if fallback else None)
+        if _held(result) >= (total if exact else planned):
+            return bp, result
+        # Plan again on what each section could really print.
+        printed = _printed_counts(result, layout)
+        by_marks: Counter = Counter()
+        for s, p in zip(layout, printed):
+            by_marks[s.marks_per_question] += p
+        caps = [min(c, by_marks[s.marks_per_question]) for s, c in zip(sections, caps)]
+        extra_caps = [min(c, by_marks[m]) for m, c in zip(extra, extra_caps)]
+    return None
+
+
+def fill_to_marks(candidates: list[QuestionSchema], blueprint: Blueprint,
+                  fallback_candidates: list[QuestionSchema] | None = None, *,
+                  scope: str = "the bank",
+                  ) -> tuple[Blueprint, QuestionOptimizationResult, list[str]]:
+    """`optimize`, making the marks the blueprint asks for whenever the bank
+    can, and the blueprint the paper was actually made from.
+
+    In order, stopping at the first that holds the total: the layout as asked;
+    a short section taking questions of its marks of any difficulty or Bloom
+    level; the layout rebalanced across marks values from `candidates` (the
+    chosen chapters); and, with `fallback_candidates` (the rest of the
+    bank), the layout as asked and then rebalanced, borrowing from outside
+    the chapters -- which `optimize`'s gaps say. When none holds it, the bank
+    truly cannot: the paper holds as many of the marks as it can, and the
+    caller reports each section of the layout asked for that prints short.
+
+    `scope` names where `candidates` come from, for the notes. Returns the
+    blueprint, the selection, and notes saying what was changed.
+    """
+    total = blueprint.total_marks
+    sections = list(blueprint.sections or default_sections(total))
+    result = optimize(_marked(candidates), blueprint)
+    if _held(result) >= total:
+        return blueprint, result, []
+    printed = _printed_counts(result, sections)
+    short = [s for s, p in zip(sections, printed) if p < s.question_count]
+    relaxed = [_relaxed(s) if p < s.question_count else s for s, p in zip(sections, printed)]
+    relaxed_bp = blueprint.model_copy(update={"sections": relaxed})
+    if relaxed != sections:
+        result = optimize(_marked(candidates), relaxed_bp)
+        if _held(result) >= total:
+            return relaxed_bp, result, [
+                f"Section {s.label} ({s.name}) takes {s.marks_per_question}-mark questions of any "
+                f"difficulty: {scope} hold too few of the difficulty its pattern asks for."
+                for s in short]
+
+    def lacking(attempt: QuestionOptimizationResult) -> str:
+        marks = sorted({s.marks_per_question for s, p in zip(relaxed, _printed_counts(attempt, relaxed))
+                        if p < s.question_count})
+        return " and ".join(f"{m}-mark" for m in marks)
+
+    def holds(where: str) -> str:
+        return f"{where} {'hold' if where.endswith('chapters') else 'holds'}"
+
+    found = _rebalance(candidates, relaxed_bp, relaxed, None)
+    if found is not None:
+        return found[0], found[1], [
+            f"To make the {total} marks asked for, this paper's sections were rebalanced: "
+            f"{holds(scope)} too few {lacking(result)} questions for the pattern asked. It prints "
+            f"{_summary(found[0].sections)} (asked: {_summary(sections)})."]
+    where = scope
+    if fallback_candidates:
+        borrowed = optimize(_marked(candidates), relaxed_bp, fallback_candidates=_marked(fallback_candidates))
+        if _held(borrowed) >= total:
+            return relaxed_bp, borrowed, []
+        found = _rebalance(candidates, relaxed_bp, relaxed, fallback_candidates)
+        if found is not None:
+            return found[0], found[1], [
+                f"To make the {total} marks asked for, this paper's sections were rebalanced: "
+                f"the bank holds too few {lacking(borrowed)} questions for the pattern asked. It "
+                f"prints {_summary(found[0].sections)} (asked: {_summary(sections)})."]
+        result, where = borrowed, "the bank"
+    # The bank truly cannot make the total: as many of its marks as it can.
+    most = _rebalance(candidates, relaxed_bp, relaxed, fallback_candidates, exact=False)
+    # At least as many marks, and never an empty section on the printed paper.
+    if most is not None and _held(most[1]) >= _held(result):
+        said = holds(where)
+        return most[0], most[1], [
+            f"{said[0].upper()}{said[1:]} too few questions to make the {total} marks asked for, "
+            f"so this paper holds as many as it can: it prints {_summary(most[0].sections)} "
+            f"(asked: {_summary(sections)})."]
+    return relaxed_bp, result, []
 
 
 # ---- parallel sets ------------------------------------------------------------

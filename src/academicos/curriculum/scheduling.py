@@ -25,6 +25,22 @@ from .models import RECORDED_STATUSES
 from .store import CurriculumStore
 
 
+def iso_day(value: str, field_name: str = "fromDate") -> date:
+    """`value` as a date, or ValueError when it is not a real YYYY-MM-DD day.
+    PUSH took fromDate as text and compared it as text (audit D116):
+    "2026-13-05" was accepted and moved every 2027 lesson, and "2026-10-5"
+    sorts after every October date, so it pushed from November. Python 3.11+
+    fromisoformat also reads '20261005' and '2026-W41-1', so the canonical
+    form is required too."""
+    try:
+        day = date.fromisoformat(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name} {value!r} is not a YYYY-MM-DD date") from None
+    if day.isoformat() != value:
+        raise ValueError(f"{field_name} {value!r} is not a YYYY-MM-DD date")
+    return day
+
+
 def _resolve_cadence(store: CurriculumStore, academic_year_id: str, book_id: str,
                      periods_per_week: Optional[int], section_id: Optional[str] = None) -> int:
     """The periods a week this book's lessons are laid out at, for PUSH --
@@ -98,20 +114,60 @@ class ScheduleResult:
     past_lessons_kept: int = 0            # unmarked lessons dated before from_date a regenerate kept
     warning: Optional[str] = None         # set whenever a subtopic has no (or too few) dated lessons
     section_id: Optional[str] = None      # the section this plan is for; None: the school-wide plan
+    # Chapters with no approved subtopic, in delivery order: nothing of them
+    # can be timed or dated, so the plan leaves them out (audit D119).
+    chapters_without_subtopics: tuple[str, ...] = ()
+    total_chapters: int = 0
+    # fit_to_periods_left (audit D35): the subtopics given fewer periods than
+    # their estimate so the syllabus fits the periods left, and the sentence
+    # that says so. Empty when the plan was not fitted or did not need to be.
+    subtopics_compressed: tuple["CompressedSubtopic", ...] = ()
+    fit_note: Optional[str] = None
 
     @property
     def all_subtopics_scheduled(self) -> bool:
         return self.warning is None
 
 
+@dataclass(frozen=True)
+class CompressedSubtopic:
+    subtopic_id: str
+    periods_needed: int     # what its estimate still asked for
+    periods_planned: int    # what the fitted plan gives it (at least one)
+
+
+def fit_periods(needs: list[int], available: int) -> list[int]:
+    """Each subtopic's periods scaled to `available` in proportion, at least
+    one each, by largest remainder on the periods above that one -- so they
+    sum to `available` exactly and none gets more than it needed. Unchanged
+    when they already fit; one each when there are fewer periods than
+    subtopics (the tail then stays undated, and the plan says so)."""
+    if available >= sum(needs):
+        return list(needs)
+    if available <= len(needs):
+        return [1] * len(needs)
+    extras = calendar_mod._largest_remainder(available - len(needs), [float(n - 1) for n in needs])
+    return [1 + e for e in extras]
+
+
+def _named(names: list[str] | tuple[str, ...], limit: int = 6) -> str:
+    shown = ", ".join(names[:limit])
+    return shown + (f" and {len(names) - limit} more" if len(names) > limit else "")
+
+
 def _shortfall_warning(*, total: int, unscheduled: int, partial: int, without_estimate: int,
                        periods_available: int, periods_needed: int,
-                       from_date: Optional[str]) -> Optional[str]:
+                       from_date: Optional[str], chapters_left_out: tuple[str, ...] = (),
+                       total_chapters: int = 0) -> Optional[str]:
     """One sentence a principal cannot miss. The audit found 49 of 404 real
     subtopics with no date behind a plain 200 and a list of ids. The
     periods-left figure counts from the day the plan starts, so a mid-year
-    regenerate reports what is really left."""
+    regenerate reports what is really left. A chapter with no approved
+    subtopic is named too: it is not in the plan at all (audit D119)."""
     parts = []
+    if chapters_left_out:
+        parts.append(f"{len(chapters_left_out)} of {total_chapters} chapters have no approved subtopics, "
+                     f"so they are not in the plan: {_named(chapters_left_out)}")
     if unscheduled:
         parts.append(f"{unscheduled} of {total} subtopics have no date")
     if partial:
@@ -129,7 +185,7 @@ def _shortfall_warning(*, total: int, unscheduled: int, partial: int, without_es
 def schedule_book(
     store: CurriculumStore, *, school_id: str, academic_year_id: str, book_id: str,
     periods_per_week: int, force: bool = False, from_date: Optional[str] = None,
-    section_id: Optional[str] = None,
+    section_id: Optional[str] = None, fit_to_periods_left: bool = False,
 ) -> ScheduleResult:
     """Schedules every real, approved Subtopic in a book's real delivery
     order (Unit.seq -> Chapter.seq -> Topic.seq -> Subtopic.seq -- §13's
@@ -144,7 +200,10 @@ def schedule_book(
 
     Anything short of every subtopic fully dated sets `warning` (and so
     all_subtopics_scheduled=False): the unscheduled/partial lists alone went
-    unnoticed behind a 200 when Social Science left 35 of 193 undated.
+    unnoticed behind a 200 when Social Science left 35 of 193 undated. So
+    does a chapter with no approved subtopic (`chapters_without_subtopics`):
+    it is not in the plan at all, and a Science 6 plan that dated 5 of 12
+    chapters still reported every subtopic scheduled (audit D119).
 
     Not idempotent by default: re-scheduling an already-scheduled book
     raises unless `force=True`. A regenerate replans only what is still to
@@ -175,6 +234,16 @@ def schedule_book(
 
     Records the cadence the lessons were laid out at, so PUSH moves them at
     the same cadence (Task 102 review).
+
+    `fit_to_periods_left` (audit D35): when what is still to be taught needs
+    more periods than are left, each subtopic's periods are scaled to the
+    periods left in proportion, at least one each (fit_periods), so the
+    whole syllabus gets a date instead of the second half none. Planned
+    mid-year, a Science plan dated 160 lessons and left 60 of 117 subtopics
+    undated, and nothing could fit it. The stored estimates are not changed
+    -- they are the book's, shared by every section, and a plan made at
+    the start of next year needs them whole -- and every subtopic given
+    fewer periods is reported (`subtopics_compressed`, `fit_note`).
 
     With `section_id` (SCH-4) this is that section's plan: its own lessons,
     its own week from the timetable (TimetableEntry) and its own cadence.
@@ -221,8 +290,12 @@ def schedule_book(
     without_estimate: list[str] = []
     total_subtopics = 0
     already_covered = 0
+    total_chapters = 0
+    chapters_left_out: list[str] = []
     for unit in store.units_for_book(book_id):
         for chapter in store.chapters_for_unit(unit.id):
+            total_chapters += 1
+            chapter_subtopics = total_subtopics
             for topic in store.topics_for_chapter(chapter.id):
                 for subtopic in store.subtopics_for_topic(topic.id):
                     total_subtopics += 1
@@ -235,6 +308,21 @@ def schedule_book(
                         already_covered += 1
                         continue
                     ordered.append((subtopic.id, needed))
+            if total_subtopics == chapter_subtopics:
+                chapters_left_out.append(chapter.name)
+
+    periods_needed = sum(n for _, n in ordered)
+    compressed: list[CompressedSubtopic] = []
+    fit_note = None
+    if fit_to_periods_left and periods_needed > len(slots):
+        targets = fit_periods([n for _, n in ordered], len(slots))
+        compressed = [CompressedSubtopic(subtopic_id=sid, periods_needed=n, periods_planned=t)
+                      for (sid, n), t in zip(ordered, targets) if t < n]
+        ordered = [(sid, t) for (sid, _), t in zip(ordered, targets)]
+        since = f" from {from_date}" if from_date else ""
+        fit_note = (f"fitted to the {len(slots)} teaching periods left{since}: the estimates need "
+                    f"{periods_needed}, so {len(compressed)} of {len(targets)} subtopics still to teach "
+                    f"get fewer periods, at least one each")
 
     lessons_created = 0
     fully_scheduled = already_covered
@@ -280,8 +368,10 @@ def schedule_book(
         warning=_shortfall_warning(
             total=total_subtopics, unscheduled=len(unscheduled), partial=len(partially_scheduled),
             without_estimate=len(without_estimate), periods_available=len(slots),
-            periods_needed=sum(n for _, n in ordered), from_date=from_date),
-        section_id=section_id,
+            periods_needed=periods_needed, from_date=from_date,
+            chapters_left_out=tuple(chapters_left_out), total_chapters=total_chapters),
+        section_id=section_id, chapters_without_subtopics=tuple(chapters_left_out),
+        total_chapters=total_chapters, subtopics_compressed=tuple(compressed), fit_note=fit_note,
     )
 
 
@@ -377,6 +467,11 @@ def adjust_lesson(
     wd = working_days_for_year(store, lesson.academic_year_id)
     if new_date not in wd.dates:
         raise ValueError(f"{new_date} is not a real working day for this academic year")
+    window = calendar_mod.school_days(store, lesson.academic_year_id).exam_window(
+        new_date, calendar_mod.grade_number_for_book(store, lesson.book_id))
+    if window is not None:
+        # The school is open, but this class is not taught (N-3-19).
+        raise ValueError(f"{new_date} is in the exam window {window!r} for this class: nothing is taught then")
     occupants = [l for l in store.scheduled_lessons_for_book(lesson.academic_year_id, lesson.book_id,
                                                              lesson.section_id)
                  if l.date == new_date and l.id != lesson_id and l.status != "unscheduled"]
@@ -411,18 +506,22 @@ def _reflow(store: CurriculumStore, audit_log: AuditLog, *, academic_year_id: st
     'scheduled' on its old date while the lesson before it was moved onto
     that same date -- a double-booked day. Losing its day is logged like a
     move (mode 'unscheduled', no new date), so the lesson's history says
-    why it has none."""
+    why it has none.
+
+    `from_date` must be a YYYY-MM-DD day (iso_day), and every comparison
+    is between dates, not strings (audit D116)."""
+    from_day = iso_day(from_date)
     on_or_after = [l for l in store.scheduled_lessons_for_book(academic_year_id, book_id, section_id)
-                   if l.date >= from_date]
+                   if date.fromisoformat(l.date) >= from_day]
     affected = [l for l in on_or_after if l.status == "scheduled"]   # date, then delivery order
     if not affected:
         return [], []
     held = Counter(l.date for l in on_or_after if l.status in RECORDED_STATUSES)
 
-    slots = [d.isoformat() for d in
-             calendar_mod.teaching_slots_for_book(store, academic_year_id, book_id, periods_per_week,
-                                                  section_id)]
-    start = next((i for i, d in enumerate(slots) if d >= from_date), None)
+    days = calendar_mod.teaching_slots_for_book(store, academic_year_id, book_id, periods_per_week,
+                                                section_id)
+    slots = [d.isoformat() for d in days]
+    start = next((i for i, d in enumerate(days) if d >= from_day), None)
     if start is None:
         raise ValueError(
             f"{from_date} is at or after the end of this academic year's real teaching days")
@@ -514,7 +613,11 @@ def push_lessons_after(
 
     Lessons that run past the real academic year's last teaching day are
     reported in `lessons_dropped` and marked 'unscheduled', never placed
-    past the calendar's real end date or left holding a day."""
+    past the calendar's real end date or left holding a day.
+
+    `from_date` that is not a YYYY-MM-DD day is a ValueError (the route's
+    422) before anything moves (audit D116)."""
+    iso_day(from_date)
     cadence = _resolve_cadence(store, academic_year_id, book_id, periods_per_week, section_id)
     moves, dropped = _reflow(store, audit_log, academic_year_id=academic_year_id, book_id=book_id,
                              periods_per_week=cadence, from_date=from_date, skip_disruption_day=True,

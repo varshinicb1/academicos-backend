@@ -97,15 +97,26 @@ def init(db_path: Path | str, bank_path: Path | str) -> None:
     None the question-bank surface answers 503 (honest: it genuinely is not
     initialised) and everything else boots normally.
     """
-    global _store, _bank
+    global _store
     _store = ApiKeyStore(db_path, durable=True)
+    # API-6: partners' webhooks, beside the keys they belong to.
+    from . import webhooks
+    webhooks.init(Path(db_path).with_name("webhooks.sqlite"), _store)
+    load_bank(bank_path)
 
+
+def load_bank(bank_path: Path | str) -> Optional[QuestionBank]:
+    """(Re)load the served bank from its file. The one place `_bank` changes,
+    so the one place partners' webhooks hear of new questions (API-6): the
+    answer-keyed ids are compared with the last load's and each chapter of
+    new ones becomes a `questions.added` event (webhooks.py)."""
+    global _bank
     path = Path(bank_path)
     if not path.exists():
         _bank = None
         log.warning("question-bank corpus missing at %s; the /v1 question "
                     "surface will answer 503", path)
-        return
+        return None
 
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -113,10 +124,13 @@ def init(db_path: Path | str, bank_path: Path | str) -> None:
         _bank = None
         log.warning("question-bank corpus at %s is unreadable (%s); the /v1 "
                     "question surface will answer 503", path, exc)
-        return
+        return None
 
     _bank = QuestionBank(payload.get("questions") or [])
     log.info("question-bank API ready: %d questions", len(_bank))
+    from . import webhooks
+    webhooks.bank_loaded_safely(_bank)
+    return _bank
 
 
 class AuthFailure(Exception):

@@ -1365,6 +1365,9 @@ def normalise(rec: dict) -> tuple[dict, str | None]:
     if _VALUE_MISSING.search(r["stem"]):
         r["metadata"] = meta
         return r, "value-missing"
+    if r["id"] in _KNOWN_WITHHELD:
+        r["metadata"] = meta
+        return r, _KNOWN_WITHHELD[r["id"]]
     # Once only: a served record comes back through here on a rebuild.
     if "extractionRepairs" not in meta:
         r["stem"], fixed = repair_extraction(r["id"], r["stem"], r["type"])
@@ -1397,6 +1400,10 @@ _UNIT_SUP = {"2": "²", "3": "³"}
 # whose key also disagrees with its stem (Rs 8800 is 352 m at Rs 25, the stem
 # says Rs 50). No repair can know the value.
 _VALUE_MISSING = re.compile(r"=\s*\)")
+# Read one by one and refused, where no rule detects it: a three-part
+# 6-mark question whose key answers part (a) only (bacterial vs animal cell);
+# found when the leaked-part-marks repair let the marking split read its parts.
+_KNOWN_WITHHELD = {"cbe:q:SCIENCE8JS41c": "key-covers-one-part"}
 # Read one by one against the question's own arithmetic, where no rule is safe:
 # a power or a fraction bar or a degree sign the extraction flattened.
 _KNOWN_REPAIRS: dict[str, tuple[tuple[str, str], ...]] = {

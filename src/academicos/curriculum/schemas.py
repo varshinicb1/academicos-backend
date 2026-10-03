@@ -373,6 +373,14 @@ class AddHolidayRequest(Camel):
     # periods, and the teachers and students affected are told. False only
     # records the day (e.g. entering last year's list before any plan exists).
     move_lessons: bool = True
+    # A day that runs differently (calendar.DAY_KINDS, v3 audit N-3-19) and
+    # its own field: half_day keeps periods 1..lastPeriod; exam_window stops
+    # teaching for these classes (grade numbers; none is every class);
+    # working_day (an off day made a working day) runs the timetable of
+    # timetableWeekday (0 = Monday).
+    last_period: Optional[int] = None
+    grades: Optional[list[int]] = None
+    timetable_weekday: Optional[int] = None
 
 
 class HolidayResponse(Camel):
@@ -382,6 +390,9 @@ class HolidayResponse(Camel):
     label: str
     kind: str
     end_date: Optional[str] = None
+    last_period: Optional[int] = None
+    grades: Optional[list[int]] = None
+    timetable_weekday: Optional[int] = None
     # On the add only: lessons moved off the holiday, and the plans that
     # could not be moved (no cadence to reflow them on), named.
     lessons_moved: Optional[int] = None
@@ -432,6 +443,9 @@ class WorkingDaysResponse(Camel):
     alternate_saturday_off_count: int
     holiday_count: int
     dates: list[str]
+    # Weekly offs and alternate Saturdays made working days (N-3-19); they
+    # are among working_days.
+    compensatory_count: int = 0
 
 
 class SetSubjectPeriodAllocationRequest(Camel):
@@ -472,6 +486,10 @@ class ComputeTeachingTimeRequest(Camel):
     # -- how estimates made before a calendar change, or by the
     # pre-2026-09-22 periods x weeks formula, are brought back inside the year.
     recompute: bool = False
+    # Size the budget from this section's own week (its periods of the
+    # subject on the year's working days); periodsPerWeek then defaults to
+    # its allocation. Omitted, the class's sections' weeks size it (N-3-8).
+    section_id: Optional[str] = None
 
 
 class TeachingTimeEstimateResponse(Camel):
@@ -501,6 +519,8 @@ class ComputeTeachingTimeResponse(Camel):
     periods_allocated: int = 0
     periods_short: int = 0
     fits_in_year: bool = True
+    # The section whose own week sized the budget; null: the school-wide slots.
+    section_id: Optional[str] = None
 
 
 # ---------------- micro scheduling (§11-14, §38-41) ----------------
@@ -512,6 +532,9 @@ class ScheduleBookRequest(Camel):
     periods_per_week: Optional[int] = Field(default=None, gt=0)
     force: bool = False
     section_id: Optional[str] = None
+    # D35: when what is left to teach needs more periods than are left, give
+    # each subtopic proportionally fewer (at least one) so all of it is dated.
+    fit_to_periods_left: bool = False
 
 
 class BuildPlansRequest(Camel):
@@ -519,6 +542,8 @@ class BuildPlansRequest(Camel):
     # seeded (decomposition templates). Never assumed: false plans only what
     # already has approved subtopics.
     approve_proposed_topics: bool = False
+    # D35: fit each plan to the periods left (see ScheduleBookRequest).
+    fit_to_periods_left: bool = False
 
 
 class PlanBuiltResponse(Camel):
@@ -529,6 +554,11 @@ class PlanBuiltResponse(Camel):
     subtopics_without_estimate: int = 0
     last_scheduled_date: Optional[str] = None
     warning: Optional[str] = None
+    # Chapters with no approved subtopic: not in the plan at all (D119).
+    chapters_without_subtopics: list[str] = []
+    # D35: subtopics given fewer periods to fit the periods left, and why.
+    subtopics_compressed: int = 0
+    fit_note: Optional[str] = None
 
 
 class BuildPlansResponse(Camel):
@@ -538,6 +568,12 @@ class BuildPlansResponse(Camel):
     plans: list[PlanBuiltResponse] = []
     # One sentence per section and subject that got no plan, and why.
     not_planned: list[str] = []
+
+
+class CompressedSubtopicResponse(Camel):
+    subtopic_id: str
+    periods_needed: int
+    periods_planned: int
 
 
 class ScheduleBookResponse(Camel):
@@ -565,6 +601,14 @@ class ScheduleBookResponse(Camel):
     all_subtopics_scheduled: bool = True
     warning: Optional[str] = None
     section_id: Optional[str] = None
+    # Chapters with no approved subtopic, in delivery order: the plan leaves
+    # them out, and allSubtopicsScheduled is false while there are any (D119).
+    chapters_without_subtopics: list[str] = []
+    # fitToPeriodsLeft (D35): each subtopic given fewer periods than its
+    # estimate so the syllabus fits the periods left, and the sentence saying
+    # so. Empty when the plan was not fitted or already fitted.
+    subtopics_compressed: list[CompressedSubtopicResponse] = []
+    fit_note: Optional[str] = None
 
 
 class ScheduledLessonResponse(Camel):

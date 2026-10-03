@@ -145,14 +145,26 @@ CREATE INDEX IF NOT EXISTS idx_invites_school ON invites(school_id);
 """
 
 
+# ROLE-4 multi-campus: an owner account belongs to no school of its own
+# (school_id ""). It is linked to several schools by owner links that each
+# school's principal issues (operations/owners.py), and acts in one of them at
+# a time: auth_routes.get_current_user then hands every route a principal of
+# that school (`acting_owner=True`), so each route keeps its single-school
+# scoping. With no school chosen, an owner reaches only its own routes.
+OWNER_ROLE = "owner"
+
+
 @dataclass
 class User:
     id: str
     school_id: str
     name: str
     email: str
-    role: str  # "teacher" | "principal" | "student"
+    role: str  # "teacher" | "principal" | "student" | "parent" | "owner"
     created_at: str
+    # True for the principal-level view of an owner acting in one of its
+    # linked schools (auth_routes.get_current_user). Never stored.
+    acting_owner: bool = False
 
 
 @dataclass
@@ -412,6 +424,21 @@ class UserStore:
             return self._insert_user(user_id=_new_user_id(), school_id=school_id,
                                      name=name, email=email, password=password,
                                      role="principal")
+
+    def register_owner(self, *, user_id: str, name: str, email: str, password: str) -> User:
+        """An owner account (ROLE-4): no school of its own, role "owner".
+        Only operations/owner_routes.py calls this, after it has claimed an
+        owner link for `user_id`; the link, not this call, is what grants
+        the account a school."""
+        email = email.strip().lower()
+        if self.get_by_email(email) is not None:
+            raise EmailAlreadyRegistered(email)
+        return self._insert_user(user_id=user_id, school_id="", name=name, email=email,
+                                 password=password, role=OWNER_ROLE)
+
+    @staticmethod
+    def new_user_id() -> str:
+        return _new_user_id()
 
     def _school_has_principal(self, school_id: str) -> bool:
         """Deliberately not `users_for_school`: that falls back to local

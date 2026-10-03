@@ -18,7 +18,7 @@ from ..assessment.auth_routes import get_current_user, require_admin, require_pr
 from ..assessment.users import User
 from . import routes as cr
 from .schemas import Camel
-from .school_model import InUse, TimetableClash
+from .school_model import InUse, StalePreview, TimetableClash
 
 router = APIRouter(prefix="/api/v1/curriculum")
 
@@ -147,6 +147,14 @@ class TimetableEntryResponse(Camel):
     teacher_name: Optional[str] = None
     co_teacher_name: Optional[str] = None
     room_name: Optional[str] = None
+    # The period's times on its OWN section's bell (N-3-15): a teacher's
+    # week mixes sections on a junior and a main bell.
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    # A period of an elective group or a combined class (N-3-20): it is the
+    # group's, not one section's; sectionName then names all its sections.
+    group_id: Optional[str] = None
+    group_name: Optional[str] = None
 
 
 class TimetableGapResponse(Camel):
@@ -155,11 +163,40 @@ class TimetableGapResponse(Camel):
     timetabled: int
 
 
+class GroupLaneResponse(Camel):
+    """One lane of a group: an elective's subject choice, or a combined
+    class's one subject, with its teacher and room."""
+    id: str
+    subject_id: str
+    subject_name: Optional[str] = None
+    teacher_id: Optional[str] = None
+    teacher_name: Optional[str] = None
+    room_id: Optional[str] = None
+    room_name: Optional[str] = None
+    student_ids: list[str] = []
+
+
+class GroupPeriodResponse(Camel):
+    """A period a section spends in an elective group or a combined class
+    (N-3-20), with every lane taught then."""
+    group_id: str
+    group_name: str
+    kind: str
+    day_of_week: int
+    period: int
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    lanes: list[GroupLaneResponse] = []
+
+
 class SectionTimetableResponse(Camel):
     section_id: str
     bell_schedule_id: Optional[str] = None
     entries: list[TimetableEntryResponse]
     gaps: list[TimetableGapResponse]
+    # The section's periods in its groups: the group's to change, not the
+    # section's own week (a PUT of the week cannot use them).
+    group_periods: list[GroupPeriodResponse] = []
 
 
 # ---------------- helpers ----------------
@@ -202,7 +239,7 @@ def _bell(b) -> BellScheduleResponse:
         is_default=b.is_default, teaching_periods=b.teaching_periods)
 
 
-def _entry(e) -> TimetableEntryResponse:
+def _entry(e, when: Optional[tuple[str, str]] = None) -> TimetableEntryResponse:
     store = cr._require()
     subject = store.get_subject(e.subject_id)
     section = store.get_section(e.section_id)
@@ -217,7 +254,74 @@ def _entry(e) -> TimetableEntryResponse:
                                   section_name=store._section_label(section) if section else None,
                                   teacher_name=teacher.name if teacher else None,
                                   co_teacher_name=co.name if co else None,
-                                  room_name=room.name if room else None)
+                                  room_name=room.name if room else None,
+                                  start_time=when[0] if when else None, end_time=when[1] if when else None)
+
+
+def _section_bells(store, section_ids) -> dict[str, Any]:
+    """Each section's own bell (its schedule, else the year's default), read
+    once per section."""
+    out: dict[str, Any] = {}
+    for sid in section_ids:
+        if sid not in out:
+            section = store.get_section(sid)
+            out[sid] = store.bell_for_section(section) if section is not None else None
+    return out
+
+
+def _entries(entries: list) -> list[TimetableEntryResponse]:
+    """Entries with each period's times from its own section's bell (N-3-15)."""
+    bells = _section_bells(cr._require(), [e.section_id for e in entries])
+    times = {sid: {s.period: (s.start, s.end) for s in b.slots if s.kind == "teaching"} if b else {}
+             for sid, b in bells.items()}
+    return [_entry(e, times[e.section_id].get(e.period)) for e in entries]
+
+
+def _lane(lane) -> GroupLaneResponse:
+    store, users = cr._require(), cr._require_users()
+    subject = store.get_subject(lane.subject_id)
+    teacher = users.get(lane.teacher_id) if lane.teacher_id else None
+    room = store.get_room(lane.room_id) if lane.room_id else None
+    return GroupLaneResponse(id=lane.id, subject_id=lane.subject_id, subject_name=subject.name if subject else None,
+                             teacher_id=lane.teacher_id, teacher_name=teacher.name if teacher else None,
+                             room_id=lane.room_id, room_name=room.name if room else None,
+                             student_ids=list(lane.student_ids))
+
+
+def _group_label(store, g) -> str:
+    """A group's sections as one label: "9-A, 9-B"."""
+    return ", ".join(store._section_label(s) for s in (store.get_section(sid) for sid in g.section_ids) if s)
+
+
+def _period_times(store, section_id: str) -> dict[int, tuple[str, str]]:
+    bell = _section_bells(store, [section_id])[section_id]
+    return {s.period: (s.start, s.end) for s in bell.slots if s.kind == "teaching"} if bell else {}
+
+
+def _group_periods(store, section_id: str) -> list[GroupPeriodResponse]:
+    times = _period_times(store, section_id)
+    return [GroupPeriodResponse(group_id=g.id, group_name=g.name, kind=g.kind, day_of_week=d, period=p,
+                                start_time=times.get(p, (None, None))[0], end_time=times.get(p, (None, None))[1],
+                                lanes=[_lane(lane) for lane in g.lanes])
+            for g, d, p in store.group_periods_for_section(section_id)]
+
+
+def _group_entry(store, g, lane, d: int, p: int, *, subject_name: Optional[str] = None) -> TimetableEntryResponse:
+    """A group period as a row of someone's own week (N-3-20): a lane's
+    teacher sees their lane; a student their lane, or the whole group."""
+    users = cr._require_users()
+    times = _period_times(store, g.section_ids[0]) if g.section_ids else {}
+    subject = store.get_subject(lane.subject_id) if lane else None
+    teacher = users.get(lane.teacher_id) if lane and lane.teacher_id else None
+    room = store.get_room(lane.room_id) if lane and lane.room_id else None
+    return TimetableEntryResponse(
+        id=f"{g.id}:{d}:{p}", section_id=g.section_ids[0] if g.section_ids else "", day_of_week=d, period=p,
+        subject_id=lane.subject_id if lane else g.lanes[0].subject_id,
+        teacher_id=lane.teacher_id if lane else None, room_id=lane.room_id if lane else None,
+        subject_name=subject_name or (subject.name if subject else None), section_name=_group_label(store, g),
+        teacher_name=teacher.name if teacher else None, room_name=room.name if room else None,
+        start_time=times.get(p, (None, None))[0], end_time=times.get(p, (None, None))[1],
+        group_id=g.id, group_name=g.name)
 
 
 def _section_week(section) -> SectionTimetableResponse:
@@ -225,10 +329,11 @@ def _section_week(section) -> SectionTimetableResponse:
     bell = store.bell_for_section(section)
     return SectionTimetableResponse(
         section_id=section.id, bell_schedule_id=bell.id if bell else None,
-        entries=[_entry(e) for e in store.timetable_for_section(section.id)],
+        entries=_entries(store.timetable_for_section(section.id)),
         gaps=[TimetableGapResponse(subject_id=g["subjectId"], allocated=g["allocated"],
                                    timetabled=g["timetabled"])
-              for g in store.timetable_gaps(section.id)])
+              for g in store.timetable_gaps(section.id)],
+        group_periods=_group_periods(store, section.id))
 
 
 def _owned_bell(bell_id: str, current: User):
@@ -284,6 +389,10 @@ def set_allocation(section_id: str, subject_id: str, req: AllocationRequest,
         raise HTTPException(404, "subject not found")
     except ValueError as e:
         raise HTTPException(422, str(e))
+    if before is not None and before.teacher_id != after.teacher_id:
+        # SCH-8: a teacher joins or leaves mid-year; the cover and the books follow.
+        cr._require().follow_teacher_change(section_id, subject_id, before.teacher_id, after.teacher_id,
+                                            today=cr._school_today().isoformat())
     # The SCH-2/SCH-8 fields are recorded when either side uses them, so a
     # plain cell's entry reads as it always has.
     special = any(x is not None and (x.co_teacher_id or x.room_kind or x.double_periods)
@@ -468,7 +577,7 @@ def year_timetable(academic_year_id: str, section_id: Optional[str] = Query(defa
         entries = [e for e in entries if e.section_id == section_id]
     if teacher_id:
         entries = [e for e in entries if teacher_id in (e.teacher_id, e.co_teacher_id)]
-    return [_entry(e) for e in entries]
+    return _entries(entries)
 
 
 @router.get("/sections/{section_id}/timetable", response_model=SectionTimetableResponse)
@@ -510,6 +619,40 @@ def _tell_timetable_change(principal: User, before: list, after: list, section_i
                           params={}, exclude=teachers)
 
 
+def _replan_changed_weeks(principal: User, before: list, after: list, section_ids: set[str]) -> int:
+    """N-3-14: a section whose week changed has its plan re-laid on the new
+    week. For each section and subject whose periods per weekday differ,
+    every still-to-teach lesson from the school's today on moves onto the
+    periods the section now has (scheduling.replan_section, the reflow a
+    lost period uses); taught, skipped and past lessons stay. Each move is
+    on the audit log with the reason. A subject with no period left in the
+    new week is left as it is: there is nothing to lay it on until the week
+    is filled in. Until now a mid-term change stranded lessons on weekdays
+    the section no longer has the subject. Returns the plans that changed."""
+    from collections import Counter
+
+    from ..assessment.audit_log import get_audit_log
+    from . import scheduling
+
+    store = cr._require()
+    today = cr._school_today().isoformat()
+    log = get_audit_log(cr._cfg.data_root)
+    changed = 0
+    for sid in sorted(section_ids):
+        old = Counter((e.subject_id, e.day_of_week) for e in before if e.section_id == sid)
+        new = Counter((e.subject_id, e.day_of_week) for e in after if e.section_id == sid)
+        section = store.get_section(sid)
+        if section is None:
+            continue
+        still_taught = {subject_id for subject_id, _ in new}
+        for subject_id in sorted({s for s, _ in (old - new) + (new - old)} & still_taught):
+            changed += scheduling.replan_section(
+                store, log, academic_year_id=section.academic_year_id, section_id=sid,
+                subject_id=subject_id, from_date=today, changed_by=principal.id,
+                reason=f"{store._section_label(section)}'s timetable changed")
+    return changed
+
+
 @router.put("/sections/{section_id}/timetable", response_model=SectionTimetableResponse)
 def replace_section_timetable(section_id: str, req: SectionTimetableRequest,
                               principal: User = Depends(require_admin("timetable", scoped=True))
@@ -517,7 +660,9 @@ def replace_section_timetable(section_id: str, req: SectionTimetableRequest,
     """Replace a section's whole week. Checked before anything is written: a
     teacher or room already busy in another section, a period or day the
     bell does not have, a subject with no allocation or more periods than
-    allocated. A 409 lists every clash; the old week is kept."""
+    allocated. A 409 lists every clash; the old week is kept. A subject
+    whose weekdays changed has its plan re-laid on the new week from today
+    (N-3-14)."""
     section = cr._require_school_owns_section(section_id, principal)
     cr.require_section_in_scope(section_id, principal, "timetable")
     for e in req.entries:
@@ -532,9 +677,11 @@ def replace_section_timetable(section_id: str, req: SectionTimetableRequest,
                                   "clashes": e.clashes})
     except ValueError as e:
         raise HTTPException(422, str(e))
+    week_after = store.timetable_for_section(section_id)
+    replanned = _replan_changed_weeks(principal, week_before, week_after, {section_id})
     _audit("timetable_replaced", principal, {"sectionId": section_id, "before": before,
-                                             "after": len(req.entries)})
-    _tell_timetable_change(principal, week_before, store.timetable_for_section(section_id), {section_id})
+                                             "after": len(req.entries), "plansReplanned": replanned})
+    _tell_timetable_change(principal, week_before, week_after, {section_id})
     return _section_week(store.get_section(section.id))
 
 
@@ -565,15 +712,32 @@ def my_timetable(current: User = Depends(get_current_user)) -> MyTimetableRespon
             return MyTimetableResponse(role=current.role, academic_year_id=year.id)
         bell = store.bell_for_section(section)
         grade = store.get_grade(section.grade_id)
+        # A group period is the student's lane when the school recorded
+        # their choice, else the whole group ("Third language").
+        groups = []
+        for g, d, p in store.group_periods_for_section(section.id):
+            lane = next((lane for lane in g.lanes if current.id in lane.student_ids), None)
+            if lane is None and len(g.lanes) == 1:
+                lane = g.lanes[0]
+            groups.append(_group_entry(store, g, lane, d, p, subject_name=None if lane else g.name))
         return MyTimetableResponse(role=current.role, academic_year_id=section.academic_year_id,
                                    section_id=section.id, bell_schedule=_bell(bell) if bell else None,
-                                   entries=[_entry(e) for e in store.timetable_for_section(section.id)],
+                                   entries=_entries(store.timetable_for_section(section.id)) + groups,
                                    grade=grade.number if grade else None)
-    bells = store.bell_schedules_for_year(year.id)
-    default = next((b for b in bells if b.is_default), None)
+    # A teacher's periods can be on several bells (N-3-15): each entry has
+    # its own section's times, and the bell is the one they all use -- the
+    # year's default only when they use more than one, or none yet.
+    mine = store.timetable_for_teacher(current.id, year.id)
+    lanes = store.group_periods_for_teacher(current.id, year.id)
+    used = {b.id: b for b in _section_bells(store, [e.section_id for e in mine]
+                                            + [g.section_ids[0] for g, _, _, _ in lanes if g.section_ids]
+                                            ).values() if b}
+    bell = next(iter(used.values())) if len(used) == 1 else next(
+        (b for b in store.bell_schedules_for_year(year.id) if b.is_default), None)
     return MyTimetableResponse(role=current.role, academic_year_id=year.id,
-                               bell_schedule=_bell(default) if default else None,
-                               entries=[_entry(e) for e in store.timetable_for_teacher(current.id, year.id)])
+                               bell_schedule=_bell(bell) if bell else None,
+                               entries=_entries(mine) + [_group_entry(store, g, lane, d, p)
+                                                         for g, lane, d, p in lanes])
 
 
 # ---------------- generation (SCH-3) ----------------
@@ -597,6 +761,39 @@ class ProposedEntryResponse(Camel):
     co_teacher_id: Optional[str] = None
 
 
+class PeriodResponse(Camel):
+    """What one period holds, with names to read it by. A group's period
+    (N-3-20) carries the group; its subject is the group's first lane's."""
+    subject_id: str
+    subject_name: Optional[str] = None
+    teacher_id: Optional[str] = None
+    teacher_name: Optional[str] = None
+    room_id: Optional[str] = None
+    room_name: Optional[str] = None
+    co_teacher_id: Optional[str] = None
+    group_id: Optional[str] = None
+    group_name: Optional[str] = None
+
+
+class GroupSessionResponse(Camel):
+    """A period of an elective group or a combined class (N-3-20)."""
+    group_id: str
+    day_of_week: int
+    period: int
+
+
+class PeriodChangeResponse(Camel):
+    """One period of one section the generated week changes (N-3-6):
+    `before` -> `after`. No `before` is a period added; no `after`, one
+    that becomes free."""
+    section_id: str
+    section_name: Optional[str] = None
+    day_of_week: int
+    period: int
+    before: Optional[PeriodResponse] = None
+    after: Optional[PeriodResponse] = None
+
+
 class SolveResponse(Camel):
     status: str           # solved | infeasible | timeout | nothing_to_solve
     applied: bool
@@ -606,6 +803,109 @@ class SolveResponse(Camel):
     removed: int
     seconds: float
     entries: list[ProposedEntryResponse]
+    # A proposal (apply: false) is kept under this id: publishing it writes
+    # exactly this week, not a second solve (N-3-6).
+    preview_id: Optional[str] = None
+    # Every period that differs from the current week, section by section.
+    changes: list[PeriodChangeResponse] = []
+    # The proposed periods of each group placed (N-3-20).
+    group_sessions: list[GroupSessionResponse] = []
+
+
+def _changes(before: list, after: list, section_ids: set[str], groups_before: list = (),
+             groups_after: list = ()) -> list[PeriodChangeResponse]:
+    """The per-period diff of a week: each (section, day, period) whose
+    subject, teacher, room or co-teacher differs -- or that moves into or out
+    of a group (N-3-20) -- in section, day and period order. groups_*:
+    (group, day, period)."""
+    store, users = cr._require(), cr._require_users()
+    names: dict[tuple[str, str], Optional[str]] = {}
+
+    def name(kind: str, key: Optional[str]) -> Optional[str]:
+        if key is None:
+            return None
+        if (kind, key) not in names:
+            if kind == "subject":
+                row = store.get_subject(key)
+            elif kind == "room":
+                row = store.get_room(key)
+            else:
+                row = users.get(key)
+            names[(kind, key)] = row.name if row else None
+        return names[(kind, key)]
+
+    def holds(e) -> Optional[PeriodResponse]:
+        if e is None:
+            return None
+        if isinstance(e, tuple):            # a group's period
+            g = e[0]
+            return PeriodResponse(subject_id=g.lanes[0].subject_id, subject_name=g.name, group_id=g.id,
+                                  group_name=g.name)
+        return PeriodResponse(subject_id=e.subject_id, subject_name=name("subject", e.subject_id),
+                              teacher_id=e.teacher_id, teacher_name=name("user", e.teacher_id),
+                              room_id=e.room_id, room_name=name("room", e.room_id),
+                              co_teacher_id=getattr(e, "co_teacher_id", None))
+
+    def keyed(entries: list, groups: list) -> dict:
+        out: dict = {(e.section_id, e.day_of_week, e.period): e for e in entries if e.section_id in section_ids}
+        for g, d, p in groups:
+            for sid in g.section_ids:
+                if sid in section_ids:
+                    out[(sid, d, p)] = (g,)
+        return out
+
+    def same(a, b) -> bool:
+        look = lambda e: ("group", e[0].id) if isinstance(e, tuple) else (  # noqa: E731
+            e.subject_id, e.teacher_id, e.room_id, getattr(e, "co_teacher_id", None))
+        return a is not None and b is not None and look(a) == look(b)
+
+    old, new = keyed(before, groups_before), keyed(after, groups_after)
+    labels = {s.id: store._section_label(s) for s in (store.get_section(sid) for sid in section_ids) if s}
+    out = []
+    for key in sorted(set(old) | set(new), key=lambda k: (labels.get(k[0], k[0]), k[1], k[2])):
+        if not same(old.get(key), new.get(key)):
+            out.append(PeriodChangeResponse(section_id=key[0], section_name=labels.get(key[0]),
+                                            day_of_week=key[1], period=key[2],
+                                            before=holds(old.get(key)), after=holds(new.get(key))))
+    return out
+
+
+def _groups_placed(store, academic_year_id: str, group_ids: set[str]) -> list:
+    """The (group, day, period) now placed for `group_ids`."""
+    return [(g, d, p) for g, d, p in store.group_periods_for_year(academic_year_id) if g.id in group_ids]
+
+
+def _groups_proposed(store, academic_year_id: str, sessions: list) -> list:
+    groups = {g.id: g for g in store.teaching_groups_for_year(academic_year_id)}
+    return [(groups[s.group_id], s.day_of_week, s.period) for s in sessions if s.group_id in groups]
+
+
+def _sessions(sessions: list) -> list[GroupSessionResponse]:
+    return [GroupSessionResponse(group_id=s.group_id, day_of_week=s.day_of_week, period=s.period) for s in sessions]
+
+
+def _proposed(entries: list) -> list[ProposedEntryResponse]:
+    return [ProposedEntryResponse(section_id=e.section_id, day_of_week=e.day_of_week, period=e.period,
+                                  subject_id=e.subject_id, teacher_id=e.teacher_id, room_id=e.room_id,
+                                  co_teacher_id=e.co_teacher_id)
+            for e in entries]
+
+
+def _published(principal: User, academic_year_id: str, week_before: list, solving: set[str],
+               summary: dict[str, Any], preview_id: Optional[str] = None) -> None:
+    """The re-laid plans, the audit entry and the notices for a week just
+    written -- by a one-step solve or by publishing a preview (N-3-6). A
+    subject whose weekdays changed has its future lessons moved onto the new
+    week (N-3-14)."""
+    store = cr._require()
+    week_after = [e for e in store.timetable_for_year(academic_year_id) if e.section_id in solving]
+    replanned = _replan_changed_weeks(principal, week_before, week_after, solving)
+    _audit("timetable_solved", principal,
+           {"academicYearId": academic_year_id, "sections": len(solving), "kept": summary["kept"],
+            "movedOrAdded": summary["movedOrAdded"], "removed": summary["removed"],
+            "plansReplanned": replanned,
+            **({"previewId": preview_id} if preview_id else {})})
+    _tell_timetable_change(principal, week_before, week_after, solving)
 
 
 @router.post("/academic-years/{academic_year_id}/timetable/solve", response_model=SolveResponse)
@@ -615,8 +915,13 @@ def solve_timetable(academic_year_id: str, req: SolveRequest,
     the allocations and bells: no teacher, room or section in two places,
     a teacher's maximum a day and in a row, subjects spread across the week,
     unavailable periods free, locked periods kept, and -- with keepExisting
-    -- the fewest changes to the current week. `apply: false` returns the
-    proposal and its diff without writing; `apply: true` publishes it."""
+    -- the fewest changes to the current week. Every changed period is
+    listed in `changes`.
+
+    `apply: false` writes nothing: it keeps the proposal under `previewId`,
+    which `POST .../timetable/previews/{previewId}/publish` writes exactly
+    (N-3-6). `apply: true` generates and publishes in one step: the week
+    written is the one returned."""
     from .timetable_solver import SolveOptions, solve
     cr._require_school_owns_academic_year(academic_year_id, principal)
     store = cr._require()
@@ -625,30 +930,69 @@ def solve_timetable(academic_year_id: str, req: SolveRequest,
         for sid in req.section_ids:
             cr._require_school_owns_section(sid, principal)
         section_ids = set(req.section_ids)
+    # Fingerprinted before the solve reads anything: a change made while it
+    # runs makes the preview stale, never silently part of it.
+    inputs = store.timetable_inputs_hash(academic_year_id)
     result = solve(store, academic_year_id, SolveOptions(
         max_per_day=req.max_per_day, max_consecutive=req.max_consecutive,
         keep_existing=req.keep_existing, time_limit_seconds=req.time_limit_seconds,
         section_ids=section_ids))
-    applied = False
-    if req.apply and result.status == "solved":
-        solving = section_ids or {s.id for s in store.sections_for_year(academic_year_id)}
-        week_before = [e for e in store.timetable_for_year(academic_year_id) if e.section_id in solving]
-        store.apply_solved_timetable(academic_year_id, result.entries, solving)
+    solving = section_ids or {s.id for s in store.sections_for_year(academic_year_id)}
+    summary = {"kept": result.kept, "movedOrAdded": result.moved_or_added, "removed": result.removed,
+               "seconds": round(result.seconds, 2)}
+    week_before = [e for e in store.timetable_for_year(academic_year_id) if e.section_id in solving]
+    groups_before = _groups_placed(store, academic_year_id, result.group_ids)
+    groups_after = _groups_proposed(store, academic_year_id, result.group_sessions)
+    applied, preview_id = False, None
+    if result.status == "solved" and req.apply:
+        store.apply_solved_timetable(academic_year_id, result.entries, solving, result.group_sessions,
+                                     result.group_ids)
         applied = True
-        _audit("timetable_solved", principal,
-               {"academicYearId": academic_year_id, "sections": len(solving), "kept": result.kept,
-                "movedOrAdded": result.moved_or_added, "removed": result.removed})
-        _tell_timetable_change(principal, week_before,
-                               [e for e in store.timetable_for_year(academic_year_id) if e.section_id in solving],
-                               solving)
+        _published(principal, academic_year_id, week_before, solving, summary)
+    elif result.status == "solved":
+        preview_id = store.save_timetable_preview(academic_year_id=academic_year_id, section_ids=solving,
+                                                  entries=result.entries, summary=summary, inputs_hash=inputs,
+                                                  created_by=principal.id, group_sessions=result.group_sessions,
+                                                  group_ids=result.group_ids)
     return SolveResponse(
         status=result.status, applied=applied, problems=result.problems, kept=result.kept,
         moved_or_added=result.moved_or_added, removed=result.removed, seconds=round(result.seconds, 2),
-        entries=[ProposedEntryResponse(section_id=e.section_id, day_of_week=e.day_of_week,
-                                       period=e.period, subject_id=e.subject_id,
-                                       teacher_id=e.teacher_id, room_id=e.room_id,
-                                       co_teacher_id=e.co_teacher_id)
-                 for e in result.entries])
+        entries=_proposed(result.entries), preview_id=preview_id, group_sessions=_sessions(result.group_sessions),
+        changes=_changes(week_before, result.entries, solving, groups_before, groups_after)
+        if result.status == "solved" else [])
+
+
+@router.post("/academic-years/{academic_year_id}/timetable/previews/{preview_id}/publish",
+             response_model=SolveResponse)
+def publish_timetable_preview(academic_year_id: str, preview_id: str,
+                              principal: User = Depends(require_admin("timetable"))) -> SolveResponse:
+    """Publish exactly the week a preview showed -- no second solve, so what
+    the principal approved is what the school gets (N-3-6). 404: no such
+    preview (a newer one or a publish replaced it). 409: the timetable,
+    allocations, bells, rooms or availability changed after the preview was
+    made; preview again."""
+    from .teaching_groups import GroupSession
+    from .timetable_solver import ProposedEntry
+    cr._require_school_owns_academic_year(academic_year_id, principal)
+    store = cr._require()
+    try:
+        preview, week_before, groups_before = store.publish_timetable_preview(preview_id, academic_year_id,
+                                                                              lambda d: ProposedEntry(**d))
+    except KeyError:
+        raise HTTPException(404, "that preview is gone: a newer preview or a publish replaced it; preview again")
+    except StalePreview:
+        raise HTTPException(409, "the timetable, allocations, bells, rooms or availability changed after this "
+                                 "preview was made; preview again to see the week that fits them now")
+    solving, summary = preview["section_ids"], preview["summary"]
+    entries = [ProposedEntry(**d) for d in preview["entries"]]
+    sessions = [GroupSession(**s) for s in preview["group_sessions"]]
+    _published(principal, academic_year_id, week_before, solving, summary, preview_id=preview_id)
+    return SolveResponse(status="solved", applied=True, problems=[], kept=summary["kept"],
+                         moved_or_added=summary["movedOrAdded"], removed=summary["removed"],
+                         seconds=summary["seconds"], entries=_proposed(entries), preview_id=preview_id,
+                         group_sessions=_sessions(sessions),
+                         changes=_changes(week_before, entries, solving, groups_before,
+                                          _groups_proposed(store, academic_year_id, sessions)))
 
 
 class UnavailableSlot(_Req):

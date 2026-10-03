@@ -71,6 +71,15 @@ def _bank_chapters(subject: str, grade: int) -> list[dict]:
             for e in entries if e.chapter_id != "unmapped"]
 
 
+def _bank_question_count(subject: str, grade: int) -> int:
+    """How many questions the bank serves a class in a subject: the count GET
+    /catalog gives it, 0 where it lists none. Exam coverage reads it so a
+    class the bank cannot serve is not reported as "no paper yet" (D117).
+    Tests replace this."""
+    from ..assessment.pillar_routes import catalog_count
+    return catalog_count(cr._cfg, subject, grade)
+
+
 def _name_key(name: str) -> str:
     from ..assessment.pillar_routes import _name_key as key
     return key(name)

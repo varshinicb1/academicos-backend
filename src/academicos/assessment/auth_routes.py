@@ -30,8 +30,8 @@ from ..api.rate_limit import account_failures, rate_limit_login, rate_limit_regi
 from ..config import Config
 from .schemas import Camel
 from .users import (
-    AccountClosed, EmailAlreadyRegistered, InvalidCredentials, Invite, InviteAlreadyUsed, InviteNotFound,
-    RegistrationRefused, User, UserStore, get_user_store, is_closed,
+    OWNER_ROLE, AccountClosed, EmailAlreadyRegistered, InvalidCredentials, Invite, InviteAlreadyUsed,
+    InviteNotFound, RegistrationRefused, User, UserStore, get_user_store, is_closed,
 )
 
 CLOSED_DETAIL = "your school has closed this account; ask the school office if this is a mistake"
@@ -82,6 +82,11 @@ class UserResponse(Camel):
     name: str
     email: str
     role: str
+    # ROLE-4: an owner account. With no school chosen its role is "owner" and
+    # its schoolId ""; acting in one of its schools it is that school's
+    # principal (role "principal") and this stays true, so the web can offer
+    # the school switcher.
+    is_owner: bool = False
 
 
 class AuthResponse(Camel):
@@ -91,7 +96,8 @@ class AuthResponse(Camel):
 
 def _to_response(user: User) -> UserResponse:
     return UserResponse(id=user.id, school_id=user.school_id, name=user.name,
-                         email=user.email, role=user.role)
+                        email=user.email, role=user.role,
+                        is_owner=user.acting_owner or user.role == OWNER_ROLE)
 
 
 class SchoolInviteRequest(Camel):
@@ -231,6 +237,45 @@ _bearer_scheme = HTTPBearer(
 )
 
 
+# ---------------- owners over several schools (ROLE-4) ----------------
+#
+# An owner account has no school of its own. operations/owners.py records
+# which schools it is linked to and which one each of its sessions has
+# chosen; it plugs that in at start-up (set_owner_scope), the way the grant
+# checker is plugged in, because the operations package imports this module.
+
+OWNER_DETAIL = "this action requires an owner account"
+OWNER_CHOOSE_DETAIL = ("choose one of your schools first: an owner acts in one school "
+                       "at a time (POST /api/v1/owner/active-school)")
+_owner_scope = None
+
+
+def set_owner_scope(fn) -> None:
+    """fn(owner: User, token: str) -> the school id the session has chosen,
+    or None when it has chosen none or that school's link was revoked."""
+    global _owner_scope
+    _owner_scope = fn
+
+
+def acting_view(owner: User, school_id: str) -> User:
+    """The owner as the principal of one of its linked schools. Every route
+    then scopes by `school_id` exactly as it does for that school's own
+    principal, so no route needs to know owners exist."""
+    return User(id=owner.id, school_id=school_id, name=owner.name, email=owner.email,
+                role="principal", created_at=owner.created_at, acting_owner=True)
+
+
+def _as_seen_by_routes(user: User, token: str) -> User:
+    """An owner whose session has chosen a still-linked school becomes that
+    school's principal view; anyone else is unchanged. The link is checked on
+    every request, so a principal's revoke takes effect on the owner's very
+    next call."""
+    if user.role != OWNER_ROLE or _owner_scope is None:
+        return user
+    school_id = _owner_scope(user, token)
+    return acting_view(user, school_id) if school_id else user
+
+
 def get_current_user(
     request: Request,
     creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
@@ -241,20 +286,32 @@ def get_current_user(
     (their own inbox and settings, and their linked children's pages). Every
     other route answers 403 here, before its handler runs: handlers written
     before parents existed tell students from staff by `role == "student"`,
-    and a parent must never be taken for staff by one of them."""
+    and a parent must never be taken for staff by one of them.
+
+    An owner (ROLE-4) is the principal of the school its session has chosen.
+    With none chosen it may call only route_policy.OWNER_PATHS: its school_id
+    is "", and no route should be asked what "no school" holds."""
     token = creds.credentials if creds is not None else None
     if not token:
         raise HTTPException(401, "missing bearer token")
     user = _require().user_for_session(token)
     if user is None:
         raise HTTPException(401, "session expired or invalid; log in again")
-    # For api/main.py's admin audit: who made the request.
+    user = _as_seen_by_routes(user, token)
+    # For api/main.py's admin audit: who made the request, and for an owner
+    # in which of its schools.
     request.scope["acos_actor"] = user.id
+    if user.acting_owner:
+        request.scope["acos_owner_school"] = user.school_id
+    route_path = getattr(request.scope.get("route"), "path", None)
     if user.role == "parent":
         from ..api.route_policy import PARENT_PATHS
-        route = request.scope.get("route")
-        if getattr(route, "path", None) not in PARENT_PATHS:
+        if route_path not in PARENT_PATHS:
             raise HTTPException(403, "a parent account can see only their children's pages")
+    if user.role == OWNER_ROLE:
+        from ..api.route_policy import OWNER_PATHS
+        if route_path not in OWNER_PATHS:
+            raise HTTPException(403, OWNER_CHOOSE_DETAIL)
     return user
 
 
@@ -265,7 +322,28 @@ def get_current_user_optional(authorization: str = Header(default="")) -> Option
     token = _bearer_token(authorization)
     if token is None or _users is None:
         return None
-    return _users.user_for_session(token)
+    user = _users.user_for_session(token)
+    return _as_seen_by_routes(user, token) if user is not None else None
+
+
+def require_owner(
+    request: Request,
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
+) -> User:
+    """The owner account itself (ROLE-4), whichever school its session has
+    chosen: its own routes (its schools, switching, the overview) act on the
+    account, never on one school. 403 for every other account, a principal
+    included."""
+    token = creds.credentials if creds is not None else None
+    if not token:
+        raise HTTPException(401, "missing bearer token")
+    user = _require().user_for_session(token)
+    if user is None:
+        raise HTTPException(401, "session expired or invalid; log in again")
+    if user.role != OWNER_ROLE:
+        raise HTTPException(403, OWNER_DETAIL)
+    request.scope["acos_actor"] = user.id
+    return user
 
 
 def require_principal(current: User = Depends(get_current_user)) -> User:
