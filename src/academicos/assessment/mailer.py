@@ -18,6 +18,7 @@ explicit, separately authorised action.
 from __future__ import annotations
 
 import base64
+import time
 import logging
 import mimetypes
 import os
@@ -100,15 +101,51 @@ def _composio_request(method: str, path: str, **kw) -> Any:
     return r.json() if r.content else {}
 
 
+# How long one answer about Composio is trusted. The public sign-in page asks
+# (`/auth/providers` -> `emailCode`) on every load, and each answer is a call
+# to Composio.
+_STATUS_TTL_SECONDS = 300
+_status_cache: dict[str, Any] = {"at": 0.0, "key": "", "value": None}
+
+
+def _gmail_account() -> Optional[str]:
+    """The id of an ACTIVE Gmail account connected in Composio, or None.
+    Mail goes through Composio's GMAIL_SEND_EMAIL, so a key with only Google
+    Calendar connected sends nothing (2026-10-04: the live key had five
+    calendar accounts and no Gmail, and the sign-in page offered emailed codes
+    that could never arrive)."""
+    data = _composio_request("GET", "/connected_accounts?toolkit_slugs=gmail&statuses=ACTIVE&limit=10")
+    for item in data.get("items") or []:
+        toolkit = item.get("toolkit") or {}
+        slug = toolkit.get("slug") if isinstance(toolkit, dict) else toolkit
+        if str(slug).lower() == "gmail" and str(item.get("status", "")).upper() == "ACTIVE":
+            return item.get("id")
+    return None
+
+
 def composio_status() -> dict:
-    """Is Composio usable right now? Surfaced in the UI instead of failing at send."""
-    if not composio_key():
+    """Can Composio send mail right now? Only with its key AND a Gmail
+    account connected. Surfaced in the UI instead of failing at send, and
+    cached for `_STATUS_TTL_SECONDS`."""
+    key = composio_key()
+    if not key:
         return {"configured": False, "reason": "COMPOSIO_API_KEY not set"}
+    now = time.monotonic()
+    cached = _status_cache["value"]
+    if cached is not None and _status_cache["key"] == key and now - _status_cache["at"] < _STATUS_TTL_SECONDS:
+        return dict(cached)
     try:
-        _composio_request("GET", "/toolkits?limit=1")
-        return {"configured": True, "reason": "ok"}
+        account = _gmail_account()
+        value = ({"configured": True, "reason": "ok", "gmailAccountId": account} if account else
+                 {"configured": False,
+                  "reason": "Composio has no Gmail account connected; connect Gmail at app.composio.dev "
+                            "(Google Calendar alone cannot send mail)"})
     except MailError as e:
-        return {"configured": False, "reason": str(e)}
+        value = {"configured": False, "reason": str(e)}
+    except requests.RequestException as e:
+        value = {"configured": False, "reason": f"Composio could not be reached: {e}"}
+    _status_cache.update(at=now, key=key, value=value)
+    return dict(value)
 
 
 def send_via_composio(msg: MailMessage, *, connected_account_id: str | None = None,
@@ -136,6 +173,9 @@ def send_via_composio(msg: MailMessage, *, connected_account_id: str | None = No
         payload["arguments"]["cc"] = msg.cc
     if attachments:
         payload["arguments"]["attachment"] = attachments[0]
+    # Composio runs a tool for a connected account: the caller's, else the
+    # Gmail account composio_status found.
+    connected_account_id = connected_account_id or composio_status().get("gmailAccountId")
     if connected_account_id:
         payload["connected_account_id"] = connected_account_id
 
