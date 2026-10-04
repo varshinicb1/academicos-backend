@@ -234,6 +234,19 @@ class DecisionRequest(CamelRequest):
     note: Optional[str] = Field(default=None, max_length=1000)
 
 
+def _evidence(raw) -> list[dict]:
+    """The quotes a key rests on, each as `{"quote", "page"?}` -- what the reviewer's screen reads. A
+    model-written question (corpus/ai-cbse-9-10) stores them as plain strings, the form the merge's
+    grounding gate checks; the queue answered 500 for all of them until this read both."""
+    out: list[dict] = []
+    for e in raw or []:
+        if isinstance(e, dict):
+            out.append(e)
+        elif isinstance(e, str) and e.strip():
+            out.append({"quote": e.strip()})
+    return out
+
+
 def _item(bank, rec: dict, decided: dict) -> ReviewItem:
     s = rec.get("answerScheme") or {}
     d = decided.get(str(rec.get("id"))) or {}
@@ -246,7 +259,7 @@ def _item(bank, rec: dict, decided: dict) -> ReviewItem:
         model_answer=str(s.get("modelAnswer") or ""),
         marking_points=[{"description": p.get("description"), "marks": p.get("marks")}
                         for p in s.get("markingPoints") or []],
-        evidence=list((s.get("metadata") or {}).get("evidence") or []),
+        evidence=_evidence((s.get("metadata") or {}).get("evidence")),
         decision=d.get("decision"), note=d.get("note"))
 
 
