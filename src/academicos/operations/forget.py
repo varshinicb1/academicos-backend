@@ -58,6 +58,8 @@ KEPT = {
     "owner_sessions": "which linked school an owner has chosen (ROLE-4); no student or parent",
     "question_facility": "a question's measured difficulty, summed over papers; aggregates, no student named (EX-3)",
     "question_facility_parts": "the same, one row per question and paper; aggregates, no student named (EX-3)",
+    "pilot_agreements": "the school's acceptance of the pilot agreement, a legal record; names the staff member "
+                        "who accepted it, no student or parent",
 }
 
 

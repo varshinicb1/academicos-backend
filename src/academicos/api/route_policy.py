@@ -335,7 +335,10 @@ ROUTE_POLICY: dict[tuple[str, str], Policy] = {
     ("POST", "/api/v1/my-practice/{practice_id}/submit"): _p(ANY_USER, "students only, their own sets"),
     ("GET", "/api/v1/sections/{section_id}/progress"): _p(STAFF, "the sections teachers or a reports admin; logged"),
     ("POST", "/api/v1/auth/code/request"): _p(PUBLIC, "sign-in: same answer whether or not the email exists; rate-limited"),
-    ("POST", "/api/v1/auth/code/verify"): _p(PUBLIC, "sign-in: hashed six-digit code, 10 minutes, 5 tries; rate-limited"),
+    ("POST", "/api/v1/auth/code/verify"): _p(PUBLIC, "sign-in: hashed six-digit code, 10 minutes, 5 tries, 30 a day; rate-limited"),
+    # Phase 1 pilot agreement (operations/pilot_agreement_routes.py).
+    ("GET", "/api/v1/pilot-agreement"): _p(STAFF, "the agreement text and the callers own schools acceptance"),
+    ("POST", "/api/v1/pilot-agreement/accept"): _p(PRINCIPAL, "the principal accepts for their own school; the texts hash recorded; audited"),
     ("GET", "/api/v1/qbank/coverage-map"): _p(STAFF),
     ("GET", "/api/v1/qbank/review-queue"): _p(ADMIN["qbank_review"]),
     ("POST", "/api/v1/qbank/review/{question_id}"): _p(ADMIN["qbank_review"]),

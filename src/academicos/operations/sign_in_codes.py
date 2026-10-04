@@ -1,13 +1,16 @@
 """Sign in with a one-time code by email (ROLE-2) -- for students and
 parents, who should not need a password to open their homework or their
-child's progress.
+child's progress, and for principals (Phase 1 pilot, 2026-10-04), whose
+password otherwise only AcademicOS can reset.
 
 A code is six digits, lives ten minutes, allows five tries, and is stored
 only as a hash. Asking for a code answers the same whether or not the email
 has an account, so the route cannot be used to find out who is enrolled;
-only student and parent accounts are sent one (staff use their password).
-Requests are rate-limited per client and per email. Nothing is sent until
-the school's email is set up (SMTP), and the route says so.
+only principal, student and parent accounts are sent one (teachers use their
+password, which the principal can reset). Requests are rate-limited per
+client and per email, and tries per email per day, so guessing a principal's
+code is not a matter of patience. Nothing is sent until the school's email
+is set up (SMTP or Composio), and the route says so.
 """
 from __future__ import annotations
 
@@ -36,10 +39,13 @@ CREATE TABLE IF NOT EXISTS sign_in_codes (
 """
 LIFETIME = timedelta(minutes=10)
 MAX_ATTEMPTS = 5
-ROLES = ("student", "parent")
+ROLES = ("principal", "student", "parent")
 
 _request_limiter = RateLimiter(max_requests=5, window_seconds=600)
 _verify_limiter = RateLimiter(max_requests=20, window_seconds=600)
+# At most 30 tries a day per email: a guesser's chance is 1 in about 33,000 a
+# day, where the 10-minute limit alone allows 2,880 tries a day.
+_daily_verify_limiter = RateLimiter(max_requests=30, window_seconds=86400)
 
 
 def _hash(email: str, code: str) -> str:
@@ -100,8 +106,8 @@ def _store():
 
 @router.post("/request")
 def request_code(req: CodeRequest, request: Request) -> dict:
-    """Email a sign-in code to a student or parent account. The answer is
-    the same whether or not the email has one."""
+    """Email a sign-in code to a principal, student or parent account. The
+    answer is the same whether or not the email has one."""
     from ..assessment import auth_routes, mailer
     from .notifications import send_email
     s = _store()
@@ -112,10 +118,10 @@ def request_code(req: CodeRequest, request: Request) -> dict:
     user = auth_routes._require().get_by_email(email)
     if user is not None and user.role in ROLES:
         code = s.issue_code(email)
-        send_email(email, "Your AcademicOS sign-in code",
+        send_email(email, f"{code} is your AcademicOS sign-in code",
                    f"Your sign-in code is {code}. It works once, for 10 minutes.\n\n"
-                   "If you did not ask for it, ignore this email.")
-    return {"detail": "If this email belongs to a student or parent account, a code is on its way. "
+                   "If you did not ask for it, ignore this email: nobody can sign in without the code.")
+    return {"detail": "If this email has an account that can sign in with a code, the code is on its way. "
                       "It works for 10 minutes."}
 
 
@@ -126,6 +132,7 @@ def verify_code(req: CodeVerify, request: Request):
     s = _store()
     email = req.email.strip().lower()
     _limit(_verify_limiter, request, email)
+    _daily_verify_limiter.check(f"email:{email}")
     user = auth_routes._require().get_by_email(email)
     if user is None or user.role not in ROLES or not s.check_code(email, req.code.strip()):
         raise HTTPException(401, "that code is not right or has expired; ask for a new one")
