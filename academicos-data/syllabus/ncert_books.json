@@ -1,5 +1,5 @@
 {
- "source": "NCERT textbooks, Reprint 2026-27: classes 1-5 chapter names as each book's contents page prints them (numbered lessons; a starred read-only piece is not a chapter), with topics from the chapter's transcription where one was made. Classes 6-9 are not listed yet: their chapter transcriptions are partial, and a partial list would hide chapters.",
+ "source": "NCERT textbooks, Reprint 2026-27: chapter names as each book's contents page prints them (numbered lessons; a starred or read-only piece is not a chapter), with topics from the chapter's transcription where one was made. Every class 1-5 book, and the class 6-9 Hindi books, whose contents trees are missing (Malhar) or garbled (Ganga). Other class 6-9 books take their chapters from academicos-data/syllabus/taxonomy.",
  "builtAt": "2026-10-04T00:00:00+00:00",
  "classes": {
   "EVS|3": {
@@ -2054,6 +2054,468 @@
      "name": "गंगा की कहानी",
      "book": "ehve1",
      "bookTitle": "Veena",
+     "number": 12,
+     "topics": []
+    }
+   ]
+  },
+  "Hindi|6": {
+   "chapters": [
+    {
+     "id": "hindi-6/मातृभूमि",
+     "name": "मातृभूमि",
+     "book": "fhml1",
+     "bookTitle": "Malhar",
+     "number": 1,
+     "topics": [
+      {
+       "id": "t1",
+       "title": "मातृभूमि"
+      },
+      {
+       "id": "t2",
+       "title": "कवि से परिचय"
+      },
+      {
+       "id": "t3",
+       "title": "झरोखे से"
+      },
+      {
+       "id": "t4",
+       "title": "पढ़ने के लिए"
+      }
+     ]
+    },
+    {
+     "id": "hindi-6/गोल",
+     "name": "गोल",
+     "book": "fhml1",
+     "bookTitle": "Malhar",
+     "number": 2,
+     "topics": [
+      {
+       "id": "t1",
+       "title": "गोल"
+      },
+      {
+       "id": "t2",
+       "title": "डाँडी या गोथा"
+      },
+      {
+       "id": "t3",
+       "title": "एक ददौड़ ऐसी भी"
+      }
+     ]
+    },
+    {
+     "id": "hindi-6/पहली-बूँद",
+     "name": "पहली बूँद",
+     "book": "fhml1",
+     "bookTitle": "Malhar",
+     "number": 3,
+     "topics": []
+    },
+    {
+     "id": "hindi-6/हार-की-जीत",
+     "name": "हार की जीत",
+     "book": "fhml1",
+     "bookTitle": "Malhar",
+     "number": 4,
+     "topics": []
+    },
+    {
+     "id": "hindi-6/रहीम-के-दोहे",
+     "name": "रहीम के दोहे",
+     "book": "fhml1",
+     "bookTitle": "Malhar",
+     "number": 5,
+     "topics": []
+    },
+    {
+     "id": "hindi-6/मेरी-माँ",
+     "name": "मेरी माँ",
+     "book": "fhml1",
+     "bookTitle": "Malhar",
+     "number": 6,
+     "topics": []
+    },
+    {
+     "id": "hindi-6/जलाते-चलो",
+     "name": "जलाते चलो",
+     "book": "fhml1",
+     "bookTitle": "Malhar",
+     "number": 7,
+     "topics": []
+    },
+    {
+     "id": "hindi-6/सत्रिया-और-बिहू-नृत्य",
+     "name": "सत्रिया और बिहू नृत्य",
+     "book": "fhml1",
+     "bookTitle": "Malhar",
+     "number": 8,
+     "topics": []
+    },
+    {
+     "id": "hindi-6/मैया-मैं-नहिं-माखन-खायो",
+     "name": "मैया मैं नहिं माखन खायो",
+     "book": "fhml1",
+     "bookTitle": "Malhar",
+     "number": 9,
+     "topics": []
+    },
+    {
+     "id": "hindi-6/परीक्षा",
+     "name": "परीक्षा",
+     "book": "fhml1",
+     "bookTitle": "Malhar",
+     "number": 10,
+     "topics": []
+    },
+    {
+     "id": "hindi-6/चेतक-की-वीरता",
+     "name": "चेतक की वीरता",
+     "book": "fhml1",
+     "bookTitle": "Malhar",
+     "number": 11,
+     "topics": []
+    },
+    {
+     "id": "hindi-6/हिंद-महासागर-में-छोटा-सा-हिंदुस्तान",
+     "name": "हिंद महासागर में छोटा-सा हिंदुस्तान",
+     "book": "fhml1",
+     "bookTitle": "Malhar",
+     "number": 12,
+     "topics": []
+    },
+    {
+     "id": "hindi-6/पेड़-की-बात",
+     "name": "पेड़ की बात",
+     "book": "fhml1",
+     "bookTitle": "Malhar",
+     "number": 13,
+     "topics": []
+    }
+   ]
+  },
+  "Hindi|7": {
+   "chapters": [
+    {
+     "id": "hindi-7/माँ-कह-एक-कहानी",
+     "name": "माँ, कह एक कहानी",
+     "book": "ghml1",
+     "bookTitle": "Malhar",
+     "number": 1,
+     "topics": [
+      {
+       "id": "t1",
+       "title": "माँ, कह एक कहानी"
+      },
+      {
+       "id": "t2",
+       "title": "किव से पįरचय"
+      }
+     ]
+    },
+    {
+     "id": "hindi-7/तीन-बुद्धिमान",
+     "name": "तीन बुद्धिमान",
+     "book": "ghml1",
+     "bookTitle": "Malhar",
+     "number": 2,
+     "topics": []
+    },
+    {
+     "id": "hindi-7/फूल-और-काँटा",
+     "name": "फूल और काँटा",
+     "book": "ghml1",
+     "bookTitle": "Malhar",
+     "number": 3,
+     "topics": []
+    },
+    {
+     "id": "hindi-7/पानी-रे-पानी",
+     "name": "पानी रे पानी",
+     "book": "ghml1",
+     "bookTitle": "Malhar",
+     "number": 4,
+     "topics": []
+    },
+    {
+     "id": "hindi-7/नहीं-होना-बीमार",
+     "name": "नहीं होना बीमार",
+     "book": "ghml1",
+     "bookTitle": "Malhar",
+     "number": 5,
+     "topics": []
+    },
+    {
+     "id": "hindi-7/गिरिधर-कविराय-की-कुंडलिया",
+     "name": "गिरिधर कविराय की कुंडलिया",
+     "book": "ghml1",
+     "bookTitle": "Malhar",
+     "number": 6,
+     "topics": []
+    },
+    {
+     "id": "hindi-7/वर्षा-बहार",
+     "name": "वर्षा-बहार",
+     "book": "ghml1",
+     "bookTitle": "Malhar",
+     "number": 7,
+     "topics": []
+    },
+    {
+     "id": "hindi-7/बिरजू-महाराज-से-साक्षात्कार",
+     "name": "बिरजू महाराज से साक्षात्कार",
+     "book": "ghml1",
+     "bookTitle": "Malhar",
+     "number": 8,
+     "topics": []
+    },
+    {
+     "id": "hindi-7/चिड़िया",
+     "name": "चिड़िया",
+     "book": "ghml1",
+     "bookTitle": "Malhar",
+     "number": 9,
+     "topics": []
+    },
+    {
+     "id": "hindi-7/मीरा-के-पद",
+     "name": "मीरा के पद",
+     "book": "ghml1",
+     "bookTitle": "Malhar",
+     "number": 10,
+     "topics": []
+    }
+   ]
+  },
+  "Hindi|8": {
+   "chapters": [
+    {
+     "id": "hindi-8/स्वदेश",
+     "name": "स्वदेश",
+     "book": "hhml1",
+     "bookTitle": "Malhar",
+     "number": 1,
+     "topics": [
+      {
+       "id": "t1",
+       "title": "स्वदेश"
+      },
+      {
+       "id": "t2",
+       "title": "कवि से परिचय"
+      }
+     ]
+    },
+    {
+     "id": "hindi-8/दो-गौरैया",
+     "name": "दो गौरैया",
+     "book": "hhml1",
+     "bookTitle": "Malhar",
+     "number": 2,
+     "topics": [
+      {
+       "id": "t1",
+       "title": "दो गौरैया"
+      },
+      {
+       "id": "t2",
+       "title": "लेखक से परिचय"
+      },
+      {
+       "id": "t3",
+       "title": "झरोखे से"
+      },
+      {
+       "id": "t4",
+       "title": "पढ़ने के लिए"
+      }
+     ]
+    },
+    {
+     "id": "hindi-8/एक-आशीर्वाद",
+     "name": "एक आशीर्वाद",
+     "book": "hhml1",
+     "bookTitle": "Malhar",
+     "number": 3,
+     "topics": []
+    },
+    {
+     "id": "hindi-8/हरिद्वार",
+     "name": "हरिद्वार",
+     "book": "hhml1",
+     "bookTitle": "Malhar",
+     "number": 4,
+     "topics": []
+    },
+    {
+     "id": "hindi-8/कबीर-के-दोहे",
+     "name": "कबीर के दोहे",
+     "book": "hhml1",
+     "bookTitle": "Malhar",
+     "number": 5,
+     "topics": []
+    },
+    {
+     "id": "hindi-8/एक-टोकरी-भर-मिट्टी",
+     "name": "एक टोकरी भर मिट्टी",
+     "book": "hhml1",
+     "bookTitle": "Malhar",
+     "number": 6,
+     "topics": []
+    },
+    {
+     "id": "hindi-8/मत-बाँधो",
+     "name": "मत बाँधो",
+     "book": "hhml1",
+     "bookTitle": "Malhar",
+     "number": 7,
+     "topics": []
+    },
+    {
+     "id": "hindi-8/नए-मेहमान",
+     "name": "नए मेहमान",
+     "book": "hhml1",
+     "bookTitle": "Malhar",
+     "number": 8,
+     "topics": []
+    },
+    {
+     "id": "hindi-8/आदमी-का-अनुपात",
+     "name": "आदमी का अनुपात",
+     "book": "hhml1",
+     "bookTitle": "Malhar",
+     "number": 9,
+     "topics": []
+    },
+    {
+     "id": "hindi-8/तरुण-के-स्वप्न",
+     "name": "तरुण के स्वप्न",
+     "book": "hhml1",
+     "bookTitle": "Malhar",
+     "number": 10,
+     "topics": []
+    }
+   ]
+  },
+  "Hindi|9": {
+   "chapters": [
+    {
+     "id": "hindi-9/दो-बैलों-की-कथा",
+     "name": "दो बैलों की कथा",
+     "book": "ihga1",
+     "bookTitle": "Ganga",
+     "number": 1,
+     "topics": [
+      {
+       "id": "t1",
+       "title": "1"
+      },
+      {
+       "id": "t2",
+       "title": "2"
+      },
+      {
+       "id": "t3",
+       "title": "3"
+      },
+      {
+       "id": "t4",
+       "title": "4"
+      },
+      {
+       "id": "t5",
+       "title": "5"
+      }
+     ]
+    },
+    {
+     "id": "hindi-9/क्-या-लिखूँ",
+     "name": "क्या लिखूँ?",
+     "book": "ihga1",
+     "bookTitle": "Ganga",
+     "number": 2,
+     "topics": []
+    },
+    {
+     "id": "hindi-9/संवा-दहीन",
+     "name": "संवादहीन",
+     "book": "ihga1",
+     "bookTitle": "Ganga",
+     "number": 3,
+     "topics": []
+    },
+    {
+     "id": "hindi-9/ऐसी-भी-बातें-होती-हैं",
+     "name": "ऐसी भी बातें होती हैं",
+     "book": "ihga1",
+     "bookTitle": "Ganga",
+     "number": 4,
+     "topics": []
+    },
+    {
+     "id": "hindi-9/आखिरी-चट्टा-न-त-क",
+     "name": "आखिरी चट्टान तक",
+     "book": "ihga1",
+     "bookTitle": "Ganga",
+     "number": 5,
+     "topics": []
+    },
+    {
+     "id": "hindi-9/रीढ़-की-हड्-डी",
+     "name": "रीढ़ की हड्डी",
+     "book": "ihga1",
+     "bookTitle": "Ganga",
+     "number": 6,
+     "topics": []
+    },
+    {
+     "id": "hindi-9/मैं-और-मेरा-देश",
+     "name": "मैं और मेरा देश",
+     "book": "ihga1",
+     "bookTitle": "Ganga",
+     "number": 7,
+     "topics": []
+    },
+    {
+     "id": "hindi-9/पद",
+     "name": "पद",
+     "book": "ihga1",
+     "bookTitle": "Ganga",
+     "number": 8,
+     "topics": []
+    },
+    {
+     "id": "hindi-9/राम-लक्ष्मण-परशुराम-संवाद",
+     "name": "राम-लक्ष्मण-परशुराम संवाद",
+     "book": "ihga1",
+     "bookTitle": "Ganga",
+     "number": 9,
+     "topics": []
+    },
+    {
+     "id": "hindi-9/भा-रति-जय-विजयकरे",
+     "name": "भारति, जय, विजयकरे!",
+     "book": "ihga1",
+     "bookTitle": "Ganga",
+     "number": 10,
+     "topics": []
+    },
+    {
+     "id": "hindi-9/झाँ-सी-की-रा-नी",
+     "name": "झाँसी की रानी",
+     "book": "ihga1",
+     "bookTitle": "Ganga",
+     "number": 11,
+     "topics": []
+    },
+    {
+     "id": "hindi-9/घर-की-या-द",
+     "name": "घर की याद",
+     "book": "ihga1",
+     "bookTitle": "Ganga",
      "number": 12,
      "topics": []
     }

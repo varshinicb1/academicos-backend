@@ -28,11 +28,14 @@ than erroring or creating duplicates.
 """
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field as dataclass_field
 from typing import Optional
 
+from ..syllabus import cbse_syllabus
 from ..syllabus.cbse_syllabus import (_FILENAME_BY_SUBJECT, SyllabusChapter, SyllabusDocument, SyllabusUnit,
-                                      _slug, load_syllabus, taxonomy_chapters)
+                                      _slug, book_chapters, load_syllabus, taxonomy_chapters)
 from . import decomposition_templates as templates
 from .store import CurriculumStore
 
@@ -85,8 +88,13 @@ def _name_key(text: str) -> str:
 
 
 def book_chapters_for(subject: str, grade: int, doc: SyllabusDocument) -> list[SyllabusChapter]:
-    """The book's own chapters in book order: the taxonomy file (the
+    """The book's own chapters in book order: the whole book as its contents
+    page prints it (ncert_books.json: every class 1-5 book, and Hindi 6-9,
+    whose contents trees are missing or garbled), else the taxonomy file (the
     textbook's contents pages), else the syllabus file's top-level list."""
+    listed = book_chapters(subject, grade)
+    if listed:
+        return [SyllabusChapter(id=c["id"], name=c["name"]) for c in listed]
     contents = taxonomy_chapters(subject, grade)
     if contents:
         return [SyllabusChapter(id=cid, name=name) for cid, name in contents.items()]
@@ -113,6 +121,51 @@ def units_holding_book_chapters(subject: str, grade: int, doc: SyllabusDocument,
         placed[unit.unit_no].append(c)
     return [SyllabusUnit(unit_no=u.unit_no, name=u.name, marks=u.marks, chapters=tuple(placed[u.unit_no]))
             for u in doc.units]
+
+
+# The unit of a language syllabus that is the textbook ("Poorvi Textbook",
+# "Literature", "Pathyapustak Vasant"); its other units are skills (reading,
+# grammar, writing) taught from no book chapter.
+_TEXTBOOK_UNIT = re.compile(r"textbook|literature|pathyapustak", re.IGNORECASE)
+LANGUAGES = ("English", "Hindi")
+
+
+def _book_title(subject: str, grade: int) -> Optional[str]:
+    listed = book_chapters(subject, grade)
+    if listed:
+        return listed[0].get("bookTitle")
+    path = cbse_syllabus._DATA_DIR / "taxonomy" / f"{subject.strip().replace(' ', '_')}_{grade}.json"
+    return json.loads(path.read_text(encoding="utf-8")).get("book") if path.exists() else None
+
+
+def units_with_the_current_book(subject: str, grade: int, doc: SyllabusDocument,
+                                book: list[SyllabusChapter]) -> Optional[list[SyllabusUnit]]:
+    """The units to seed when the syllabus file's chapters are not the book a
+    school teaches from now, or None when they are.
+
+    Measured 2026-10-04: Social Science 7-9 seeded 0 chapters of the current
+    book (Our Pasts, not Exploring Society), Social Science 6 missed 4 of its
+    14, and English and Hindi 6-9 seeded only skill headings ("Reading
+    Comprehension", "Vasant Bhag 2 (Kavita evam Kahani)"), no lesson at all.
+
+    A language keeps its skill units and its textbook unit holds the book's
+    lessons, named after the book; any other subject takes the book's
+    chapters the way D118 does (units_holding_book_chapters)."""
+    listed = [c for u in doc.units for c in u.chapters]
+    if not book or not listed:
+        return None
+    if {_name_key(c.name) for c in listed} >= {_name_key(c.name) for c in book}:
+        return None
+    if subject in LANGUAGES:
+        holders = [u for u in doc.units if _TEXTBOOK_UNIT.search(u.name)]
+        if len(holders) != 1:
+            return None
+        title = _book_title(subject, grade)
+        return [SyllabusUnit(unit_no=u.unit_no, marks=u.marks,
+                             name=(f"Textbook: {title}" if title else u.name) if u is holders[0] else u.name,
+                             chapters=tuple(book) if u is holders[0] else u.chapters)
+                for u in doc.units]
+    return units_holding_book_chapters(subject, grade, doc, book)
 
 
 @dataclass
@@ -236,6 +289,9 @@ def seed_cbse_grade(store: CurriculumStore, *, school_id: str,
             # course structure places them (units_holding_book_chapters).
             units = units_holding_book_chapters(subject_name, grade_number, doc,
                                                 book_chapters_for(subject_name, grade_number, doc))
+        else:
+            units = units_with_the_current_book(subject_name, grade_number, doc,
+                                                book_chapters_for(subject_name, grade_number, doc)) or units
         for unit_seq, u in enumerate(units):
             unit_canonical_id = f"{prefix}:unit:{u.unit_no}"
             unit = store.get_unit_by_canonical_id(unit_canonical_id)

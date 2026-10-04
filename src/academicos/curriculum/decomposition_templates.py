@@ -57,8 +57,11 @@ CONTENTS_FROM_GRADE = 6
 # Below class 6 a chapter is proposed whole: one topic and one subtopic of the
 # chapter's own name, the smallest piece these books name. Without it a class
 # 1-5 chapter had no subtopic, so no plan could date it; a teacher can still
-# divide it.
+# divide it. So is a language lesson at any class (one story or poem; the
+# English 6-9 contents trees list no sections below a lesson) and a language
+# skill row ("Reading Comprehension").
 BOOK_CHAPTER_PROVENANCE = PROVENANCE_PREFIX + "ncert-book-chapter"
+WHOLE_CHAPTER_SUBJECTS = ("English", "Hindi")
 
 
 @dataclass(frozen=True)
@@ -221,9 +224,13 @@ def apply_template(store: CurriculumStore, *, school_id: str, book_id: str,
 
     for chapter in chapters:
         slug = chapter_slug(chapter) or ""
-        entry = ((tpl.chapters.get(slug) if tpl else None)
-                 or (contents.chapters.get(slug) if contents else None)
-                 or (_whole_chapter(chapter, slug) if grade < CONTENTS_FROM_GRADE else None))
+        # The first source that divides the chapter: an entry with no topics (an
+        # English 6-9 lesson in its contents tree) does not stop the next one.
+        entry = next((e for e in ((tpl.chapters.get(slug) if tpl else None),
+                                  (contents.chapters.get(slug) if contents else None))
+                      if e is not None and e.topics), None)
+        if entry is None and (grade < CONTENTS_FROM_GRADE or subject in WHOLE_CHAPTER_SUBJECTS):
+            entry = _whole_chapter(chapter, slug)
         if entry is None or not entry.topics:
             no_source.append(chapter.name)
             continue
