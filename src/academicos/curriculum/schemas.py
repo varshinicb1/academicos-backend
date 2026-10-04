@@ -397,6 +397,10 @@ class HolidayResponse(Camel):
     # could not be moved (no cadence to reflow them on), named.
     lessons_moved: Optional[int] = None
     not_moved: Optional[list[str]] = None
+    # Lessons the change pushed past the year's last teaching period: their
+    # subtopics now have no day (the term report counts them). Said, not
+    # dropped without a word; removing the day gives them back.
+    lessons_dropped: Optional[int] = None
 
 
 class TermRequest(Camel):

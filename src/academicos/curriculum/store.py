@@ -2182,6 +2182,20 @@ class CurriculumStore(SchoolModelMixin, TeachingGroupsMixin, CoverMixin, SchoolP
 
     # ---------------- management reporting & variance (§17, §32) ----------------
 
+    def undated_subtopic_count(self, academic_year_id: str, book_id: str, section_id: Optional[str]) -> int:
+        """The book's subtopics that have no day anywhere in this plan (the
+        section's own when `section_id` is given, else the class-wide one):
+        never given a lesson, or their lesson lost its day ('unscheduled')
+        when the periods ran out before the year ended (D35)."""
+        row = self._fetchone(
+            "SELECT COUNT(*) AS n FROM subtopics st JOIN topics tp ON st.topic_id = tp.id "
+            "JOIN chapters ch ON tp.chapter_id = ch.id JOIN units u ON ch.unit_id = u.id "
+            "WHERE u.book_id = ? AND NOT EXISTS (SELECT 1 FROM scheduled_lessons l "
+            "  WHERE l.subtopic_id = st.id AND l.book_id = u.book_id AND l.academic_year_id = ? "
+            "  AND l.section_id IS ? AND l.status != 'unscheduled')",
+            (book_id, academic_year_id, section_id))
+        return int(row["n"]) if row else 0
+
     def get_coverage_report(self, *, school_id: str, academic_year_id: str,
                             as_of_date: Optional[str] = None, from_date: Optional[str] = None,
                             to_date: Optional[str] = None) -> dict[str, Any]:

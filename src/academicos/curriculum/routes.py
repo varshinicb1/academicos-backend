@@ -1349,11 +1349,11 @@ def add_holiday(academic_year_id: str, req: AddHolidayRequest,
     if req.kind == calendar_mod.WORKING_DAY and any(
             h.kind == calendar_mod.WORKING_DAY and h.date == req.date for h in store.holidays_for_calendar(cal.id)):
         raise HTTPException(409, f"{req.date} is already a working day on the calendar; remove it to change it")
-    h, moved, not_moved = declare_holiday(store, year, cal, date=req.date, label=req.label, kind=req.kind,
-                                          end_date=req.end_date, principal=principal, move_lessons=req.move_lessons,
-                                          last_period=req.last_period, grades=req.grades,
-                                          timetable_weekday=req.timetable_weekday)
-    return _holiday_response(h, lessons_moved=moved, not_moved=not_moved)
+    h, moved, not_moved, dropped = declare_holiday(
+        store, year, cal, date=req.date, label=req.label, kind=req.kind, end_date=req.end_date,
+        principal=principal, move_lessons=req.move_lessons, last_period=req.last_period, grades=req.grades,
+        timetable_weekday=req.timetable_weekday)
+    return _holiday_response(h, lessons_moved=moved, not_moved=not_moved, lessons_dropped=dropped)
 
 
 def _holiday_response(h, **extra) -> HolidayResponse:
@@ -1370,14 +1370,15 @@ def declare_holiday(store: CurriculumStore, year, cal, *, date: str, label: str,
     lessons on it and tell the people affected. One path for the holiday
     route and the Excel/CSV import (N-8-6: the import used to add the day
     only, leaving lessons dated on it and telling no one). Returns (holiday,
-    lessons moved, plans not moved); the counts are None when nothing moved.
+    lessons moved, plans not moved, lessons that no longer fit before the
+    year ends); the counts are None when nothing moved.
 
     A day that runs differently (a half day, an exam window, a compensatory
     working day: N-3-19) re-lays the plans it touches instead."""
     h = store.add_holiday(calendar_id=cal.id, date=date, label=label, kind=kind, end_date=end_date,
                           last_period=last_period, grades=grades, timetable_weekday=timetable_weekday)
     if not move_lessons or h.kind == "event":
-        return h, None, None
+        return h, None, None, None
     if h.kind in calendar_mod.DAY_KINDS:
         return (h, *_reflow_for_calendar_day(store, year, h, principal.id))
     return (h, *_move_lessons_off_holiday(store, year, h, principal))
@@ -1388,34 +1389,37 @@ _DAY_KIND_NAMES = {calendar_mod.HALF_DAY: "half day", calendar_mod.EXAM_WINDOW: 
 
 
 def _reflow_for_calendar_day(store: CurriculumStore, year, day, actor_id: str, *,
-                             removed: bool = False) -> tuple[int, list[str]]:
+                             removed: bool = False) -> tuple[int, list[str], int]:
     """A half day, an exam window or a compensatory working day changes which
     periods teach (N-3-19), so each plan it touches is laid again from the
     day on, onto the periods that now happen (scheduling.reflow_plan, the
     move a lost period makes): a lesson in a period a half day cuts, or in
     an exam window of its class, moves to the plan's next period, and a
     compensatory day takes the next lessons. Removing the day (`removed`)
-    lays them back. From the school's today on: a passed day is the record.
-    Returns (lessons moved, plans that could not be moved, named)."""
+    lays them back, a holiday's too, and a lesson an earlier change left
+    without a day takes a freed period again. From the school's today on: a
+    passed day is the record. Returns (lessons moved, plans that could not
+    be moved, named, lessons that no longer fit before the year ends)."""
     from ..assessment.audit_log import get_audit_log
     first = max(day.date, _school_today().isoformat())
     last = day.end_date or day.date
     if first > last:
-        return 0, []
+        return 0, [], 0
     if removed or day.kind == calendar_mod.WORKING_DAY:
-        # Every plan with a lesson still ahead: the lessons after the day move.
+        # Every plan with a lesson still ahead, or one left without a day:
+        # the lessons after the day move, and the dayless take freed periods.
         plans = store._fetchall(
             "SELECT DISTINCT book_id, section_id FROM scheduled_lessons WHERE academic_year_id=? "
-            "AND status='scheduled' AND date>=?", (year.id, first))
+            "AND ((status='scheduled' AND date>=?) OR status='unscheduled')", (year.id, first))
     else:
         plans = store._fetchall(
             "SELECT DISTINCT book_id, section_id FROM scheduled_lessons WHERE academic_year_id=? "
             "AND status='scheduled' AND date>=? AND date<=?", (year.id, first, last))
     if day.kind == calendar_mod.EXAM_WINDOW and day.grades:
         plans = [p for p in plans if calendar_mod.grade_number_for_book(store, p["book_id"]) in day.grades]
-    reason = f"{_DAY_KIND_NAMES[day.kind]}{' removed' if removed else ''}: {day.label}"
+    reason = f"{_DAY_KIND_NAMES.get(day.kind, 'holiday')}{' removed' if removed else ''}: {day.label}"
     audit = get_audit_log(_cfg.data_root)
-    moved, not_moved = 0, []
+    moved, not_moved, dropped = 0, [], 0
     for plan in plans:
         try:
             result = scheduling_mod.reflow_plan(store, audit, academic_year_id=year.id, book_id=plan["book_id"],
@@ -1426,13 +1430,15 @@ def _reflow_for_calendar_day(store: CurriculumStore, year, day, actor_id: str, *
             not_moved.append(f"{book.title if book else plan['book_id']}: {e}")
             continue
         moved += result.lessons_pushed
-    return moved, not_moved
+        dropped += len(result.lessons_dropped)
+    return moved, not_moved, dropped
 
 
 HOLIDAY_NOTICE_DAYS = 14
 
 
-def _move_lessons_off_holiday(store: CurriculumStore, year, holiday, principal: User) -> tuple[int, list[str]]:
+def _move_lessons_off_holiday(store: CurriculumStore, year, holiday,
+                              principal: User) -> tuple[int, list[str], int]:
     """NTF-3: holiday declared -> the plans reflow -> the people affected
     hear. Every plan (book, and section when the plan is a section's) with a
     lesson still to teach on the holiday's days, from the school's today on,
@@ -1445,12 +1451,12 @@ def _move_lessons_off_holiday(store: CurriculumStore, year, holiday, principal: 
     first = max(holiday.date, _school_today().isoformat())
     last = holiday.end_date or holiday.date
     if first > last:
-        return 0, []
+        return 0, [], 0
     plans = store._fetchall(
         "SELECT DISTINCT book_id, section_id FROM scheduled_lessons WHERE academic_year_id=? AND status='scheduled'"
         " AND date>=? AND date<=?", (year.id, first, last))
     dates = holiday.date if not holiday.end_date else f"{holiday.date} to {holiday.end_date}"
-    moved_total, not_moved = 0, []
+    moved_total, not_moved, dropped_total = 0, [], 0
     told: set[str] = set()
     for plan in plans:
         book = store.get_book(plan["book_id"])
@@ -1459,14 +1465,17 @@ def _move_lessons_off_holiday(store: CurriculumStore, year, holiday, principal: 
                     else [s.id for s in store.sections_for_grade(subject.grade_id)] if subject else [])
         label = ", ".join(store._section_label(store.get_section(s)) for s in sections) or (book.title if book else "")
         try:
+            # The holiday is on the calendar already, so its days are no
+            # teaching periods: the push must not give up the next day too.
             result = scheduling_mod.push_lessons_after(
                 store, get_audit_log(_cfg.data_root), academic_year_id=year.id, book_id=plan["book_id"],
                 from_date=first, reason=f"holiday: {holiday.label}", changed_by=principal.id,
-                section_id=plan["section_id"])
+                section_id=plan["section_id"], skip_disruption_day=False)
         except ValueError as e:
             not_moved.append(f"{subject.name if subject else plan['book_id']} ({label}): {e}")
             continue
         moved_total += result.lessons_pushed
+        dropped_total += len(result.lessons_dropped)
         teachers = {a.teacher_id for s in sections
                     for a in [store.allocation_for(s, subject.id) if subject else None] if a and a.teacher_id}
         students = {e.student_id for s in sections for e in store.enrollments_for_section(s)}
@@ -1498,7 +1507,7 @@ def _move_lessons_off_holiday(store: CurriculumStore, year, holiday, principal: 
                               student_ids=[u.id for u in people if u.role == "student"],
                               params={"label": holiday.label, "dates": dates, "moved": "", "moved_hi": ""},
                               dedupe_key=f"holiday:{holiday.id}", exclude=told)
-    return moved_total, not_moved
+    return moved_total, not_moved, dropped_total
 
 
 @router.delete("/academic-years/{academic_year_id}/holidays/{holiday_id}")
@@ -1515,10 +1524,15 @@ def delete_holiday(academic_year_id: str, holiday_id: str,
     if cal is None or h is None or h.calendar_id != cal.id:
         raise HTTPException(404, "holiday not found in this academic year's calendar")
     store.remove_holiday(holiday_id)
-    if h.kind in calendar_mod.DAY_KINDS:
-        # The plans were laid around the day (N-3-19): lay them back.
-        _reflow_for_calendar_day(store, store.get_academic_year(academic_year_id), h, principal.id, removed=True)
-    return {"ok": True}
+    moved = dropped = 0
+    if h.kind != "event":
+        # The plans were laid around the day (N-3-19), or pushed off the
+        # holiday: lay them back, and the lessons pushed past the year's end
+        # take the freed periods. Until 2026-10-04 a removed holiday left its
+        # lessons where the push had put them, and the dropped ones dayless.
+        moved, _not_moved, dropped = _reflow_for_calendar_day(
+            store, store.get_academic_year(academic_year_id), h, principal.id, removed=True)
+    return {"ok": True, "lessonsMoved": moved, "lessonsDropped": dropped}
 
 
 @router.get("/academic-years/{academic_year_id}/holidays", response_model=list[HolidayResponse])

@@ -511,12 +511,19 @@ def _reflow(store: CurriculumStore, audit_log: AuditLog, *, academic_year_id: st
     move (mode 'unscheduled', no new date), so the lesson's history says
     why it has none.
 
+    An 'unscheduled' lesson comes after every scheduled one (it lost its day
+    at the end of the plan), and takes a period again when one is free: a
+    day given back (a holiday or a half day removed, a working day added)
+    restores the lessons it had pushed past the year's end. Until
+    2026-10-04 they stayed without a day for good.
+
     `from_date` must be a YYYY-MM-DD day (iso_day), and every comparison
     is between dates, not strings (audit D116)."""
     from_day = iso_day(from_date)
-    on_or_after = [l for l in store.scheduled_lessons_for_book(academic_year_id, book_id, section_id)
-                   if date.fromisoformat(l.date) >= from_day]
-    affected = [l for l in on_or_after if l.status == "scheduled"]   # date, then delivery order
+    lessons = store.scheduled_lessons_for_book(academic_year_id, book_id, section_id)
+    on_or_after = [l for l in lessons if date.fromisoformat(l.date) >= from_day]
+    affected = ([l for l in on_or_after if l.status == "scheduled"]          # date, then delivery order
+                + [l for l in lessons if l.status == "unscheduled"])        # the plan's tail, in order
     if not affected:
         return [], []
     held = Counter(l.date for l in on_or_after if l.status in RECORDED_STATUSES)
@@ -544,10 +551,18 @@ def _reflow(store: CurriculumStore, audit_log: AuditLog, *, academic_year_id: st
     dropped: list[str] = []
     for i, lesson in enumerate(affected):
         if i >= len(free):
+            if lesson.status == "unscheduled":
+                continue        # already without a day, and already logged
             store.mark_lesson_unscheduled(lesson.id)
             _log_reschedule(audit_log, lesson=lesson, new_date=None, reason=reason,
                             mode="unscheduled", changed_by=changed_by)
             dropped.append(lesson.id)
+            continue
+        if lesson.status == "unscheduled":
+            # A period is free again: the lesson gets its day back.
+            store.reschedule_lesson_date(lesson.id, new_date=free[i], status="scheduled")
+            moves.append(_log_reschedule(audit_log, lesson=lesson, new_date=free[i], reason=reason,
+                                         mode="push", changed_by=changed_by))
             continue
         if free[i] == lesson.date:
             continue
@@ -594,7 +609,7 @@ class PushResult:
 def push_lessons_after(
     store: CurriculumStore, audit_log: AuditLog, *, academic_year_id: str, book_id: str,
     from_date: str, reason: str, changed_by: str, periods_per_week: Optional[int] = None,
-    section_id: Optional[str] = None,
+    section_id: Optional[str] = None, skip_disruption_day: bool = True,
 ) -> PushResult:
     """PUSH: real disruption handling -- "today just became a holiday" (or
     any other reason a day at/after from_date is lost). Every lesson still
@@ -619,11 +634,17 @@ def push_lessons_after(
     past the calendar's real end date or left holding a day.
 
     `from_date` that is not a YYYY-MM-DD day is a ValueError (the route's
-    422) before anything moves (audit D116)."""
+    422) before anything moves (audit D116).
+
+    `skip_disruption_day` False is for a day the calendar already took away
+    (a declared holiday): its periods are off the list, so giving up the next
+    teaching day as well lost one more (a Monday holiday moved a weekly plan
+    two weeks on, until 2026-10-04)."""
     iso_day(from_date)
     cadence = _resolve_cadence(store, academic_year_id, book_id, periods_per_week, section_id)
     moves, dropped = _reflow(store, audit_log, academic_year_id=academic_year_id, book_id=book_id,
-                             periods_per_week=cadence, from_date=from_date, skip_disruption_day=True,
+                             periods_per_week=cadence, from_date=from_date,
+                             skip_disruption_day=skip_disruption_day,
                              reason=reason, changed_by=changed_by, section_id=section_id)
     return PushResult(academic_year_id=academic_year_id, book_id=book_id, from_date=from_date,
                       periods_per_week=cadence, lessons_pushed=len(moves),

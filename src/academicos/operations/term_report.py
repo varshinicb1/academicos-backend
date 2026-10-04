@@ -57,6 +57,10 @@ class SyllabusRow(Camel):
     total_lessons: int
     coverage_pct: float
     behind: bool
+    # Subtopics of the book with no day in this year's plan: the periods the
+    # timetable gives cannot hold the syllabus (D35). The plan is not behind
+    # yet, but it cannot finish; 0 when it fits.
+    undated_subtopics: int = 0
 
 
 class Syllabus(Camel):
@@ -64,6 +68,8 @@ class Syllabus(Camel):
     taught_to_date: int
     behind: int
     rows: list[SyllabusRow]
+    # Class-subjects whose plan cannot finish this year (undated subtopics).
+    cannot_finish: int = 0
 
 
 class ExamRow(Camel):
@@ -225,8 +231,9 @@ def _resolve(current: User, term_id: Optional[str]) -> tuple[str, Scope]:
 def _syllabus(current: User, year_id: str, scope: Scope, f: _Filter) -> Syllabus:
     # A term's syllabus is its own lessons, not the year's so far (N-67-6).
     term = (scope.start_date, scope.end_date) if scope.kind == "term" else (None, None)
-    data = cr._require().get_coverage_report(school_id=current.school_id, academic_year_id=year_id,
-                                             as_of_date=scope.as_of, from_date=term[0], to_date=term[1])
+    cs = cr._require()
+    data = cs.get_coverage_report(school_id=current.school_id, academic_year_id=year_id,
+                                  as_of_date=scope.as_of, from_date=term[0], to_date=term[1])
     rows = []
     for s in data["subjects"]:
         if not f.keep(s["grade_number"], s["subject_name"], s.get("section_id")):
@@ -235,11 +242,16 @@ def _syllabus(current: User, year_id: str, scope: Scope, f: _Filter) -> Syllabus
             grade=s["grade_number"], section_name=s.get("section_name") and f"{s['grade_number']}-{s['section_name']}",
             subject=s["subject_name"], planned_to_date=s["planned_to_date"], taught_to_date=s["completed_to_date"],
             variance=s["variance"], pace_pct=s["pace_pct"], total_lessons=s["total_lessons"],
-            coverage_pct=s["coverage_pct"], behind=s["variance"] < 0))
-    rows.sort(key=lambda r: (not r.behind, r.variance, r.grade, r.section_name or "", r.subject))
+            coverage_pct=s["coverage_pct"], behind=s["variance"] < 0,
+            # The whole year's plan, whatever the term: a subtopic with no day
+            # anywhere in it is one the class will not be taught (D35).
+            undated_subtopics=cs.undated_subtopic_count(year_id, s["book_id"], s.get("section_id"))))
+    rows.sort(key=lambda r: (not (r.behind or r.undated_subtopics), r.variance, -r.undated_subtopics, r.grade,
+                             r.section_name or "", r.subject))
     return Syllabus(planned_to_date=sum(r.planned_to_date for r in rows),
                     taught_to_date=sum(r.taught_to_date for r in rows),
-                    behind=sum(1 for r in rows if r.behind), rows=rows)
+                    behind=sum(1 for r in rows if r.behind), rows=rows,
+                    cannot_finish=sum(1 for r in rows if r.undated_subtopics))
 
 
 def _exams_and_time(current: User, year_id: str, scope: Scope, school: _School,
@@ -437,6 +449,7 @@ def _tables(r: TermReport) -> list[tuple[str, list[list[Any]]]]:
         ["Lessons planned to date", r.syllabus.planned_to_date],
         ["Lessons taught to date", r.syllabus.taught_to_date],
         ["Class-subjects behind plan", r.syllabus.behind],
+        ["Class-subjects whose plan cannot finish this year", r.syllabus.cannot_finish],
         ["Papers set", r.exams.papers_set],
         ["Class-subjects with no paper yet", len(r.exams.not_yet)],
         ["Class-subjects the question bank has no questions for yet", len(r.exams.no_questions)],
@@ -448,9 +461,9 @@ def _tables(r: TermReport) -> list[tuple[str, list[list[Any]]]]:
         ["Periods lost / made up / still owed", f"{r.cover.lost} / {r.cover.compensated} / {r.cover.owed}"],
     ]
     syllabus = [["Class", "Section", "Subject", "Planned to date", "Taught to date", "Variance", "Pace %",
-                 "Coverage %", "Behind"]] + [
+                 "Coverage %", "Behind", "Subtopics with no date this year"]] + [
         [x.grade, x.section_name or "all", x.subject, x.planned_to_date, x.taught_to_date, x.variance,
-         x.pace_pct, x.coverage_pct, x.behind] for x in r.syllabus.rows]
+         x.pace_pct, x.coverage_pct, x.behind, x.undated_subtopics] for x in r.syllabus.rows]
     exams = ([["Exam", "From", "To", "Status", "Papers"]]
              + [[e.name, e.start_date, e.end_date, e.status, e.papers] for e in r.exams.scheduled]
              + [[""], ["Class", "Subject", "Papers set"]]
