@@ -325,10 +325,17 @@ def my_calendar(days: int = Query(42, ge=1, le=60),
     invigilation duties, exam papers and homework due. The ICS feed carries
     the same; the weekly periods are the timetable's, so they are left out."""
     if current.role not in ("teacher", "principal", "student"):
-        raise HTTPException(403, "the school calendar is for staff and students")
+        raise HTTPException(403, "the school calendar is for staff and students; a parent opens their child's")
+    return calendar_items(current, days)
+
+
+def calendar_items(user: User, days: int) -> list[CalendarItem]:
+    """`user`'s dated school events for the next `days` days: what
+    /my-calendar shows them, and what a parent sees for their child
+    (guardian_routes, SA-6)."""
     today = cr._school_today()
     last = today + timedelta(days=days)
-    items = [e for e in calendar_events(current, today)
+    items = [e for e in calendar_events(user, today)
              if e.kind != "period" and (e.end_day or e.day) >= today and e.day <= last]
     items.sort(key=lambda e: (e.day, e.start or "", e.title))
     return [CalendarItem(kind=e.kind, title=e.title, date=e.day.isoformat(),

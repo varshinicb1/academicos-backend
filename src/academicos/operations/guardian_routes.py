@@ -22,6 +22,7 @@ from ..curriculum.schemas import Camel
 from ..curriculum.cover_routes import DayRowResponse
 from ..curriculum.school_model_routes import MyTimetableResponse
 from .guardians import RELATIONS, Guardianship
+from .calendar_feed import CalendarItem
 from .homework_routes import MyHomeworkDetail, MyHomeworkItem, SubmitRequest
 from .learning_routes import LearningProgressResponse
 from .routes import store
@@ -316,6 +317,18 @@ def child_timetable(student_id: str, current: User = Depends(get_current_user)):
                                   bell_schedule=smr._bell(bell) if bell else None,
                                   entries=[smr._entry(e) for e in entries],
                                   subject_names=_subject_names(e.subject_id for e in entries))
+
+
+@router.get("/children/{student_id}/calendar", response_model=list[CalendarItem])
+def child_calendar(student_id: str, days: int = Query(42, ge=1, le=60),
+                   current: User = Depends(get_current_user)) -> list[CalendarItem]:
+    """The child's school calendar from today, as the child sees it on
+    /my-calendar: holidays, half days, exam windows and papers, homework due
+    (SA-6). A parent had no way to see a holiday: /my-calendar refused them
+    and the day page only said "a holiday, a weekly off, or no timetable"
+    (2026-10-04)."""
+    from .calendar_feed import calendar_items
+    return calendar_items(_my_child(student_id, current), days)
 
 
 @router.get("/children/{student_id}/day", response_model=ChildDayResponse)
