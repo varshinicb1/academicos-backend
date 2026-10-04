@@ -48,6 +48,36 @@ def is_complete(marks: dict[str, float], question_ids) -> bool:
     return bool(qids) and all(q in marks for q in qids)
 
 
+def paper_total(paper) -> int:
+    """What the paper is out of: its sections' marks as printed, so an
+    "attempt any 10 of 12" section counts 10, not 12 (an 80-mark English or
+    Hindi paper was graded out of 94; review 2026-10-04)."""
+    from .paper_store import printed_marks
+    return printed_marks(paper)
+
+
+def paper_score(paper, marks: Optional[dict[str, float]]) -> Optional[float]:
+    """The student's total on `paper`, or None while a mark is missing. A
+    section that prints more questions than are answered needs only that
+    many marked, and counts the best that many: a student who answered 11 of
+    "any 10" is not scored above the section's marks."""
+    from .template_presets import section_attempts
+    if not marks:
+        return None
+    got, scored = 0.0, False
+    for sec in paper.sections:
+        qids = [q.question_id for q in sec.questions]
+        if not qids:
+            continue
+        need = section_attempts(sec)
+        have = sorted((marks[q] for q in qids if q in marks), reverse=True)
+        if len(have) < need:
+            return None
+        got += sum(have[:need])
+        scored = True
+    return got if scored else None
+
+
 class _Req(Camel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
 
@@ -178,15 +208,14 @@ def _roster(section_id: Optional[str], current: User, marked: set[str]) -> list[
 
 def _grid(paper, section_id: Optional[str], current: User) -> MarksGrid:
     qs = _questions(paper)
-    qids = [q.question_id for q in qs]
-    total = sum(q.max_marks for q in qs)
+    total = paper_total(paper)
     marks = ops().marks_for(paper.id)
     absent = ops().absent_for(paper.id)
     rows = []
     for sid, name in _roster(section_id, current, set(marks) | absent):
         m = marks.get(sid, {})
-        complete = sid not in absent and is_complete(m, qids)
-        got = sum(m[q] for q in qids) if complete else None
+        got = None if sid in absent else paper_score(paper, m)
+        complete = got is not None
         pct = round(100 * got / total, 1) if got is not None and total else None
         rows.append(GridRow(student_id=sid, name=name, absent=sid in absent, marks=m, complete=complete, total=got,
                             percent=pct, band=band(pct) if pct is not None else None))
@@ -378,14 +407,11 @@ def _tell_results(paper, assessment, students: set[str], all_marks: dict[str, di
     are not sent again -- so a partly entered total, sent, was the one they
     kept (v3 audit N-2-10)."""
     from ..operations.routes import notify_parents_safely, notify_safely
-    qs = _questions(paper)
-    qids = [q.question_id for q in qs]
-    total = sum(q.max_marks for q in qs)
+    total = paper_total(paper)
     for sid in sorted(students):
-        m = all_marks.get(sid, {})
-        if not is_complete(m, qids):
+        got = paper_score(paper, all_marks.get(sid, {}))
+        if got is None:
             continue
-        got = sum(m[q] for q in qids)
         params = {"title": paper.metadata.assessment_title, "subject": assessment.subject,
                   "marks": f"{got:g} out of {total}"}
         notify_safely(school_id=assessment.school_id, user_ids=[sid], kind="test_marks", params=params,

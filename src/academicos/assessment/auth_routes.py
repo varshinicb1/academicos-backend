@@ -565,6 +565,11 @@ def reset_password(user_id: str, admin: User = Depends(require_admin("users"))) 
         raise HTTPException(403, "change your own password under Settings, not here")
     if user.role == "principal":
         raise HTTPException(403, "the principal's account is changed by the operator, not in the app")
+    # A delegated admin (a teacher with the users grant) resets students and
+    # parents only: a staff member's temporary password would let them sign
+    # in as that colleague, with the colleague's grants (review 2026-10-04).
+    if admin.role != "principal" and user.role not in ("student", "parent"):
+        raise HTTPException(403, "only the principal resets a staff member's password")
     if is_closed(user.role):
         raise HTTPException(409, "this account is closed; reopen it first")
     password = _temporary_password()
@@ -574,8 +579,7 @@ def reset_password(user_id: str, admin: User = Depends(require_admin("users"))) 
     if _cfg is not None:
         from .audit_log import get_audit_log
         get_audit_log(_cfg.data_root).append(
-            "password_reset", actor=admin.id, details={"userId": user.id, "name": user.name,
-                                                        "schoolId": admin.school_id})
+            "password_reset", actor=admin.id, details={"userId": user.id, "schoolId": admin.school_id})
     return PasswordResetResponse(user_id=user.id, name=user.name, temporary_password=password)
 
 
@@ -584,7 +588,15 @@ def change_password(req: PasswordChangeRequest, current: User = Depends(get_curr
     """The signed-in person's own password. Other sessions end; this one
     stays signed in."""
     store = _require()
+    # The current password guards a stolen session from taking the account:
+    # wrong guesses are counted like sign-in's, per account.
+    account = f"password-change-failures:{current.id}"
+    wait = account_failures.blocked(account)
+    if wait is not None:
+        raise HTTPException(429, f"too many wrong passwords; try again in {max(1, round(wait / 60))} minute(s)",
+                            headers={"Retry-After": str(wait)})
     if not store.check_password(current.id, req.current_password):
+        account_failures.record(account)
         raise HTTPException(400, "the current password is not right")
     if len(req.new_password) < 8:
         raise HTTPException(400, "password must be at least 8 characters")

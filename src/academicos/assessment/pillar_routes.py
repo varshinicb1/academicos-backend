@@ -22,7 +22,7 @@ from . import grades
 from . import insights as insights_mod
 from . import mailer as mailer_mod
 from . import remediation as remediation_mod
-from .authz import require_consent, require_own_school, require_school_owns_student
+from .authz import require_consent, require_may_download_paper, require_own_school, require_school_owns_student
 from .authz import require_school_owns_assessment as _authz_require_school_owns_assessment
 from .auth_routes import get_current_user, require_admin, require_principal, require_staff
 from .audit_log import AuditLog, get_audit_log, record_pii_read
@@ -155,14 +155,12 @@ def _require_practice() -> PracticeStore:
     return _practice
 
 
-def _require_school_owns_assessment(assessment_id: str, current: User) -> None:
-    """Thin wrapper over the shared authz.require_school_owns_assessment,
-    kept as a bare function (returns None, not the Assessment) so the two
-    existing call sites below (review_sheet_answer/finalize_sheet_review)
-    don't need to change."""
+def _require_school_owns_assessment(assessment_id: str, current: User):
+    """Thin wrapper over the shared authz.require_school_owns_assessment;
+    returns the assessment (callers that only check may ignore it)."""
     if _assessments is None:
         raise HTTPException(503, "pillar module not initialized")
-    _authz_require_school_owns_assessment(_assessments, assessment_id, current)
+    return _authz_require_school_owns_assessment(_assessments, assessment_id, current)
 
 
 def _users():
@@ -645,7 +643,9 @@ def send_paper(req: SendPaperRequest, current: User = Depends(require_staff)) ->
     paper = _papers().get(req.paper_id)
     if paper is None:
         raise HTTPException(404, f"paper {req.paper_id} not found")
-    _require_school_owns_assessment(paper.assessment_id, current)
+    # Mailing the paper and its key is downloading it: before the exam, only
+    # its author and the principal (review 2026-10-04).
+    require_may_download_paper(_require_school_owns_assessment(paper.assessment_id, current), current)
     cfg, _, _ = _require()
     papers_dir = cfg.artifacts_dir / "papers"
     pdf = papers_dir / f"{req.paper_id}.pdf"

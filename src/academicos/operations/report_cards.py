@@ -86,7 +86,8 @@ def _band(percent: Optional[float]) -> Optional[str]:
 
 
 def _paper_total(paper) -> int:
-    return sum(q.marks for s in paper.sections for q in s.questions)
+    from ..assessment.marks_routes import paper_total
+    return paper_total(paper)
 
 
 def build_card(*, student_id: str, grade: int, school_id: str, start: str, end: str,
@@ -94,7 +95,7 @@ def build_card(*, student_id: str, grade: int, school_id: str, start: str, end: 
     """The card's subjects, from `papers` (the school's generated papers):
     those of the student's class set within [start, end] for which the
     student has marks or was marked absent."""
-    from ..assessment.marks_routes import is_complete
+    from ..assessment.marks_routes import paper_score
     lines: dict[str, SubjectLine] = {}
     for paper in papers:
         m = paper.metadata
@@ -105,12 +106,12 @@ def build_card(*, student_id: str, grade: int, school_id: str, start: str, end: 
         absent = student_id in absent_for(paper.id)
         if marks is None and not absent:
             continue
-        qids = [q.question_id for s in paper.sections for q in s.questions]
-        complete = not absent and is_complete(marks, qids)
+        got = None if absent else paper_score(paper, marks)
+        complete = got is not None
         line = lines.setdefault(m.subject, SubjectLine(subject=m.subject))
         line.papers.append(PaperMark(paper_id=paper.id, title=m.assessment_title,
                                      exam_type=m.exam_type or "custom", set_on=set_on,
-                                     obtained=float(sum(marks[q] for q in qids)) if complete else None,
+                                     obtained=float(got) if complete else None,
                                      maximum=_paper_total(paper), incomplete=not absent and not complete))
     for line in lines.values():
         line.papers.sort(key=lambda p: (EXAM_TYPE_ORDER.index(p.exam_type) if p.exam_type in EXAM_TYPE_ORDER

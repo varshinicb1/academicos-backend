@@ -1093,7 +1093,10 @@ def _objective_scheme(rec: dict, options: dict[str, str], letter: str) -> dict:
     # (`source_reason`, "transcription-unverified"), so dropping it here would
     # refuse every verified transcribed MCQ.
     old_meta = old.get("metadata") or {}
-    for key in ("verifiedBy", "placeVerified", "officialProvenance"):
+    # So does a written question's chapter quote: without it a model-written
+    # MCQ was served as textbook_grounded with no evidence to show a reviewer
+    # (review 2026-10-04).
+    for key in ("verifiedBy", "placeVerified", "officialProvenance", "evidence", "answerSource"):
         if key in old_meta:
             out.setdefault("metadata", {})[key] = old_meta[key]
     return out

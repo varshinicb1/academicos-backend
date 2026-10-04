@@ -477,9 +477,30 @@ class CoverMixin:
             if approve:
                 for d, sec, period, subject_id in self.affected_periods(leave):
                     existing = self._subs_where("date=? AND section_id=? AND period=?", (d, sec.id, period))
-                    if existing:
+                    sub = existing[0] if existing else None
+                    if sub is not None and sub.status == "cancelled":
+                        # The row a cancelled leave left (one per date, section and period) is this
+                        # leave's now. Reused as it was, it kept the old leave id: cancelling this
+                        # leave left the duty live, and a replacement found no periods (re-measure
+                        # 2026-10-04).
+                        self._exec("UPDATE substitutions SET leave_id=?, absent_teacher_id=?, subject_id=?, "
+                                   "substitute_id=NULL, status='open', mode='substitute', note=NULL, "
+                                   "updated_at=? WHERE id=?",
+                                   (leave.id, leave.teacher_id, subject_id, _now(), sub.id))
+                    elif sub is not None and sub.substitute_id == leave.teacher_id:
                         # A duty the teacher had taken: it needs someone else now.
-                        sub = existing[0]
+                        self._exec("UPDATE substitutions SET substitute_id=NULL, status='open', updated_at=?, "
+                                   "note=? WHERE id=?",
+                                   (_now(), "the substitute went on leave", sub.id))
+                    elif sub is not None and sub.absent_teacher_id == leave.teacher_id:
+                        # The teacher's own period, already open for another absence (marked absent
+                        # today): this leave owns it now, and its proposal stands.
+                        if sub.leave_id != leave.id:
+                            self._exec("UPDATE substitutions SET leave_id=?, updated_at=? WHERE id=?",
+                                       (leave.id, _now(), sub.id))
+                        subs.append(self.get_substitution(sub.id))
+                        continue
+                    elif sub is not None:
                         self._exec("UPDATE substitutions SET substitute_id=NULL, status='open', updated_at=?, "
                                    "note=? WHERE id=?",
                                    (_now(), "the substitute went on leave", sub.id))

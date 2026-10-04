@@ -30,12 +30,13 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfgen import canvas as pdfcanvas
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.lib.fonts import addMapping
+from reportlab.platypus import Paragraph as _RLParagraph
 from reportlab.platypus import (
     HRFlowable,
     Image,
     KeepTogether,
     PageBreak,
-    Paragraph,
     SimpleDocTemplate,
     Spacer,
     Table,
@@ -46,6 +47,7 @@ from .duration import format_duration
 from .paper import ALL_OR_NOTHING_NOTE
 from .schemas import GeneratedPaper, GeneratedSectionSchema, SchoolTemplate
 from .template_presets import instructions_for_paper, reads_as_generated
+from .wording import counted
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +70,58 @@ _FONT_CANDIDATES = (
     ("AcademicSans", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
      "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
 )
+
+# Devanagari (Hindi, Sanskrit). Neither DejaVu (the production image) nor
+# Segoe UI has it, so every Hindi paper and key printed as boxes (review
+# 2026-10-04). A run of Devanagari is set in a face that has it; with
+# uharfbuzz installed ReportLab shapes the run, so conjuncts and the i-matra
+# sit where they belong. TTC entries carry a subfont index.
+_DEVA_FONT = ""  # the registered name, once registered
+_DEVA_FONT_PATH = ""
+_DEVA_CANDIDATES = (
+    ("AcademicDeva", "/usr/share/fonts/truetype/lohit-devanagari/Lohit-Devanagari.ttf", 0),
+    ("AcademicDeva", "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf", 0),
+    ("AcademicDeva", r"C:\Windows\Fonts\Nirmala.ttc", 0),
+    ("AcademicDeva", r"C:\Windows\Fonts\Nirmala.ttf", 0),
+    ("AcademicDeva", r"C:\Windows\Fonts\mangal.ttf", 0),
+)
+_DEVA_LETTERS = "\u0900-\u097F\uA8E0-\uA8FF"
+_DEVA_CHAR = re.compile(f"[{_DEVA_LETTERS}]")
+# A run of Devanagari words: never crosses markup (no < or >), so it can be
+# wrapped in a <font> tag inside text that already holds <b> or &nbsp;.
+_DEVA_RUN = re.compile(f"[{_DEVA_LETTERS}](?:[{_DEVA_LETTERS}\u200c\u200d ]*[{_DEVA_LETTERS}])?")
+
+
+def _register_devanagari_font() -> None:
+    global _DEVA_FONT, _DEVA_FONT_PATH
+    if _DEVA_FONT:
+        return
+    found = [(n, p, i) for n, p, i in _DEVA_CANDIDATES if Path(p).exists()]
+    if not found and Path("/usr/share/fonts").is_dir():
+        # Any packaged Devanagari face, should the image's font package move it.
+        found = [("AcademicDeva", str(p), 0) for p in sorted(Path("/usr/share/fonts").rglob("*Devanagari*.ttf"))]
+    for name, path, index in found:
+        try:
+            pdfmetrics.registerFont(TTFont(name, path, subfontIndex=index))
+            # One face for bold and italic too: <b> around Hindi must find a
+            # member of the family.
+            for bold in (0, 1):
+                for italic in (0, 1):
+                    addMapping(name, bold, italic, name)
+            _DEVA_FONT, _DEVA_FONT_PATH = name, path
+            return
+        except Exception as e:
+            log.warning("could not register Devanagari font %s: %s", path, e)
+
+
+def Paragraph(text, style, *args, **kwargs):  # noqa: N802 - stands in for ReportLab's Paragraph
+    """ReportLab's Paragraph, with each Devanagari run set in a face that has it."""
+    if isinstance(text, str) and _DEVA_CHAR.search(text):
+        _register_devanagari_font()
+        if _DEVA_FONT:
+            text = _DEVA_RUN.sub(lambda m: f'<font name="{_DEVA_FONT}">{m.group(0)}</font>', text)
+    return _RLParagraph(text, style, *args, **kwargs)
+
 
 _OPTION_RE = re.compile(r"\(([A-Da-d])\)\s*")
 # The word before a label that names an option instead of starting one:
@@ -117,9 +171,18 @@ def register_unicode_font() -> str:
     """Register the body font now and say which one it is, for the startup
     log: a missing font is otherwise invisible until a paper prints boxes."""
     _register_unicode_font()
+    _register_devanagari_font()
+    if _DEVA_FONT:
+        try:
+            import uharfbuzz  # noqa: F401 - only whether it is installed
+            deva = f"; Devanagari {_DEVA_FONT_PATH}, shaped"
+        except ImportError:
+            deva = f"; Devanagari {_DEVA_FONT_PATH}, unshaped (no uharfbuzz)"
+    else:
+        deva = "; no Devanagari font (Hindi prints as boxes)"
     if _BODY_FONT == "Helvetica":
-        return "Helvetica (built-in, Latin-1 only -- no Unicode font found)"
-    return f"{_BODY_FONT} ({_BODY_FONT_PATH})"
+        return "Helvetica (built-in, Latin-1 only -- no Unicode font found)" + deva
+    return f"{_BODY_FONT} ({_BODY_FONT_PATH})" + deva
 
 
 def _register_unicode_font() -> None:
@@ -721,8 +784,8 @@ def _section_block(section: GeneratedSectionSchema, styles: _Styles,
     note = _section_note(section)
     story: list = [
         Paragraph(f"SECTION {section.label}", styles.section),
-        Paragraph(f"({section.name} — {len(section.questions)} questions, "
-                  f"{section.total_marks} marks. This section {note})", styles.section_note),
+        Paragraph(counted(f"({section.name} — {len(section.questions)} question(s), "
+                          f"{section.total_marks} mark(s). This section {note})"), styles.section_note),
     ]
     for gq in section.questions:
         flowables = _question_flowables(gq, styles, content_width, gutter, marks_col)

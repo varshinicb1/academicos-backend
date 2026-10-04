@@ -461,6 +461,7 @@ def generate_paper_endpoint(
     if assessment is not None:
         if assessment.school_id != current.school_id:
             raise HTTPException(403, "this assessment belongs to a different school")
+        require_may_change_paper(assessment, current)
         _require_editable(assessment)
     title = assessment.title if assessment else "Assessment"
     subject = assessment.subject if assessment else (request.selected_questions[0].subject if request.selected_questions else "Science")
@@ -753,6 +754,15 @@ def generate_from_ids(request: GenerateFromIdsRequest, current: User = Depends(r
     )
 
     asm_id = request.assessment_id or f"asm_curated_{uuid.uuid4().hex[:8]}"
+    # A named assessment is changed only as /papers/generate changes one: the
+    # caller's school, its author (or the principal), and still editable. Any
+    # teacher could swap a colleague's approved paper here (review 2026-10-04).
+    existing_asm = store.get(asm_id)
+    if existing_asm is not None:
+        if existing_asm.school_id != current.school_id:
+            raise HTTPException(403, "this assessment belongs to a different school")
+        require_may_change_paper(existing_asm, current)
+        _require_editable(existing_asm)
     title = request.title or "Curated Question Paper"
     paper_id = f"paper_{uuid.uuid4().hex[:12]}"
 
@@ -778,7 +788,6 @@ def generate_from_ids(request: GenerateFromIdsRequest, current: User = Depends(r
 
     _require_papers().save(paper, template, school_id=current.school_id)
 
-    existing_asm = store.get(asm_id)
     if existing_asm:
         existing_asm.generated_paper_id = paper.id
         existing_asm.selected_question_ids = [q.id for q in found_questions]
@@ -1176,6 +1185,10 @@ def update_assessment(
         raise HTTPException(
             403, f"a new paper cannot start as {assessment.status}; approval and review "
                  "have their own actions")
+    else:
+        # A PUT that creates is the caller's paper, as POST makes it: a teacher
+        # could otherwise plant one under a colleague's name.
+        assessment.teacher_id = current.id
     assessment.id = assessment_id
     assessment.school_id = current.school_id
     assessment.updated_at = _now()

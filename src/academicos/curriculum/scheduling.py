@@ -332,9 +332,12 @@ def schedule_book(
     last_date: Optional[str] = None
     slot_idx = 0
 
-    for subtopic_id, periods_needed in ordered:
+    # `wanted`, not `periods_needed`: the warning below reports the plan's total, which a
+    # loop variable of that name overwrote with the last subtopic's count (re-measure
+    # 2026-10-04: "the estimates need 8").
+    for subtopic_id, wanted in ordered:
         placed = 0
-        while placed < periods_needed and slot_idx < len(slots):
+        while placed < wanted and slot_idx < len(slots):
             d = slots[slot_idx].isoformat()
             store.create_scheduled_lesson(school_id=school_id, academic_year_id=academic_year_id,
                                           book_id=book_id, subtopic_id=subtopic_id, date=d,
@@ -346,7 +349,7 @@ def schedule_book(
             placed += 1
         if placed == 0:
             unscheduled.append(subtopic_id)
-        elif placed < periods_needed:
+        elif placed < wanted:
             partially_scheduled.append(subtopic_id)
         else:
             fully_scheduled += 1

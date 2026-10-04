@@ -493,7 +493,7 @@ class PaperGenerationRequest(Camel):
     selected_questions: list[QuestionSchema]
     template: SchoolTemplate
     formatting_options: Optional[dict[str, Any]] = None
-    set_count: int = 1
+    set_count: int = Field(default=1, ge=1, le=5)  # sets A-E: PaperStore.family knows no "Set 6"
     tier: Optional[str] = None
     # The teacher chose these questions: two that look alike print with a
     # `warnings` entry. True refuses them (422) instead. See routes.py
@@ -636,7 +636,7 @@ class QuickPaperRequest(Camel):
     duration_minutes: Optional[int] = None
     tier: str = "standard"  # "foundation" | "standard" | "advanced"
     exam_type: Optional[str] = None  # "class_test", "weekly_test", "board"
-    set_count: int = 1
+    set_count: int = Field(default=1, ge=1, le=5)  # sets A-E: PaperStore.family knows no "Set 6"
     template_id: Optional[str] = None
     # How long the teacher spent making this paper, in seconds: from opening
     # the builder (or the quick dialog) to asking for the paper, measured by

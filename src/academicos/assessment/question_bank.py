@@ -1411,6 +1411,20 @@ def assigned_calibration() -> CalibrationSchema:
     return CalibrationSchema(measured=False, sample_size=0, basis="assigned")
 
 
+def rights_for_written_question() -> RightsSchema:
+    """A question AcademicOS wrote from an NCERT chapter (source
+    "ai_generated"): ours, not CBSE's. The CBSE default named every one of the
+    718 class 9-10 written questions "Central Board of Secondary Education,
+    previous year question paper" in the question-bank API's `book` (review
+    2026-10-04)."""
+    return RightsSchema(
+        origin="AcademicOS",
+        redistribution="unknown",
+        basis="written from the NCERT textbook chapter; every answer quotes it",
+        attribution="AcademicOS, written from the NCERT textbook chapter",
+    )
+
+
 def enrich_record(rec: dict[str, Any]) -> dict[str, Any]:
     """Fill the standalone-asset fields on one wire-shaped record.
 
@@ -1422,9 +1436,10 @@ def enrich_record(rec: dict[str, Any]) -> dict[str, Any]:
     `language`. `provenance` is written by the relink, which is the pass that
     knows where the question sits in its source.
     """
-    if not rec.get("rights"):
-        rec["rights"] = rights_for_cbse_board_paper().model_dump(
-            mode="json", by_alias=True)
+    written = rec.get("source") == "ai_generated"
+    if not rec.get("rights") or (written and (rec["rights"] or {}).get("origin") == "CBSE"):
+        rights = rights_for_written_question() if written else rights_for_cbse_board_paper()
+        rec["rights"] = rights.model_dump(mode="json", by_alias=True)
 
     if not rec.get("calibration"):
         rec["calibration"] = assigned_calibration().model_dump(
