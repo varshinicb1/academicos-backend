@@ -535,6 +535,11 @@ def iter_routes(app) -> Iterable[tuple[str, str, object]]:
 # and their linked children's pages, each of which checks the link itself.
 PARENT_PATHS = frozenset({
     "/api/v1/auth/me",
+    # Their own password (the school hands them a temporary one and Settings offers the change) and their
+    # own Guide progress: both were refused with "can see only their children's pages" (audit 2026-10-04).
+    "/api/v1/auth/password",
+    "/api/v1/me/progress",
+    "/api/v1/me/progress/{key}",
     # EX-8: a linked parent reads their child's report card (checked in the handler).
     "/api/v1/report-cards/students/{student_id}",
     "/api/v1/report-cards/students/{student_id}/pdf",
