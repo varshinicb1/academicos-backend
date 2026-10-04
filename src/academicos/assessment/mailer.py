@@ -108,8 +108,11 @@ _STATUS_TTL_SECONDS = 300
 _status_cache: dict[str, Any] = {"at": 0.0, "key": "", "value": None}
 
 
-def _gmail_account() -> Optional[str]:
-    """The id of an ACTIVE Gmail account connected in Composio, or None.
+def _gmail_account() -> Optional[tuple[str, str]]:
+    """(connected account id, user id) of an ACTIVE Gmail account connected
+    in Composio, or None. Composio runs a tool only with both: the account
+    id alone is refused with "User ID is required with connected account"
+    (2026-10-04, the owner's first Gmail connection).
     Mail goes through Composio's GMAIL_SEND_EMAIL, so a key with only Google
     Calendar connected sends nothing (2026-10-04: the live key had five
     calendar accounts and no Gmail, and the sign-in page offered emailed codes
@@ -118,8 +121,8 @@ def _gmail_account() -> Optional[str]:
     for item in data.get("items") or []:
         toolkit = item.get("toolkit") or {}
         slug = toolkit.get("slug") if isinstance(toolkit, dict) else toolkit
-        if str(slug).lower() == "gmail" and str(item.get("status", "")).upper() == "ACTIVE":
-            return item.get("id")
+        if str(slug).lower() == "gmail" and str(item.get("status", "")).upper() == "ACTIVE" and item.get("id"):
+            return item["id"], str(item.get("user_id") or "")
     return None
 
 
@@ -136,7 +139,8 @@ def composio_status() -> dict:
         return dict(cached)
     try:
         account = _gmail_account()
-        value = ({"configured": True, "reason": "ok", "gmailAccountId": account} if account else
+        value = ({"configured": True, "reason": "ok", "gmailAccountId": account[0], "gmailUserId": account[1]}
+                 if account else
                  {"configured": False,
                   "reason": "Composio has no Gmail account connected; connect Gmail at app.composio.dev "
                             "(Google Calendar alone cannot send mail)"})
@@ -175,7 +179,11 @@ def send_via_composio(msg: MailMessage, *, connected_account_id: str | None = No
         payload["arguments"]["attachment"] = attachments[0]
     # Composio runs a tool for a connected account: the caller's, else the
     # Gmail account composio_status found.
-    connected_account_id = connected_account_id or composio_status().get("gmailAccountId")
+    if not connected_account_id:
+        status = composio_status()
+        connected_account_id = status.get("gmailAccountId")
+        if status.get("gmailUserId"):
+            payload["user_id"] = status["gmailUserId"]
     if connected_account_id:
         payload["connected_account_id"] = connected_account_id
 
