@@ -78,3 +78,31 @@ def load(book_code: str, number: int, cache: Optional[Path] = None) -> Optional[
         return None
     data = json.loads(path.read_text(encoding="utf-8"))
     return [(int(p["page"]), line) for p in data.get("pages", []) for line in p.get("lines", [])]
+
+
+# --------------------------------------------------------------------------- #
+# the text layer of a Unicode Hindi book that the PDF extraction broke
+# --------------------------------------------------------------------------- #
+
+# Dependent vowel signs, the virama, the anusvara and its kin, and the nukta.
+_SIGN = "ा-्ँ-ः़"
+_VOWEL_SIGN = "ा-ौ"
+_SPACE_BEFORE_SIGN = re.compile(rf"(?<=[ऀ-ॿ])[ \t]+(?=[{_SIGN}])")
+_SPACE_AFTER_VIRAMA = re.compile("्[ \t]+(?=[क-हक़-य़])")
+_DOUBLED_SIGN = re.compile(rf"([{_VOWEL_SIGN}])\1+")
+
+
+def repair_devanagari(text: str) -> str:
+    """`text` with the breakage that PDF extraction puts into a Unicode Devanagari book mended.
+
+    NCERT's class 9 Hindi PDF (Ganga) extracts "लिखन ा", "नहीीं", "उन्हो ोंने" and "मिट् ट ी": a
+    vowel sign split from its letter by a space, a sign printed twice, a space after a halant.
+    These three rules undo exactly that and nothing else, so a correct text is returned as it was.
+    A space inside a word with no sign at the break ("मज बूत") cannot be told from two words and is
+    left. It is applied to the text a question is set from, to the quotes checked against it, and to
+    the question itself, so all three agree."""
+    if not text or not re.search("[ऀ-ॿ]", text):
+        return text
+    text = _SPACE_BEFORE_SIGN.sub("", text)
+    text = _SPACE_AFTER_VIRAMA.sub("्", text)
+    return _DOUBLED_SIGN.sub(r"\1", text)

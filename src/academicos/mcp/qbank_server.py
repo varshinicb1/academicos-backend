@@ -259,7 +259,14 @@ class Corpus:
                 continue
             if require_answer_key and not self.has_answer_key(rec):
                 continue
+            counted: set[str] = set()
             for topic in self.topics_of(rec):
+                # A record is one question in a bucket however many spellings of the label it
+                # carries: a chapter filed as "Heredity" and as "heredity" counted twice (40 listed,
+                # 38 searched) once model-written questions carried both.
+                if topic.lower() in counted:
+                    continue
+                counted.add(topic.lower())
                 # One bucket per label whatever its case, because `search`
                 # matches a topic without case: "use standard notations ..."
                 # and "Use standard notations ..." were listed at 1 and 3 and

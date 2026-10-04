@@ -562,8 +562,14 @@ _LEADING_NUMBER = re.compile(
 
 def strip_question_number(stem: str) -> str:
     """The stem as it would be numbered on a paper, not as it was numbered here."""
-    cleaned = _LEADING_NUMBER.sub("", stem or "", count=1).strip()
-    return cleaned or (stem or "").strip()
+    stem = stem or ""
+    # "(a) ... (b) ..." is a question in parts, and its first label is part of it: stripping the
+    # "(a)" left a case study asking one part and then "(b)" (ai:cbse:jess1:01:E:1), which the
+    # stem gate refuses as a broken option list.
+    if re.match(r"^\s*\(?a\)", stem, re.I) and re.search(r"\(\s*b\s*\)", stem, re.I):
+        return stem.strip()
+    cleaned = _LEADING_NUMBER.sub("", stem, count=1).strip()
+    return cleaned or stem.strip()
 
 
 def _still_multi_part(stem: str) -> bool:
@@ -674,7 +680,9 @@ def validate(item: dict, section: bp.Section) -> str | None:
         if _ladder_options(options, correct):
             return "distractor-ladder"
 
-    if not _is_a_question(stem):
+    # A writing task ("Write a letter to ...") and a grammar item ("Choose the correct form ...") are
+    # given as an instruction; only the other kinds have to read as a question.
+    if section.kind not in ("writing", "grammar") and not _is_a_question(stem):
         return "stem-is-not-a-question"
     if _still_multi_part(stem):
         return "stem-is-several-questions"
@@ -830,8 +838,27 @@ def rebalance_keys(records: list[dict], tolerance: float = 0.34) -> dict:
             "after": dict(sorted(keys_now().items()))}
 
 
+def _repaired(item: dict) -> dict:
+    """`item` with its Hindi text mended (corpus/hindi_ocr.repair_devanagari): the model copies the
+    book's words, and the book's text layer is what the extraction broke."""
+    from .hindi_ocr import repair_devanagari as fix
+
+    def walk(value):
+        if isinstance(value, str):
+            return fix(value)
+        if isinstance(value, list):
+            return [walk(v) for v in value]
+        if isinstance(value, dict):
+            return {k: walk(v) for k, v in value.items()}
+        return value
+
+    return {k: (walk(v) if k in ("stem", "passage", "options", "modelAnswer", "markingPoints")
+                else v) for k, v in item.items()}
+
+
 def to_record(item: dict, section: bp.Section, chapter: Chapter, topic: str,
-              *, chapter_id: str, topic_id: str, model: str) -> dict:
+              *, chapter_id: str, topic_id: str, model: str,
+              also_chapter_ids: tuple[str, ...] = ()) -> dict:
     """A validated question as the bank stores it.
 
     `source` is `ai_generated` and the provenance says so in as many words, so a
@@ -839,6 +866,8 @@ def to_record(item: dict, section: bp.Section, chapter: Chapter, topic: str,
     or a book. The evidence carries the page it was written from, which is what
     lets anyone check it later.
     """
+    if chapter.language == "hi":
+        item = _repaired(item)
     scheme: dict = {"totalMarks": section.marks, "markingPoints": [], "rubricLevels": [],
                     "commonErrors": [], "alternativeAnswers": [],
                     "modelAnswer": item.get("modelAnswer") or "",
@@ -879,12 +908,19 @@ def to_record(item: dict, section: bp.Section, chapter: Chapter, topic: str,
         "questionBankId": f"ai-cbse:{chapter.book_code}",
         "subject": chapter.subject,
         "grade": chapter.grade,
-        "chapterIds": [chapter_id],
+        "chapterIds": [chapter_id, *also_chapter_ids],
         "taxonomyChapterId": chapter_id,
-        "topic": topic or chapter.title,
+        # A topic named like the chapter is no topic label: a label equal to the chapter's name is read by
+        # the bank's topic search as that label alone (8 of Science 9 "Tissues in Action"'s 52 questions)
+        # instead of as the chapter (`qbank_engine._on_topic`, rule 2 before rule 3).
+        "topic": "" if (topic or "").strip().lower() == (chapter.title or "").strip().lower() else (topic or ""),
         "difficulty": "medium",
         "bloomLevel": item.get("bloomLevel") or "understand",
-        "type": section.qtype,
+        # A passage-based reading or extract question is what CBSE calls competency-based (source
+        # based; the presets head the reading section 100% competency), and the competency rule counts only a type the source printed
+        # (assessment/competency.COMPETENCY_TYPES). The stem still carries its four options, which is
+        # all the printer and the answer key read.
+        "type": "competency_based" if section.kind in ("reading", "extract") else section.qtype,
         # The paper supplies the number; the stem must not carry one.
         "stem": stem,
         "stemLatex": "",

@@ -96,6 +96,11 @@ def verify(paper: dict, template: Any, *, language: str = "en",
         # The one gate for a bare stem (bank_merge.raw_extraction_reason): a figure the paper does not
         # print, options the extraction destroyed, a stem that stops mid-sentence.
         reason = bank_merge.raw_extraction_reason(stem)
+        # "truncated" is a heuristic ("which of the following" with no (A)-(D)): a stem that ends in a
+        # full stop or a question mark is a complete question, as the multi-select "Which of the
+        # following points lie on y-axis? A (1, 1), B (1, 0) ... I (3, 3)." is.
+        if reason == "truncated" and stem.rstrip().endswith((".", "?", "।", "!")):
+            reason = None
         if reason:
             problems.append(f"{where}: the stem needs something the paper does not print ({reason})")
         if qid in seen_ids:

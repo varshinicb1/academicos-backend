@@ -222,7 +222,7 @@ def _board_science() -> Blueprint:
         sections=(
             # Four of Section A's twenty marks go on assertion-reason, not plain MCQ.
             Section("A", "Objective", MCQ, 16, 1),
-            Section("A", "Assertion-Reason", ASSERTION_REASON, 4, 1),
+            Section("AR", "Assertion-Reason", ASSERTION_REASON, 4, 1),
             Section("B", "Very Short Answer", VSA, 6, 2, answer_words=25,
                     internal_choice=2),
             Section("C", "Short Answer", SA, 7, 3, answer_words=45,
