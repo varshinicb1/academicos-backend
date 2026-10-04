@@ -602,10 +602,15 @@ class AuditLog:
                 return self._remote.select(assessment_id=assessment_id, order="timestamp.desc")
             except (SupabaseUnavailable, requests.exceptions.RequestException):
                 logger.warning("Supabase unavailable for audit_log for_assessment, falling back to local SQLite", exc_info=True)
-        rows = self.conn.execute(
-            "SELECT * FROM audit_log WHERE assessment_id=? ORDER BY timestamp DESC",
-            (assessment_id,)).fetchall()
-        return [_row_to_dict(r) for r in rows]
+        # Under the connection's lock, like every other read here: two requests
+        # reading one sqlite3 connection at once raised "bad parameter or other
+        # API misuse" or an IndexError mid-row (stress test, 2026-10-04: 5 of 564
+        # term reports at 50 users).
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM audit_log WHERE assessment_id=? ORDER BY timestamp DESC",
+                (assessment_id,)).fetchall()
+            return [_row_to_dict(r) for r in rows]
 
     def for_action(self, action: str) -> list[dict[str, Any]]:
         if self._remote.enabled:
@@ -613,10 +618,11 @@ class AuditLog:
                 return self._remote.select(action=action, order="timestamp.desc")
             except (SupabaseUnavailable, requests.exceptions.RequestException):
                 logger.warning("Supabase unavailable for audit_log for_action, falling back to local SQLite", exc_info=True)
-        rows = self.conn.execute(
-            "SELECT * FROM audit_log WHERE action=? ORDER BY timestamp DESC",
-            (action,)).fetchall()
-        return [_row_to_dict(r) for r in rows]
+        with self._lock:     # see for_assessment
+            rows = self.conn.execute(
+                "SELECT * FROM audit_log WHERE action=? ORDER BY timestamp DESC",
+                (action,)).fetchall()
+            return [_row_to_dict(r) for r in rows]
 
 
 # The action of an entry recording that someone read a named student's data.
