@@ -409,6 +409,7 @@ def new_id(prefix: str) -> str:
 
 
 from .cover import COVER_SCHEMA, CoverMixin
+from .staff_policy import POLICY_SCHEMA, StaffPolicyMixin
 from .school_model import SCHOOL_MODEL_SCHEMA, SchoolModelMixin
 from .school_profile import SCHOOL_PROFILE_SCHEMA, SchoolProfileMixin
 from .teaching_groups import TEACHING_GROUPS_SCHEMA, TeachingGroupsMixin
@@ -419,7 +420,7 @@ class SectionInUse(Exception):
     its grade's last. The route's 409."""
 
 
-class CurriculumStore(SchoolModelMixin, TeachingGroupsMixin, CoverMixin, SchoolProfileMixin):
+class CurriculumStore(SchoolModelMixin, TeachingGroupsMixin, CoverMixin, SchoolProfileMixin, StaffPolicyMixin):
     _SNAPSHOT_KEY = "curriculum.sqlite"
     _SNAPSHOT_DEBOUNCE_SECONDS = 30.0
 
@@ -455,7 +456,7 @@ class CurriculumStore(SchoolModelMixin, TeachingGroupsMixin, CoverMixin, SchoolP
         wrote. Executes only; the caller commits."""
         with self._conn_lock:
             self.conn.executescript(SCHEMA + SCHOOL_MODEL_SCHEMA + TEACHING_GROUPS_SCHEMA + COVER_SCHEMA
-                                    + SCHOOL_PROFILE_SCHEMA)
+                                    + SCHOOL_PROFILE_SCHEMA + POLICY_SCHEMA)
             self._migrate()
 
     def _migrate(self) -> None:

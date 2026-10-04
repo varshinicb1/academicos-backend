@@ -179,6 +179,49 @@ def substitution_escalation(ops, cs, users, notify, now: datetime) -> int:
     return n
 
 
+def staff_check_in(ops, cs, users, notify, now: datetime) -> int:
+    """09:00 on a school day (staff_policy.py, check_in_reminder): a teacher
+    who has not checked in and is not on leave is reminded, and the principal
+    hears who they are, once. Nobody is marked absent by the machine: the
+    register is the principal's."""
+    from ..curriculum import calendar as calendar_mod
+    today = now.astimezone(IST).date().isoformat()
+    n = 0
+    for school in _schools(cs):
+        if not cs.staff_policy(school).check_in_reminder:
+            continue
+        year = _year_on(cs, school, today)
+        if year is None:
+            continue
+        try:
+            if today not in set(calendar_mod.school_days(cs, year.id).dates):
+                continue                       # a weekly off, a holiday or a closure
+        except ValueError:
+            continue                           # no calendar yet: no school day to expect anyone on
+        marks = cs.attendance_for_date(school, today)
+        missing = []
+        for u in users.users_for_school(school, role="teacher"):
+            if u.id in marks:
+                continue
+            if any(l.status == "approved" and l.start_date <= today <= l.end_date for l in cs.leave_for_teacher(u.id)):
+                continue
+            missing.append(u)
+        if not missing:
+            continue
+        for u in missing:
+            notify(school_id=school, user_ids=[u.id], kind="check_in_reminder", params={},
+                   link="/school/my-day", dedupe_key=f"checkin:{u.id}:{today}")
+            n += 1
+        principals = [u.id for u in users.users_for_school(school, role="principal")]
+        names = sorted(u.name for u in missing)
+        shown = ", ".join(names[:6]) + (f" and {len(names) - 6} more" if len(names) > 6 else "")
+        notify(school_id=school, user_ids=principals, kind="staff_not_checked_in",
+               params={"count": f"{len(missing)} teacher{'s' if len(missing) != 1 else ''}", "names": shown},
+               link="/school/cover", dedupe_key=f"notcheckedin:{school}:{today}")
+        n += len(principals)
+    return n
+
+
 def teacher_daily_digest(ops, cs, users, notify, now: datetime) -> int:
     tomorrow = (now.astimezone(IST).date() + timedelta(days=1)).isoformat()
     n = 0
@@ -480,6 +523,7 @@ JOBS: list[tuple[str, int, str, Optional[int], Callable[..., int]]] = [
     ("teacher_daily_digest", 18, "day", None, teacher_daily_digest),
     ("principal_weekly_digest", 7, "week", 0, principal_weekly_digest),
     ("principal_alerts", 8, "day", None, principal_alerts),
+    ("staff_check_in", 9, "day", None, staff_check_in),
     ("marking_due", 15, "day", None, marking_due),
     ("exam_reminders", 17, "day", None, exam_reminders),
     ("term_report", 15, "day", None, term_report),

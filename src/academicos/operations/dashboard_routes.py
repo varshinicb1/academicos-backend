@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends
 
 from ..assessment.auth_routes import require_admin
 from ..assessment.users import User
+from ..curriculum import calendar as calendar_mod
 from ..curriculum import routes as cr
 from ..curriculum.schemas import Camel
 from .routes import store
@@ -25,6 +26,9 @@ class CoverToday(Camel):
     periods_to_cover: int
     covered: int
     uncovered: int
+    # False on a weekly off, a holiday or a closure: no register is expected,
+    # so nothing is "not marked" (found 2026-10-04: a Sunday showed 8).
+    school_day: bool = True
 
 
 class HomeworkWeek(Camel):
@@ -69,9 +73,16 @@ def _cover(today: str, current: User) -> CoverToday:
     year = next((y for y in cs.academic_years_for_school(current.school_id) if y.start_date <= today <= y.end_date), None)
     subs = [s for s in cs.substitutions_between(year.id, today, today) if s.status != "cancelled"] if year else []
     covered = sum(1 for s in subs if s.status in ("accepted", "resolved"))
+    school_day = True
+    if year is not None:
+        try:
+            school_day = today in set(calendar_mod.school_days(cs, year.id).dates)
+        except ValueError:      # no calendar yet: a register may still be kept
+            school_day = True
     return CoverToday(staff=len(staff), absent=absent, on_leave=len(on_leave - set(marks)),
-                      unmarked=sum(1 for u in staff if u.id not in marks and u.id not in on_leave),
-                      periods_to_cover=len(subs), covered=covered, uncovered=len(subs) - covered)
+                      unmarked=sum(1 for u in staff if u.id not in marks and u.id not in on_leave) if school_day else 0,
+                      periods_to_cover=len(subs), covered=covered, uncovered=len(subs) - covered,
+                      school_day=school_day)
 
 
 def _homework(today: date, current: User) -> HomeworkWeek:

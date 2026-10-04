@@ -43,12 +43,12 @@ from ..curriculum import routes as curriculum_routes
 from ..curriculum import school_model_routes
 from ..curriculum import teaching_group_routes
 from ..curriculum import school_setup_routes
-from ..curriculum import cover_routes
+from ..curriculum import cover_routes, staff_policy_routes
 from ..assessment import api_key_routes
 from ..assessment import marks_routes
 from ..assessment import paper_review_routes
 from ..operations import calendar_feed, class_progress, dashboard_routes, homework_photos, practice_routes, progress_routes, term_report
-from ..operations import google_sign_in, pilot_agreement_routes, sign_in_codes
+from ..operations import google_sign_in, pilot_agreement_routes, sign_in_codes, usage_routes
 from ..operations import question_reviews
 from ..operations import exam_routes
 from ..operations import grant_routes
@@ -276,6 +276,7 @@ app.include_router(school_model_routes.router)
 app.include_router(teaching_group_routes.router)
 app.include_router(school_setup_routes.router)
 app.include_router(cover_routes.router)
+app.include_router(staff_policy_routes.router)
 app.include_router(operations_routes.router)
 app.include_router(homework_routes.router)
 app.include_router(learning_routes.router)
@@ -294,6 +295,7 @@ app.include_router(class_progress.router)
 app.include_router(sign_in_codes.router)
 app.include_router(google_sign_in.router)
 app.include_router(pilot_agreement_routes.router)
+app.include_router(usage_routes.router)
 app.include_router(question_reviews.router)
 app.include_router(api_key_routes.router)
 app.include_router(paper_review_routes.router)

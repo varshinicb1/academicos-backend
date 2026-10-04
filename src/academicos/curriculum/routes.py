@@ -1442,8 +1442,10 @@ def _move_lessons_off_holiday(store: CurriculumStore, year, holiday,
     """NTF-3: holiday declared -> the plans reflow -> the people affected
     hear. Every plan (book, and section when the plan is a section's) with a
     lesson still to teach on the holiday's days, from the school's today on,
-    is pushed past them onto its next teaching periods; each such plan's
-    teacher and students get one message, and the rest of the school's
+    is pushed past them onto its next teaching periods; each teacher and
+    student of such a plan gets one message naming every plan of theirs that
+    moved (one per plan, until 2026-10-04, filled a teacher's inbox: four
+    sections, four notices per holiday), and the rest of the school's
     students and teachers hear of the holiday itself. A plan with no cadence
     to reflow on is named in the answer rather than silently left."""
     from ..assessment.audit_log import get_audit_log
@@ -1458,6 +1460,8 @@ def _move_lessons_off_holiday(store: CurriculumStore, year, holiday,
     dates = holiday.date if not holiday.end_date else f"{holiday.date} to {holiday.end_date}"
     moved_total, not_moved, dropped_total = 0, [], 0
     told: set[str] = set()
+    # What moved for each person: "Science 10-A", for one message each.
+    affected: dict[str, list[str]] = {}
     for plan in plans:
         book = store.get_book(plan["book_id"])
         subject = store.get_subject(book.subject_id) if book else None
@@ -1479,19 +1483,24 @@ def _move_lessons_off_holiday(store: CurriculumStore, year, holiday,
         teachers = {a.teacher_id for s in sections
                     for a in [store.allocation_for(s, subject.id) if subject else None] if a and a.teacher_id}
         students = {e.student_id for s in sections for e in store.enrollments_for_section(s)}
-        moved = (f"{result.lessons_pushed} {subject.name if subject else ''} lessons for {label} move to the "
-                 "next teaching days.")
-        moved_hi = f"{label} के {result.lessons_pushed} {subject.name if subject else ''} पाठ अगले शिक्षण दिवसों पर।"
+        what = f"{subject.name if subject else (book.title if book else '')} {label}".strip()
         for uid in teachers | students:
-            notify_safely(school_id=principal.school_id, user_ids=[uid], kind="holiday_declared",
-                          params={"label": holiday.label, "dates": dates, "moved": moved, "moved_hi": moved_hi},
-                          link="/week", dedupe_key=f"holiday:{holiday.id}:{uid}:{plan['book_id']}:{plan['section_id']}")
-        told |= teachers | students
-        # N-8-7: the students' parents hear the same notice.
-        told |= set(notify_parents_safely(
-            school_id=principal.school_id, student_ids=students, kind="holiday_declared",
-            params={"label": holiday.label, "dates": dates, "moved": moved, "moved_hi": moved_hi},
-            dedupe_key=f"holiday:{holiday.id}:{plan['book_id']}:{plan['section_id']}"))
+            affected.setdefault(uid, []).append(what)
+    students_of_school = {u.id for u in _require_users().users_for_school(principal.school_id, role="student")}
+    for uid, what in affected.items():
+        listed = ", ".join(sorted(set(what)))
+        moved = f"Lessons for {listed} move to the next teaching days."
+        moved_hi = f"{listed} के पाठ अगले शिक्षण दिवसों पर।"
+        notify_safely(school_id=principal.school_id, user_ids=[uid], kind="holiday_declared",
+                      params={"label": holiday.label, "dates": dates, "moved": moved, "moved_hi": moved_hi},
+                      link="/week", dedupe_key=f"holiday:{holiday.id}:{uid}")
+        told.add(uid)
+        if uid in students_of_school:
+            # N-8-7: the student's parents hear the same notice, once.
+            told |= set(notify_parents_safely(
+                school_id=principal.school_id, student_ids=[uid], kind="holiday_declared",
+                params={"label": holiday.label, "dates": dates, "moved": moved, "moved_hi": moved_hi},
+                dedupe_key=f"holiday:{holiday.id}:{uid}"))
     # Everyone else hears of the holiday itself only when it is close enough
     # to change their plans: a list of next term's holidays entered today
     # is not news anyone acts on (NTF-1).

@@ -470,9 +470,10 @@ class CoverMixin:
             if leave.status != "pending":
                 raise CoverError(f"this leave is already {leave.status}")
             status = "approved" if approve else "rejected"
+            decided_at = _now()
             self._exec("UPDATE leave_requests SET status=?, decided_by=?, decided_at=? WHERE id=?",
-                       (status, decided_by, _now(), leave_id))
-            leave.status = status
+                       (status, decided_by, decided_at, leave_id))
+            leave.status, leave.decided_by, leave.decided_at = status, decided_by, decided_at
             subs: list[Substitution] = []
             if approve:
                 for d, sec, period, subject_id in self.affected_periods(leave):

@@ -80,6 +80,7 @@ ROUTE_POLICY: dict[tuple[str, str], Policy] = {
     ("GET", "/health/errors"): _p(PUBLIC, "NFR-7: error counts only, never a message"),
     ("POST", "/api/v1/client-errors"): _p(PUBLIC, "NFR-7: the apps report what they caught, signed in or not; scrubbed, rate-limited"),
     ("GET", "/api/v1/ops/errors"): _p(PUBLIC, "NFR-7: operator key checked in the handler; 404 unless ACOS_OPS_KEY is set"),
+    ("GET", "/api/v1/ops/usage"): _p(PUBLIC, "NFR-7: per-school counts; operator key checked in the handler; 404 unless ACOS_OPS_KEY is set"),
     # INT-2: a person's own number and SMS/WhatsApp consent; the handler admits
     # staff and parents only (a student is a minor: their parent is messaged).
     ("GET", "/api/v1/me/contact"): _p(ANY_USER, "the caller's own number only; students refused in the handler"),
@@ -290,7 +291,12 @@ ROUTE_POLICY: dict[tuple[str, str], Policy] = {
     ("GET", "/api/v1/curriculum/teacher-attendance"): _p(ADMIN["leave"]),
     ("PUT", "/api/v1/curriculum/teacher-attendance"): _p(ADMIN["leave"]),
     ("GET", "/api/v1/curriculum/my-attendance"): _p(STAFF, "the caller's own row of today's register (QA S-12)"),
-    ("POST", "/api/v1/curriculum/my-attendance"): _p(STAFF, "the caller checks in"),
+    ("POST", "/api/v1/curriculum/my-attendance"): _p(STAFF, "the caller checks in; late after the first bell and the grace"),
+    # Staff rules and leave balances (curriculum/staff_policy_routes.py).
+    ("GET", "/api/v1/curriculum/staff-policy"): _p(STAFF, "the callers own schools leave and check-in rules"),
+    ("PUT", "/api/v1/curriculum/staff-policy"): _p(ADMIN["leave"], "the principal or a leave admin; audited"),
+    ("GET", "/api/v1/curriculum/my-leave-balance"): _p(STAFF, "the callers own leave this year"),
+    ("GET", "/api/v1/curriculum/leave-balances"): _p(ADMIN["leave"], "every teacher of the callers school"),
     # M3 notifications (operations/routes.py): every route is the caller's own.
     ("GET", "/api/v1/notifications"): _p(ANY_USER, "the callers own inbox"),
     ("POST", "/api/v1/notifications/{notification_id}/read"): _p(ANY_USER, "only the recipient"),

@@ -23,6 +23,7 @@ from pydantic.alias_generators import to_camel
 from ..assessment.auth_routes import STAFF_ROLES, get_current_user, holds, require_admin, require_principal, require_staff
 from ..assessment.users import User
 from . import routes as cr
+from . import staff_policy
 from .cover import CoverError
 from .schemas import Camel
 
@@ -85,6 +86,11 @@ class LeaveResponse(Camel):
     document: Optional[LeaveDocumentResponse] = None
     # A temporary replacement teacher for a long leave (SCH-8).
     replacement_id: Optional[str] = None
+    # Approved by the school's leave rule, not by a person (staff_policy.py).
+    decided_automatically: bool = False
+    # On the answer to an application: what happened to it and why ("waits
+    # for the principal", "approved automatically ...").
+    decision_note: Optional[str] = None
 
 
 class SubstitutionResponse(Camel):
@@ -235,6 +241,9 @@ def _audit(action: str, user: User, details: dict[str, Any]) -> None:
                                             details={"schoolId": user.school_id, **details})
 
 
+AUTO_DECIDER = "auto:school-rule"
+
+
 def _today() -> str:
     return cr._school_today().isoformat()
 
@@ -257,11 +266,11 @@ def _current_year(store, school_id: str):
     return sorted(years, key=lambda y: y.start_date)[-1]
 
 
-def _leave(l) -> LeaveResponse:
+def _leave(l, note: Optional[str] = None) -> LeaveResponse:
     document = (LeaveDocumentResponse(content_type=l.document_type, name=l.document_name or "document",
                                       size=l.document_size or 0, uploaded_at=l.document_at or "")
                 if l.document_type else None)
-    return LeaveResponse(id=l.id, academic_year_id=l.academic_year_id, teacher_id=l.teacher_id,
+    return LeaveResponse(decided_automatically=l.decided_by == AUTO_DECIDER, decision_note=note, id=l.id, academic_year_id=l.academic_year_id, teacher_id=l.teacher_id,
                          start_date=l.start_date, end_date=l.end_date, kind=l.kind, periods=l.periods,
                          reason=l.reason, handover_note=l.handover_note, status=l.status,
                          created_by=l.created_by, decided_by=l.decided_by, document=document,
@@ -342,7 +351,39 @@ def apply_for_leave(req: LeaveApplyRequest, current: User = Depends(require_staf
         raise HTTPException(422, str(e))
     _audit("leave_applied", current, {"leaveId": leave.id, "teacherId": teacher_id,
                                       "from": leave.start_date, "to": leave.end_date, "kind": leave.kind})
-    return _leave(leave)
+    if teacher_id != current.id:
+        return _leave(leave)            # the principal applied for them: theirs to decide now
+    days = store.leave_days(leave)
+    left = store.leave_balance(current.school_id, teacher_id, year.id, leaving_out=leave.id).left
+    approve, note = staff_policy.auto_decision(store.staff_policy(current.school_id), days=days, left_before=left,
+                                               start_date=leave.start_date, today=_today())
+    principals = [u.id for u in cr._require_users().users_for_school(current.school_id, role="principal")]
+    when = {"teacher": current.name, "start": leave.start_date, "end": leave.end_date}
+    if not approve:
+        _notify(school_id=current.school_id, user_ids=principals, kind="leave_requested",
+                params={**when, "days": f"{days:g} day{'s' if days != 1 else ''}"},
+                link="/school/cover", dedupe_key=f"leave-requested:{leave.id}")
+        return _leave(leave, note=note)
+    try:
+        leave, subs = store.decide_leave(leave.id, approve=True, decided_by=AUTO_DECIDER)
+    except CoverError as e:
+        raise HTTPException(409, str(e))
+    _audit("leave_auto_approved", current, {"leaveId": leave.id, "days": days, "substitutions": len(subs)})
+    _notify(school_id=current.school_id, user_ids=[leave.teacher_id], kind="leave_decided",
+            params={"decision": "approved", "start": leave.start_date, "end": leave.end_date,
+                    "decision_hi": "स्वीकृत"},
+            link="/leave", dedupe_key=f"leave:{leave.id}:approved")
+    for s in subs:
+        _notify_proposed(s)
+    uncovered = sum(1 for s in subs if not s.substitute_id)
+    cover = (f"{uncovered} of {len(subs)} periods have no one free: arrange cover." if uncovered
+             else f"All {len(subs)} periods have a proposed substitute." if subs else "No periods to cover.")
+    cover_hi = (f"{len(subs)} में से {uncovered} पीरियड के लिए कोई उपलब्ध नहीं: व्यवस्था करें।" if uncovered
+                else f"सभी {len(subs)} पीरियड के लिए स्थानापन्न प्रस्तावित।" if subs else "कोई पीरियड नहीं।")
+    _notify(school_id=current.school_id, user_ids=principals, kind="leave_auto_approved",
+            params={**when, "cover": cover, "cover_hi": cover_hi},
+            link="/school/cover", dedupe_key=f"leave-auto:{leave.id}")
+    return _leave(leave, note=note)
 
 
 @router.get("/leave-requests", response_model=list[LeaveResponse])
@@ -878,11 +919,27 @@ def check_in(current: User = Depends(require_staff)) -> AttendanceRow:
     day = _today()
     store = cr._require()
     existing = store.attendance_for_date(current.school_id, day).get(current.id)
-    if existing is None or existing["status"] in ("present", "late"):
+    if existing is None:
         year = _year_for(store, current.school_id, day)
+        status = "late" if _late_now(store, current.school_id, year.id, day) else "present"
         store.mark_attendance(school_id=current.school_id, academic_year_id=year.id, on=day, teacher_id=current.id,
-                              status="present", marked_by=current.id)
+                              status=status, marked_by=current.id)
     return _own_row(day, current)
+
+
+def _late_now(store, school_id: str, academic_year_id: str, day: str) -> bool:
+    """Whether a check-in now is after the first bell plus the school's
+    grace (staff_policy.py). Only on the day itself, by the school's clock."""
+    from datetime import datetime, timedelta, timezone
+    bell = store.first_bell(academic_year_id)
+    if not bell:
+        return False
+    now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    if now.date().isoformat() != day:
+        return False
+    h, m = (int(x) for x in bell.split(":")[:2])
+    grace = store.staff_policy(school_id).check_in_grace_minutes
+    return now.hour * 60 + now.minute > h * 60 + m + grace
 
 
 @router.get("/academic-years/{academic_year_id}/cover-summary", response_model=CoverSummaryResponse)
