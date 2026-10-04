@@ -50,9 +50,15 @@ PROVENANCE_PREFIX = "template:"
 # The textbook's own contents (academicos-data/syllabus/taxonomy), for the
 # chapters seeded from the book itself (audit D118).
 CONTENTS_PROVENANCE = PROVENANCE_PREFIX + "ncert-textbook-contents"
-# Classes 1-5 are seeded from the book too, but their topic proposals are a
-# separate decision; this source is used from class 6 up.
+# Classes 1-5 are seeded from the book too, but their contents trees list the
+# books' activity headings ("Let us Sing", "Let us Do"), not what is taught;
+# this source is used from class 6 up.
 CONTENTS_FROM_GRADE = 6
+# Below class 6 a chapter is proposed whole: one topic and one subtopic of the
+# chapter's own name, the smallest piece these books name. Without it a class
+# 1-5 chapter had no subtopic, so no plan could date it; a teacher can still
+# divide it.
+BOOK_CHAPTER_PROVENANCE = PROVENANCE_PREFIX + "ncert-book-chapter"
 
 
 @dataclass(frozen=True)
@@ -216,7 +222,8 @@ def apply_template(store: CurriculumStore, *, school_id: str, book_id: str,
     for chapter in chapters:
         slug = chapter_slug(chapter) or ""
         entry = ((tpl.chapters.get(slug) if tpl else None)
-                 or (contents.chapters.get(slug) if contents else None))
+                 or (contents.chapters.get(slug) if contents else None)
+                 or (_whole_chapter(chapter, slug) if grade < CONTENTS_FROM_GRADE else None))
         if entry is None or not entry.topics:
             no_source.append(chapter.name)
             continue
@@ -268,6 +275,12 @@ def apply_template(store: CurriculumStore, *, school_id: str, book_id: str,
         chapters_without_topics=len(chapters) - with_topics,
         topics_proposed=topics, subtopics_proposed=subtopics,
         provenance=provenance, note=note)
+
+
+def _whole_chapter(chapter: Chapter, slug: str) -> TemplateChapter:
+    return TemplateChapter(chapter_slug=slug, chapter_name=chapter.name, provenance=BOOK_CHAPTER_PROVENANCE,
+                           topics=(TemplateTopic(name=chapter.name,
+                                                 subtopics=(TemplateSubtopic(name=chapter.name),)),))
 
 
 def _heading_note(heading_number: Optional[str]) -> Optional[str]:

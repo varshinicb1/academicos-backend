@@ -372,6 +372,10 @@ def school_days(store: CurriculumStore, academic_year_id: str) -> SchoolDays:
     return out
 
 
+# The last class with no CBSE marks table: its syllabus is the book's chapters.
+PRIMARY_TOP_GRADE = 5
+
+
 def grade_number_for_book(store: CurriculumStore, book_id: str) -> Optional[int]:
     grade_id = store.grade_id_for_book(book_id)
     grade = store.get_grade(grade_id) if grade_id else None
@@ -608,7 +612,13 @@ def compute_teaching_time_estimates(
     Within a Unit, CBSE weights only at unit granularity (academicos-data/
     syllabus/*.json carries marks per unit), so a unit's periods are split
     evenly across its subtopics -- "no finer real signal exists, don't
-    fabricate one", as seed_cbse10.py does for chapters."""
+    fabricate one", as seed_cbse10.py does for chapters.
+
+    Classes 1-5 have no CBSE marks table at all (their book is seeded under
+    one unit that claims no marks), so their periods are split evenly
+    across every subtopic of the book: the same rule one level up. A book
+    of class 6 and above with no marks is still refused -- there the marks
+    exist and were not seeded."""
     if periods_per_week <= 0:
         raise ValueError("periods_per_week must be positive")
 
@@ -622,7 +632,9 @@ def compute_teaching_time_estimates(
             "create one first (POST .../period-configuration)")
 
     units = store.units_for_book(book_id)
-    if sum(u.marks or 0 for u in units) <= 0:
+    grade = grade_number_for_book(store, book_id)
+    no_marks_table = grade is not None and grade <= PRIMARY_TOP_GRADE
+    if sum(u.marks or 0 for u in units) <= 0 and not no_marks_table:
         raise ValueError(
             f"book {book_id} has no unit marks-weightage to distribute by -- "
             "seed real Unit.marks first")
@@ -658,7 +670,9 @@ def compute_teaching_time_estimates(
 
     n_open = sum(len(ids) for _, ids in to_allocate)
     extra = max(0, budget - kept_periods - n_open)
-    unit_extras = _largest_remainder(extra, [float(u.marks or 0) for u, _ in to_allocate])
+    weights = ([float(len(ids)) for _, ids in to_allocate] if no_marks_table
+               else [float(u.marks or 0) for u, _ in to_allocate])
+    unit_extras = _largest_remainder(extra, weights)
 
     estimates: list[TeachingTimeEstimate] = []
     for (unit, open_ids), unit_extra in zip(to_allocate, unit_extras):
