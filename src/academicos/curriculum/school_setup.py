@@ -40,8 +40,11 @@ from .school_model import WEEKDAY_NAMES
 from .seed_cbse10 import seed_cbse_grade
 from .store import CurriculumStore
 
-SETUP_GRADES = (6, 7, 8, 9, 10)
-DEFAULT_GRADES = SETUP_GRADES
+# Classes 1-5 seed from their NCERT books' contents (ncert_books.json, N-3-2); until
+# 2026-10-04 that file was on no branch and only 6-10 could be set up.
+SETUP_GRADES = tuple(range(1, 11))
+# With no classes given, the ones the question bank serves.
+DEFAULT_GRADES = (6, 7, 8, 9, 10)
 DEFAULT_SECTIONS = (DEFAULT_SECTION_NAME,)
 MAX_SECTIONS_PER_CLASS = 20
 BELL_NAME = "Main"
