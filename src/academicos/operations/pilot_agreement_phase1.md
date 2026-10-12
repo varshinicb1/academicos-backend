@@ -1,8 +1,8 @@
 # AcademicOS Phase 1 Pilot Agreement
 
-Pilot terms and conditions, mutual non-disclosure, and data sharing. Version phase1-v1, 4 October 2026.
+Pilot terms and conditions, mutual non-disclosure, and data sharing. Version phase1-v2, 13 October 2026.
 
-This agreement is between the school named when it is accepted (the "School") and Vidyuth Labs, which operates AcademicOS ("AcademicOS", "we", "us"). The School's principal, or another person the School has authorised, accepts it for the School in the AcademicOS web console. AcademicOS records who accepted, their designation, the date and time, and a fingerprint of this exact text. An agreement accepted electronically in this way is valid under the Information Technology Act, 2000.
+This agreement is between the school named when it is accepted (the "School") and VidyuthLabs, which operates AcademicOS ("AcademicOS", "we", "us"). The School's principal, or another person the School has authorised, accepts it for the School in the AcademicOS web console. AcademicOS records who accepted, their designation, the date and time, and a fingerprint of this exact text. An agreement accepted electronically in this way is valid under the Information Technology Act, 2000.
 
 ## Part A. Pilot terms and conditions
 

@@ -19,7 +19,9 @@ from typing import Optional
 
 from ..assessment.users import User
 
-VERSION = "phase1-v1"
+# v2 (2026-10-13): the company name corrected to VidyuthLabs. A changed text is a new version, so a school that
+# accepted v1 keeps that record and is asked to accept v2.
+VERSION = "phase1-v2"
 TITLE = "AcademicOS Phase 1 Pilot Agreement"
 _TEXT_FILE = Path(__file__).with_name("pilot_agreement_phase1.md")
 
